@@ -1,0 +1,1689 @@
+"""
+Top 10 Dividend/BTC Strategy Backtester — Oakwood Capital
+==========================================================
+Integrated daily simulation with:
+  - Universe: 10 highest-yielding stocks from SMI + SPI
+  - Initial allocation (default 85% Equity / 15% BTC)
+  - Dividend harvesting → 12-month DCA into BTC
+  - Threshold-based rebalancing: when BTC > upper threshold,
+    sell down to target and reallocate to Equity by weight
+  - Quarterly Equity rebalancing to target weights
+"""
+
+import base64
+from pathlib import Path
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import date
+from dateutil.relativedelta import relativedelta
+
+# ---------------------------------------------------------------------------
+# Oakwood Capital CI
+# ---------------------------------------------------------------------------
+OAK_GREEN     = "#293624"
+OAK_GREEN_2   = "#1F2A1B"
+OAK_GREEN_3   = "#3A4A33"
+OAK_SAGE      = "#99A796"
+OAK_SAGE_DIM  = "#6B7868"
+OAK_CREAM     = "#F5F5F1"
+OAK_CREAM_DIM = "#D4D4CE"
+OAK_GOLD      = "#C9A961"
+OAK_BORDER    = "#3D4A36"
+OAK_BTC       = "#F7931A"
+OAK_RED       = "#B85042"
+
+CHART_GRID = "#3A4A33"
+CHART_BAR_COLORS = [
+    OAK_SAGE, OAK_GOLD, OAK_CREAM, OAK_BTC,
+    "#7A8975", "#B59A4D", "#D4D4CE", "#E08F2A",
+    "#5C6B57", "#A08945", "#BCBCB6", "#C77F1F",
+    "#4A584F", "#8C7639", "#9E9E97", "#A66B16",
+    "#3A4A33", "#6E5A2D", "#82827C", "#7D4F0B",
+]
+
+# ---------------------------------------------------------------------------
+# Top 10 Swiss Dividend Stocks — SMI + SPI universe
+# Equal-weighted by default (10% each). Edit weights below to customize.
+# Selection criterion: historically highest dividend yield across SMI/SPI.
+#
+# Note: Helvetia and Bâloise merged on 5 Dec 2025 to form Helvetia Baloise
+# Holding (HBAN.SW). Old tickers HELN.SW / BALN.SW are delisted. Since HBAN
+# has insufficient history for multi-year backtests, we substitute with
+# PSP Swiss Property (real estate yield) and Galenica (healthcare yield).
+# ---------------------------------------------------------------------------
+UNIVERSE_CONSTITUENTS = {
+    "SREN.SW":  ("Swiss Re", 10.0, "Insurance"),
+    "ZURN.SW":  ("Zurich Insurance", 10.0, "Insurance"),
+    "PSPN.SW":  ("PSP Swiss Property", 10.0, "Real Estate"),
+    "GALE.SW":  ("Galenica", 10.0, "Healthcare"),
+    "SLHN.SW":  ("Swiss Life", 10.0, "Insurance"),
+    "SCMN.SW":  ("Swisscom", 10.0, "Telecom"),
+    "VONN.SW":  ("Vontobel", 10.0, "Wealth Management"),
+    "CMBN.SW":  ("Cembra Money Bank", 10.0, "Banking"),
+    "BKW.SW":   ("BKW", 10.0, "Utilities"),
+    "MOBN.SW":  ("Mobimo", 10.0, "Real Estate"),
+}
+
+# Backward-compatible alias so existing references still work
+SMI_CONSTITUENTS = UNIVERSE_CONSTITUENTS
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _clean_index(obj):
+    if obj is None:
+        return obj
+    if hasattr(obj, "empty") and obj.empty:
+        return obj
+    if hasattr(obj.index, "tz") and obj.index.tz is not None:
+        obj.index = obj.index.tz_localize(None)
+    obj.index = pd.to_datetime(obj.index).normalize()
+    obj = obj[~obj.index.duplicated(keep="last")]
+    obj = obj.sort_index()
+    return obj
+
+
+def _to_series(x):
+    if isinstance(x, pd.DataFrame):
+        if x.shape[1] >= 1:
+            return x.iloc[:, 0]
+    return x
+
+
+def load_logo_base64():
+    here = Path(__file__).parent.parent / "assets"
+    for name in ("oakwood_logo.png", "logo.png", "OAKWOOD-CAPITAL-LOGO-DARK.png"):
+        path = here / name
+        if path.exists():
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("ascii")
+    return None
+
+
+def style_plotly(fig, height=500):
+    fig.update_layout(
+        plot_bgcolor=OAK_GREEN, paper_bgcolor=OAK_GREEN,
+        font=dict(family="'Inter', sans-serif", size=12, color=OAK_CREAM),
+        height=height, margin=dict(l=60, r=30, t=30, b=50),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor=OAK_GREEN_2, font_color=OAK_CREAM, bordercolor=OAK_SAGE),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                    bgcolor="rgba(31,42,27,0.8)", bordercolor=OAK_BORDER, borderwidth=1,
+                    font=dict(size=11, color=OAK_CREAM)),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor=CHART_GRID, gridwidth=1,
+                     showline=True, linewidth=1, linecolor=OAK_SAGE_DIM, zeroline=False,
+                     ticks="outside", tickfont=dict(color=OAK_CREAM_DIM, size=11),
+                     title_font=dict(color=OAK_CREAM, size=12))
+    fig.update_yaxes(showgrid=True, gridcolor=CHART_GRID, gridwidth=1,
+                     showline=True, linewidth=1, linecolor=OAK_SAGE_DIM, zeroline=False,
+                     ticks="outside", tickfont=dict(color=OAK_CREAM_DIM, size=11),
+                     title_font=dict(color=OAK_CREAM, size=12))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Page config + CSS
+# ---------------------------------------------------------------------------
+st.set_page_config(page_title="Oakwood Capital — Top 10 Dividend Strategy",
+                   page_icon="🌳", layout="wide", initial_sidebar_state="expanded")
+
+logo_b64 = load_logo_base64()
+
+CUSTOM_CSS = f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"], [data-testid="stAppViewContainer"] {{
+    font-family: 'Inter', sans-serif !important;
+}}
+[data-testid="stAppViewContainer"] {{ background-color: {OAK_GREEN}; }}
+[data-testid="stAppViewContainer"] > .main {{ background-color: {OAK_GREEN}; color: {OAK_CREAM}; }}
+.main .block-container {{ padding-top: 1rem; padding-bottom: 3rem; max-width: 1400px; }}
+header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
+#MainMenu, footer {{ visibility: hidden; }}
+
+.oak-bar {{
+    background: linear-gradient(180deg, {OAK_GREEN_2} 0%, #1A2317 100%);
+    border-bottom: 1px solid {OAK_BORDER};
+    padding: 28px 36px; margin: -1rem -1rem 36px -1rem;
+    display: flex; align-items: center; justify-content: space-between;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}}
+.oak-bar .oak-logo img {{ height: 56px; width: auto; }}
+.oak-bar .oak-tagline {{
+    text-align: right; color: {OAK_SAGE};
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 16px; font-style: italic; letter-spacing: 0.02em;
+}}
+.oak-bar .oak-tagline .stamp {{
+    display: block; font-family: 'Inter', sans-serif; font-style: normal;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em;
+    color: {OAK_SAGE_DIM}; margin-top: 6px;
+}}
+
+.main h1, [data-testid="stMarkdownContainer"] h1, [data-testid="stHeading"] h1 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-weight: 500 !important; font-size: 44px !important; letter-spacing: -0.01em;
+    margin: 8px 0 4px 0; line-height: 1.1;
+}}
+.main h1 a, [data-testid="stMarkdownContainer"] h1 a,
+.main h1 span, [data-testid="stMarkdownContainer"] h1 span {{
+    color: {OAK_CREAM} !important;
+}}
+.main h2, [data-testid="stMarkdownContainer"] h2 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-weight: 500 !important; font-size: 30px !important; letter-spacing: -0.01em;
+    margin-top: 44px; margin-bottom: 16px; padding-bottom: 10px;
+    border-bottom: 1px solid {OAK_BORDER};
+}}
+.main h3, [data-testid="stMarkdownContainer"] h3 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important; font-size: 13px !important; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-top: 24px; margin-bottom: 12px;
+    padding-bottom: 6px; border-bottom: 1px solid {OAK_GREEN_3};
+}}
+.main h4, [data-testid="stMarkdownContainer"] h4 {{
+    color: {OAK_CREAM} !important; font-weight: 600 !important;
+    font-size: 14px !important; margin-top: 16px;
+}}
+.main p, .main li, .main span, .main label, .main div {{ color: {OAK_CREAM_DIM}; }}
+.main strong, .main b, [data-testid="stMarkdownContainer"] strong {{ color: {OAK_CREAM} !important; }}
+
+[data-testid="stSidebar"] {{ background-color: {OAK_GREEN_2}; border-right: 1px solid {OAK_BORDER}; }}
+[data-testid="stSidebar"] * {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-weight: 500 !important; font-size: 22px !important;
+    padding-bottom: 8px; border-bottom: 1px solid {OAK_SAGE_DIM};
+    margin-bottom: 16px; margin-top: 8px; letter-spacing: 0; text-transform: none;
+}}
+[data-testid="stSidebar"] h3 {{
+    color: {OAK_CREAM} !important; font-size: 11px !important;
+    text-transform: uppercase; letter-spacing: 0.18em; font-weight: 700 !important;
+    margin-top: 24px; margin-bottom: 10px;
+    padding-bottom: 6px; border-bottom: 1px solid {OAK_GREEN_3};
+}}
+[data-testid="stSidebar"] label {{
+    color: {OAK_SAGE} !important; font-size: 11px !important;
+    font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.12em;
+}}
+[data-testid="stSidebar"] .stRadio label, [data-testid="stSidebar"] .stSelectbox label > div {{
+    text-transform: none; letter-spacing: 0; font-size: 13px !important;
+    color: {OAK_CREAM} !important;
+}}
+[data-testid="stSidebar"] input, [data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-baseweb="input"] > div {{
+    background-color: {OAK_GREEN} !important; color: {OAK_CREAM} !important;
+    border: 1px solid {OAK_BORDER} !important; border-radius: 2px !important;
+}}
+[data-testid="stSidebar"] .stSlider [data-baseweb="slider"] > div > div > div {{
+    background-color: {OAK_SAGE} !important;
+}}
+[data-testid="stSidebar"] .stSlider [role="slider"] {{
+    background-color: {OAK_CREAM} !important; border-color: {OAK_SAGE} !important;
+}}
+
+.stButton > button {{
+    border-radius: 2px !important; font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.1em;
+    font-size: 12px !important; padding: 14px 24px !important;
+    transition: all 0.2s ease;
+}}
+.stButton > button[kind="primary"] {{
+    background-color: {OAK_SAGE} !important; color: {OAK_GREEN_2} !important;
+    border: 1px solid {OAK_SAGE} !important;
+}}
+.stButton > button[kind="primary"]:hover {{
+    background-color: {OAK_CREAM} !important; border-color: {OAK_CREAM} !important;
+}}
+
+[data-testid="stMetric"] {{
+    background: {OAK_GREEN_2};
+    padding: 22px 26px;
+    border: 1px solid {OAK_BORDER};
+    border-left: 3px solid {OAK_SAGE};
+    border-radius: 3px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.02);
+    transition: border-color 0.2s ease, transform 0.15s ease;
+}}
+[data-testid="stMetric"]:hover {{
+    border-left-color: {OAK_GOLD};
+}}
+[data-testid="stMetricLabel"] {{
+    color: {OAK_SAGE} !important; font-size: 10px !important;
+    font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.14em;
+}}
+[data-testid="stMetricValue"] {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-size: 32px !important; font-weight: 500 !important;
+    letter-spacing: -0.01em; margin-top: 6px; line-height: 1.1;
+}}
+[data-testid="stMetricDelta"] {{
+    color: {OAK_CREAM_DIM} !important; font-size: 11px !important; font-weight: 500 !important;
+    margin-top: 6px;
+}}
+[data-testid="stMetricDelta"] svg {{ fill: {OAK_SAGE} !important; }}
+
+[data-testid="stExpander"] {{
+    background-color: {OAK_GREEN_2}; border: 1px solid {OAK_BORDER} !important;
+    border-radius: 2px !important; margin-bottom: 12px;
+}}
+[data-testid="stExpander"] summary, [data-testid="stExpander"] details > summary {{
+    background-color: transparent !important; color: {OAK_CREAM} !important;
+    font-weight: 600 !important; padding: 14px 18px !important;
+    font-size: 13px !important; letter-spacing: 0.05em; text-transform: uppercase;
+}}
+[data-testid="stExpander"] summary:hover {{ background-color: {OAK_GREEN_3} !important; }}
+
+[data-testid="stAlert"] {{
+    background-color: {OAK_GREEN_2} !important; border-radius: 2px !important;
+    border-left: 3px solid {OAK_SAGE} !important; color: {OAK_CREAM} !important;
+}}
+[data-testid="stAlert"] * {{ color: {OAK_CREAM} !important; }}
+
+[data-testid="stDataFrame"] {{ border: 1px solid {OAK_BORDER}; border-radius: 2px; }}
+hr {{ border-color: {OAK_BORDER} !important; margin: 32px 0 !important; }}
+.stSpinner > div {{ border-top-color: {OAK_SAGE} !important; }}
+.modebar {{ background-color: transparent !important; }}
+.modebar-btn path {{ fill: {OAK_SAGE_DIM} !important; }}
+.modebar-btn:hover path {{ fill: {OAK_CREAM} !important; }}
+
+.oak-footer {{
+    margin-top: 56px; padding: 24px 0 8px 0;
+    border-top: 1px solid {OAK_BORDER}; color: {OAK_SAGE_DIM};
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; text-align: center;
+}}
+.oak-footer .oak-mark {{
+    font-family: 'Cormorant Garamond', Georgia, serif; text-transform: none;
+    letter-spacing: 0; font-style: italic; font-size: 13px;
+    color: {OAK_SAGE}; margin-top: 8px; display: block;
+}}
+
+/* Risk metrics table */
+.oak-metrics-table {{
+    width: 100%; border-collapse: collapse;
+    background: {OAK_GREEN_2}; border: 1px solid {OAK_BORDER};
+    font-family: 'Inter', sans-serif; font-size: 13px;
+    margin-bottom: 16px;
+}}
+.oak-metrics-table thead th {{
+    background: {OAK_GREEN_3}; color: {OAK_CREAM};
+    font-weight: 600; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.12em; padding: 12px 16px; text-align: right;
+    border-bottom: 1px solid {OAK_BORDER};
+}}
+.oak-metrics-table thead th:first-child {{ text-align: left; }}
+.oak-metrics-table tbody td {{
+    padding: 10px 16px; color: {OAK_CREAM_DIM}; text-align: right;
+    border-bottom: 1px solid {OAK_GREEN_3}; font-variant-numeric: tabular-nums;
+}}
+.oak-metrics-table tbody td.metric-label {{
+    text-align: left; color: {OAK_CREAM}; font-weight: 500;
+}}
+.oak-metrics-table tbody td.metric-label .hint {{
+    display: block; color: {OAK_SAGE_DIM}; font-size: 10px; font-weight: 400;
+    text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px;
+}}
+.oak-metrics-table tr.oak-section td {{
+    background: {OAK_GREEN}; color: {OAK_SAGE};
+    font-weight: 600; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.15em; padding: 14px 16px 6px 16px;
+    border-bottom: 1px solid {OAK_BORDER}; text-align: left;
+}}
+.oak-metrics-table tr:last-child td {{ border-bottom: none; }}
+.oak-metrics-table td.strategy-col {{ color: {OAK_GOLD}; font-weight: 600; }}
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+if logo_b64:
+    logo_html = f'<img src="data:image/png;base64,{logo_b64}" alt="Oakwood Capital"/>'
+else:
+    logo_html = '<span style="color:#F5F5F1; font-family:Cormorant Garamond, serif; font-size:28px;">Oakwood Capital</span>'
+
+st.markdown(f"""
+<div class="oak-bar">
+    <div class="oak-logo">{logo_html}</div>
+    <div class="oak-tagline">
+        Quantitative Strategy Research
+        <span class="stamp">Internal Tool · Confidential</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown(
+    f"<h1 style='color:{OAK_CREAM}; font-family:\"Cormorant Garamond\", Georgia, serif; "
+    f"font-weight:500; font-size:44px; letter-spacing:-0.01em; margin:8px 0 4px 0; "
+    f"line-height:1.1;'>Swiss Dividend Income meets Digital Assets</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    f"<p style='color:{OAK_CREAM_DIM}; font-size:15px; margin-top:0; max-width: 820px;'>"
+    "Concentrated portfolio of the 10 highest-yielding Swiss equities from SMI &amp; SPI, "
+    "with structural BTC allocation, dividend-funded DCA and threshold-based risk management."
+    "</p>",
+    unsafe_allow_html=True
+)
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.markdown("## Parameters")
+
+    st.markdown("### Backtest Period")
+    start_date = st.date_input("Startdatum", value=date(2018, 1, 1),
+                               min_value=date(2010, 1, 1),
+                               max_value=date.today() - relativedelta(years=1))
+    end_date = st.date_input("Enddatum", value=date.today(),
+                             min_value=start_date + relativedelta(months=13),
+                             max_value=date.today())
+    initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
+                                      max_value=100_000_000, value=1_000_000, step=10_000)
+
+    st.markdown("### Allocation")
+    initial_btc_pct = st.slider("Initial BTC Allokation (%)",
+                                min_value=0, max_value=50, value=15, step=1) / 100.0
+    upper_threshold = st.slider("Upper Threshold — Sell-Down Trigger (%)",
+                                min_value=15, max_value=75, value=25, step=1) / 100.0
+    target_btc_pct = st.slider("Target nach Sell-Down (%)",
+                               min_value=0, max_value=50, value=15, step=1) / 100.0
+
+    if target_btc_pct >= upper_threshold:
+        st.error("Target muss kleiner als Upper Threshold sein.")
+
+    st.markdown("### Equity Sleeve")
+    weighting_method = st.radio("Gewichtung",
+        ["Equal Weight (10 % je Titel)", "Marktkapitalisierung (mit 18% Cap)"])
+    rebalance_freq = st.selectbox("Rebalancing-Frequenz",
+        ["Quartalsweise", "Halbjährlich", "Jährlich", "Keine"], index=0)
+
+    st.markdown("### Dividend Reinvestment")
+    dca_months = st.slider("DCA-Zeitraum (Monate)", 1, 24, 12)
+    btc_source = st.radio("BTC-Quelle",
+        ["BTC-USD (gesamte Historie)", "IBIT ETF (ab Jan 2024)", "BTC-USD bis 2024, dann IBIT"],
+        index=2)
+
+    st.markdown("### Risk Analytics")
+    risk_free_rate = st.slider("Risk-Free Rate (%)", min_value=0.0, max_value=5.0,
+                               value=1.0, step=0.25,
+                               help="Annualisiert. Default ~1% entspricht historischem CHF/SARON-Durchschnitt.") / 100.0
+
+    st.markdown("### Costs & Fees")
+    mgmt_fee_pct = st.slider("Management Fee (% p.a.)", min_value=0.0, max_value=3.0,
+                             value=1.5, step=0.05,
+                             help="Daily accrual, deducted from NAV (1/252 per trading day).") / 100.0
+    perf_fee_pct = st.slider("Performance Fee (%)", min_value=0.0, max_value=30.0,
+                             value=15.0, step=1.0,
+                             help="Charged annually on gains above the High Water Mark.") / 100.0
+    hwm_hurdle_pct = st.slider("HWM Hurdle Year 1 (%)", min_value=0.0, max_value=15.0,
+                               value=5.0, step=0.5,
+                               help="Initial HWM = Initial Capital × (1 + Hurdle). After Year 1 the HWM only moves up to new highs.") / 100.0
+    crystallization_freq = st.selectbox("Performance Fee Crystallization",
+                                         ["Quarterly", "Semi-Annual", "Annual"], index=0,
+                                         help="How often the performance fee is crystallized against the HWM.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    run_btn = st.button("Run Backtest", type="primary", use_container_width=True,
+                        disabled=(target_btc_pct >= upper_threshold))
+
+    st.markdown(
+        f"<div style='font-size:10px; color:{OAK_SAGE_DIM}; text-transform:uppercase; "
+        f"letter-spacing:0.12em; padding-top:24px; margin-top:24px; "
+        f"border-top:1px solid {OAK_BORDER};'>"
+        "Universe: Top 10 Yield · SMI + SPI<br>"
+        "Data: Yahoo Finance · Adj. Close<br>"
+        "FX: USDCHF Spot · Threshold checks: monthly"
+        "</div>", unsafe_allow_html=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data fetching
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_prices(tickers, start, end):
+    data = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=False,
+                       actions=False, group_by="ticker", threads=False)
+    if data is None or data.empty:
+        return pd.DataFrame()
+    cols = {}
+    if isinstance(data.columns, pd.MultiIndex):
+        level0 = data.columns.get_level_values(0).unique().tolist()
+        for t in tickers:
+            if t in level0:
+                try:
+                    sub = data[t]
+                    if "Adj Close" in sub.columns:
+                        cols[t] = sub["Adj Close"]
+                    elif "Close" in sub.columns:
+                        cols[t] = sub["Close"]
+                except Exception:
+                    pass
+    else:
+        col = "Adj Close" if "Adj Close" in data.columns else "Close"
+        if col in data.columns:
+            cols[tickers[0]] = data[col]
+    if not cols:
+        return pd.DataFrame()
+    out = pd.DataFrame(cols)
+    out = _clean_index(out)
+    # Drop columns that are entirely NaN (failed downloads / delisted tickers)
+    out = out.dropna(axis=1, how="all")
+    if out.empty or out.shape[1] == 0:
+        return pd.DataFrame()
+    # Warn user about any tickers that failed
+    missing = [t for t in tickers if t not in out.columns]
+    if missing:
+        st.warning(
+            f"⚠️ Could not load price data for: {', '.join(missing)}. "
+            f"These titles will be excluded from the backtest. "
+            f"Possible cause: delisting, ticker change, or temporary data issue."
+        )
+    return out.dropna(how="all")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_dividends(tickers, start, end):
+    rows = []
+    for t in tickers:
+        try:
+            divs = yf.Ticker(t).dividends
+            if divs is None or divs.empty:
+                continue
+            divs = _clean_index(divs)
+            divs = divs[(divs.index >= pd.Timestamp(start)) & (divs.index <= pd.Timestamp(end))]
+            for d, v in divs.items():
+                rows.append({"date": d, "ticker": t, "dividend_per_share": float(v)})
+        except Exception as e:
+            st.warning(f"Dividendendaten {t}: {e}")
+    if not rows:
+        return pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
+    return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_series(ticker, start, end):
+    df = yf.download(ticker, start=start, end=end, progress=False,
+                     auto_adjust=False, threads=False)
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    if isinstance(df.columns, pd.MultiIndex):
+        col = ("Adj Close", ticker) if ("Adj Close", ticker) in df.columns else df.columns[0]
+        s = df[col]
+    else:
+        s = df["Adj Close"] if "Adj Close" in df.columns else df["Close"]
+    s = _to_series(s)
+    s = _clean_index(s)
+    return s.dropna()
+
+
+# ---------------------------------------------------------------------------
+# Integrated Strategy Simulation
+# ---------------------------------------------------------------------------
+def get_rebalance_dates(idx, freq):
+    if freq == "Keine":
+        return set()
+    if freq == "Quartalsweise":
+        months = {3, 6, 9, 12}
+    elif freq == "Halbjährlich":
+        months = {6, 12}
+    else:
+        months = {12}
+    out = set()
+    df = pd.DataFrame(index=idx)
+    df["ym"] = df.index.to_period("M")
+    for (ym), sub in df.groupby("ym"):
+        m = sub.index[-1].month
+        if m in months:
+            out.add(sub.index[-1])
+    return out
+
+
+def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
+                 initial_capital, weights,
+                 initial_btc_pct, upper_threshold, target_btc_pct,
+                 rebalance_dates_set, dca_months):
+    """Integrated daily simulation.
+    Returns: timeseries_df, transactions_df, threshold_events_df
+    """
+    available = [t for t in weights if t in prices.columns]
+    if not available:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    w = pd.Series({t: weights[t] for t in available})
+    w = w / w.sum()
+    prices_clean = prices[available].dropna()
+    if prices_clean.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    btc_prices_usd = _clean_index(btc_prices_usd.copy())
+    fx_chf_usd = _clean_index(fx_chf_usd.copy())
+
+    def get_btc_price(d):
+        sub = btc_prices_usd[btc_prices_usd.index <= d]
+        return float(sub.iloc[-1]) if not sub.empty else None
+
+    def get_fx(d):
+        sub = fx_chf_usd[fx_chf_usd.index <= d]
+        return float(sub.iloc[-1]) if not sub.empty else None
+
+    div_lookup = {}
+    if not dividends_df.empty:
+        for _, r in dividends_df.iterrows():
+            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = r["dividend_per_share"]
+
+    # Month-end dates within our index
+    month_ends = set()
+    df_idx = pd.DataFrame(index=prices_clean.index)
+    df_idx["ym"] = df_idx.index.to_period("M")
+    for ym, sub in df_idx.groupby("ym"):
+        month_ends.add(sub.index[-1])
+
+    first_day = prices_clean.index[0]
+    btc_price_0 = get_btc_price(first_day)
+    fx_0 = get_fx(first_day)
+
+    initial_smi_chf = initial_capital * (1 - initial_btc_pct)
+    initial_btc_chf = initial_capital * initial_btc_pct
+
+    smi_shares = {}
+    transactions = []
+
+    if btc_price_0 is None or fx_0 is None or fx_0 == 0 or btc_price_0 == 0 or initial_btc_pct == 0:
+        # No initial BTC possible — full to SMI
+        for t in available:
+            smi_shares[t] = (initial_capital * w[t]) / prices_clean.loc[first_day, t]
+        btc_held = 0.0
+    else:
+        for t in available:
+            smi_shares[t] = (initial_smi_chf * w[t]) / prices_clean.loc[first_day, t]
+        usd_0 = initial_btc_chf / fx_0
+        btc_held = usd_0 / btc_price_0
+        transactions.append({
+            "date": first_day, "type": "BUY", "reason": "INITIAL",
+            "btc_amount": btc_held, "chf_amount": initial_btc_chf,
+            "usd_amount": usd_0, "btc_price_usd": btc_price_0, "usdchf": fx_0,
+        })
+
+    # DCA queue
+    pending_dca = []  # each: {"remaining": int, "monthly_chf": float}
+
+    records = []
+    threshold_events = []
+
+    for d in prices_clean.index:
+        row = prices_clean.loc[d]
+        btc_price_d = get_btc_price(d)
+        fx_d = get_fx(d)
+
+        # 1. Dividend ex-date — collect cash, queue DCA tranches
+        for t in available:
+            key = (d, t)
+            if key in div_lookup:
+                cash = smi_shares[t] * div_lookup[key]
+                if cash > 0:
+                    pending_dca.append({"remaining": dca_months,
+                                        "monthly_chf": cash / dca_months,
+                                        "ticker": t})
+
+        # 2. Month-end: execute DCA buys
+        is_month_end = d in month_ends
+        if is_month_end and pending_dca:
+            total_dca_chf = 0.0
+            for entry in pending_dca:
+                if entry["remaining"] > 0:
+                    total_dca_chf += entry["monthly_chf"]
+                    entry["remaining"] -= 1
+            pending_dca = [e for e in pending_dca if e["remaining"] > 0]
+
+            if total_dca_chf > 0 and btc_price_d and fx_d and fx_d > 0:
+                usd = total_dca_chf / fx_d
+                btc_bought = usd / btc_price_d
+                btc_held += btc_bought
+                transactions.append({
+                    "date": d, "type": "BUY", "reason": "DCA",
+                    "btc_amount": btc_bought, "chf_amount": total_dca_chf,
+                    "usd_amount": usd, "btc_price_usd": btc_price_d, "usdchf": fx_d,
+                })
+
+        # 3. Threshold check (after DCA at month-end)
+        if is_month_end and btc_price_d and fx_d and fx_d > 0:
+            smi_value = sum(smi_shares[t] * row[t] for t in available)
+            btc_value_chf = btc_held * btc_price_d * fx_d
+            total = smi_value + btc_value_chf
+            if total > 0:
+                btc_pct = btc_value_chf / total
+                if btc_pct > upper_threshold:
+                    target_btc_chf = total * target_btc_pct
+                    sell_chf = btc_value_chf - target_btc_chf
+                    sell_usd = sell_chf / fx_d
+                    sell_btc = sell_usd / btc_price_d
+                    btc_held -= sell_btc
+
+                    # Reallocate proceeds to SMI by target weights
+                    for t in available:
+                        extra_chf = sell_chf * w[t]
+                        smi_shares[t] += extra_chf / row[t]
+
+                    transactions.append({
+                        "date": d, "type": "SELL", "reason": "THRESHOLD",
+                        "btc_amount": -sell_btc, "chf_amount": -sell_chf,
+                        "usd_amount": -sell_usd, "btc_price_usd": btc_price_d, "usdchf": fx_d,
+                    })
+
+                    smi_value_after = sum(smi_shares[t] * row[t] for t in available)
+                    btc_value_after = btc_held * btc_price_d * fx_d
+                    total_after = smi_value_after + btc_value_after
+                    threshold_events.append({
+                        "date": d, "btc_pct_before": btc_pct,
+                        "btc_pct_after": btc_value_after / total_after if total_after > 0 else 0,
+                        "btc_sold": sell_btc, "chf_to_smi": sell_chf,
+                    })
+
+        # 4. Quarterly SMI rebalance (back to target weights)
+        if d in rebalance_dates_set and d != first_day:
+            smi_value = sum(smi_shares[t] * row[t] for t in available)
+            for t in available:
+                target_value = smi_value * w[t]
+                smi_shares[t] = target_value / row[t]
+
+        # 5. Record state of day
+        smi_value = sum(smi_shares[t] * row[t] for t in available)
+        btc_value_chf = btc_held * btc_price_d * fx_d if (btc_price_d and fx_d) else 0
+        total = smi_value + btc_value_chf
+        records.append({
+            "date": d, "smi_value": smi_value, "btc_value_chf": btc_value_chf,
+            "btc_held": btc_held, "total_value": total,
+            "btc_pct": btc_value_chf / total if total > 0 else 0,
+        })
+
+    ts = pd.DataFrame(records).set_index("date")
+    txs = pd.DataFrame(transactions) if transactions else pd.DataFrame()
+    evts = pd.DataFrame(threshold_events) if threshold_events else pd.DataFrame()
+    return ts, txs, evts
+
+
+def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
+                             rebalance_dates_set):
+    """Run two SMI benchmark portfolios:
+       - Total Return: dividends reinvested into the same paying stock
+       - Price Only: dividends discarded (price index behavior)
+    Returns DataFrame with columns: smi_tr, smi_price
+    """
+    available = [t for t in weights if t in prices.columns]
+    if not available:
+        return pd.DataFrame()
+
+    w = pd.Series({t: weights[t] for t in available})
+    w = w / w.sum()
+    prices_clean = prices[available].dropna()
+    if prices_clean.empty:
+        return pd.DataFrame()
+
+    div_lookup = {}
+    if not dividends_df.empty:
+        for _, r in dividends_df.iterrows():
+            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = r["dividend_per_share"]
+
+    first_day = prices_clean.index[0]
+
+    # Two parallel portfolios with identical starting allocations
+    shares_tr = {}
+    shares_price = {}
+    for t in available:
+        s = (initial_capital * w[t]) / prices_clean.loc[first_day, t]
+        shares_tr[t] = s
+        shares_price[t] = s
+
+    records = []
+    for d in prices_clean.index:
+        row = prices_clean.loc[d]
+
+        # Total Return: reinvest dividends into the same stock at today's price
+        for t in available:
+            key = (d, t)
+            if key in div_lookup:
+                dps = div_lookup[key]
+                cash = shares_tr[t] * dps
+                if cash > 0 and row[t] > 0:
+                    shares_tr[t] += cash / row[t]
+                # Price Only: dividends discarded (no change)
+
+        # Quarterly rebalance to target weights (both portfolios)
+        if d in rebalance_dates_set and d != first_day:
+            tr_total = sum(shares_tr[t] * row[t] for t in available)
+            pr_total = sum(shares_price[t] * row[t] for t in available)
+            for t in available:
+                shares_tr[t] = (tr_total * w[t]) / row[t]
+                shares_price[t] = (pr_total * w[t]) / row[t]
+
+        smi_tr = sum(shares_tr[t] * row[t] for t in available)
+        smi_price = sum(shares_price[t] * row[t] for t in available)
+        records.append({"date": d, "smi_tr": smi_tr, "smi_price": smi_price})
+
+    return pd.DataFrame(records).set_index("date")
+
+
+def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
+               perf_fee_rate=0.15, hwm_hurdle=0.05,
+               crystallization_freq="Quarterly"):
+    """Apply management fee (daily accrual) + performance fee (period-end, HWM).
+    crystallization_freq: 'Quarterly', 'Semi-Annual', or 'Annual'.
+    Returns (net_series, total_mgmt_chf, total_perf_chf, fee_events_df).
+    HWM starts at initial_capital × (1 + hwm_hurdle). After period 1, the HWM
+    only advances to new post-fee highs at each crystallization date.
+    """
+    if gross_values is None or gross_values.empty:
+        return gross_values, 0.0, 0.0, pd.DataFrame()
+
+    if crystallization_freq == "Quarterly":
+        crystal_months = {3, 6, 9, 12}
+    elif crystallization_freq == "Semi-Annual":
+        crystal_months = {6, 12}
+    else:
+        crystal_months = {12}
+
+    daily_mgmt = mgmt_fee_annual / 252.0
+    net = pd.Series(index=gross_values.index, dtype=float)
+    net.iloc[0] = float(initial_capital)
+    hwm = float(initial_capital) * (1.0 + hwm_hurdle)
+    total_mgmt = 0.0
+    total_perf = 0.0
+    fee_events = []
+
+    for i in range(1, len(gross_values)):
+        d = gross_values.index[i]
+        gross_today = float(gross_values.iloc[i])
+        gross_prev = float(gross_values.iloc[i - 1])
+        gross_ret = (gross_today / gross_prev - 1.0) if gross_prev > 0 else 0.0
+
+        # Apply daily return then daily management fee
+        nv = net.iloc[i - 1] * (1.0 + gross_ret)
+        mgmt_today = nv * daily_mgmt
+        nv -= mgmt_today
+        total_mgmt += mgmt_today
+
+        # Period-end check: last trading day in a crystallization month
+        is_last = (i == len(gross_values) - 1)
+        if is_last:
+            is_period_end = (d.month in crystal_months) or True
+        else:
+            next_d = gross_values.index[i + 1]
+            is_period_end = (d.month in crystal_months and next_d.month != d.month)
+
+        if is_period_end:
+            quarter = (d.month - 1) // 3 + 1
+            period_label = f"Q{quarter} {d.year}"
+            if nv > hwm:
+                excess = nv - hwm
+                perf_today = excess * perf_fee_rate
+                nv_after = nv - perf_today
+                total_perf += perf_today
+                fee_events.append({
+                    "date": d, "period": period_label, "year": d.year,
+                    "nav_before_perf": nv, "hwm_before": hwm, "excess": excess,
+                    "perf_fee": perf_today, "nav_after_perf": nv_after,
+                })
+                hwm = nv_after
+                nv = nv_after
+            else:
+                fee_events.append({
+                    "date": d, "period": period_label, "year": d.year,
+                    "nav_before_perf": nv, "hwm_before": hwm,
+                    "excess": nv - hwm, "perf_fee": 0.0, "nav_after_perf": nv,
+                })
+
+        net.iloc[i] = nv
+
+    return net, total_mgmt, total_perf, pd.DataFrame(fee_events)
+
+
+def monthly_returns_matrix(values):
+    """Return a DataFrame of monthly returns (rows: year, cols: month)."""
+    if values is None or values.empty:
+        return pd.DataFrame()
+    monthly = values.resample("ME").last()
+    mret = monthly.pct_change().dropna()
+    if mret.empty:
+        return pd.DataFrame()
+    df = pd.DataFrame({"ret": mret.values}, index=mret.index)
+    df["year"] = df.index.year
+    df["month"] = df.index.month
+    pivot = df.pivot_table(index="year", columns="month", values="ret")
+    pivot = pivot.reindex(columns=range(1, 13))
+    pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    # YTD column
+    yearly = values.resample("YE").last()
+    yret = yearly.pct_change().dropna()
+    # Map year → yearly return
+    pivot["YTD"] = pivot.index.map(lambda y: yret[yret.index.year == y].iloc[0]
+                                    if (yret.index.year == y).any() else np.nan)
+    return pivot
+
+
+def compute_drawdown(values):
+    """Drawdown series — percent below running peak."""
+    if values.empty:
+        return pd.Series(dtype=float)
+    cummax = values.cummax()
+    return (values - cummax) / cummax
+
+
+def max_drawdown_info(values):
+    """Max DD value, peak date, trough date, recovery date, duration in days."""
+    if values.empty:
+        return {"mdd": 0.0, "peak": None, "trough": None, "recovery": None, "duration": 0}
+    cummax = values.cummax()
+    dd = (values - cummax) / cummax
+    mdd = float(dd.min())
+    if mdd == 0:
+        return {"mdd": 0.0, "peak": None, "trough": None, "recovery": None, "duration": 0}
+    trough_date = dd.idxmin()
+    peak_date = values.loc[:trough_date].idxmax()
+    peak_value = float(values.loc[peak_date])
+    post = values.loc[trough_date:]
+    recovered = post[post >= peak_value]
+    recovery_date = recovered.index[0] if not recovered.empty else None
+    if recovery_date is not None:
+        duration = (recovery_date - peak_date).days
+    else:
+        duration = (values.index[-1] - peak_date).days
+    return {
+        "mdd": mdd, "peak": peak_date, "trough": trough_date,
+        "recovery": recovery_date, "duration": duration,
+    }
+
+
+def compute_risk_metrics(values, risk_free_rate=0.01):
+    """Comprehensive risk metrics from a daily CHF value series."""
+    if values is None or values.empty or len(values) < 30:
+        return {}
+    returns = values.pct_change().dropna()
+    if returns.empty:
+        return {}
+    n_days = len(returns)
+    years = n_days / 252.0
+
+    total_return = float(values.iloc[-1] / values.iloc[0] - 1)
+    cagr = float((values.iloc[-1] / values.iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    vol_ann = float(returns.std() * np.sqrt(252))
+
+    sharpe = (cagr - risk_free_rate) / vol_ann if vol_ann > 0 else 0.0
+
+    downside = returns[returns < 0]
+    downside_vol = float(downside.std() * np.sqrt(252)) if not downside.empty else 0.0
+    sortino = (cagr - risk_free_rate) / downside_vol if downside_vol > 0 else 0.0
+
+    dd_info = max_drawdown_info(values)
+    max_dd = dd_info["mdd"]
+    calmar = cagr / abs(max_dd) if max_dd < 0 else 0.0
+
+    monthly = values.resample("ME").last()
+    mret = monthly.pct_change().dropna()
+    best_month = float(mret.max()) if not mret.empty else 0.0
+    worst_month = float(mret.min()) if not mret.empty else 0.0
+    pct_pos = float((mret > 0).mean()) if not mret.empty else 0.0
+
+    var_95 = float(mret.quantile(0.05)) if not mret.empty else 0.0
+    cvar_subset = mret[mret <= var_95]
+    cvar_95 = float(cvar_subset.mean()) if not cvar_subset.empty else 0.0
+
+    return {
+        "total_return": total_return, "cagr": cagr, "vol_ann": vol_ann,
+        "sharpe": sharpe, "sortino": sortino, "calmar": calmar,
+        "downside_vol": downside_vol,
+        "max_drawdown": max_dd, "dd_peak": dd_info["peak"],
+        "dd_trough": dd_info["trough"], "dd_recovery": dd_info["recovery"],
+        "dd_duration_days": dd_info["duration"],
+        "best_month": best_month, "worst_month": worst_month,
+        "pct_positive_months": pct_pos,
+        "var_95_monthly": var_95, "cvar_95_monthly": cvar_95,
+    }
+
+
+def compute_benchmark_metrics(strategy, benchmark, risk_free_rate=0.01):
+    """Strategy vs benchmark: alpha (Jensen), beta, tracking error, IR, correlation."""
+    if strategy is None or benchmark is None or strategy.empty or benchmark.empty:
+        return {}
+    aligned = pd.concat([strategy, benchmark], axis=1, join="inner").dropna()
+    if aligned.empty or len(aligned) < 30:
+        return {}
+    aligned.columns = ["s", "b"]
+    s_ret = aligned["s"].pct_change().dropna()
+    b_ret = aligned["b"].pct_change().dropna()
+    combined = pd.concat([s_ret, b_ret], axis=1, join="inner").dropna()
+    combined.columns = ["s", "b"]
+    if combined.empty:
+        return {}
+    corr = float(combined["s"].corr(combined["b"]))
+    cov = float(combined["s"].cov(combined["b"]))
+    var_b = float(combined["b"].var())
+    beta = cov / var_b if var_b > 0 else 0.0
+    excess = combined["s"] - combined["b"]
+    te = float(excess.std() * np.sqrt(252))
+    info_ratio = float(excess.mean() * 252 / te) if te > 0 else 0.0
+    years = len(aligned) / 252.0
+    s_cagr = float((aligned["s"].iloc[-1] / aligned["s"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    b_cagr = float((aligned["b"].iloc[-1] / aligned["b"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    alpha = s_cagr - (risk_free_rate + beta * (b_cagr - risk_free_rate))
+    return {
+        "correlation": corr, "r_squared": corr ** 2,
+        "beta": beta, "alpha": alpha,
+        "tracking_error": te, "information_ratio": info_ratio,
+    }
+
+
+def _fmt_pct(x, decimals=2):
+    if x is None or pd.isna(x):
+        return "—"
+    return f"{x*100:+.{decimals}f}%" if x < 0 else f"{x*100:.{decimals}f}%"
+
+
+def _fmt_num(x, decimals=2):
+    if x is None or pd.isna(x):
+        return "—"
+    return f"{x:.{decimals}f}"
+
+
+def footer():
+    st.markdown(
+        f"""<div class='oak-footer'>
+        For Illustrative Purposes · Not Investment Advice · Past Performance is no Guarantee of Future Results
+        <span class='oak-mark'>Oakwood Capital · Quantitative Research</span>
+        </div>""", unsafe_allow_html=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+if run_btn:
+    tickers = list(SMI_CONSTITUENTS.keys())
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+
+    if weighting_method.startswith("Equal"):
+        weights = {t: 10.0 for t in tickers}
+    else:
+        weights = {t: v[1] for t, v in SMI_CONSTITUENTS.items()}
+        weights = {t: min(w, 18.0) for t, w in weights.items()}
+
+    with st.spinner("Loading dividend universe prices ..."):
+        prices = fetch_prices(tickers, start_str, end_str)
+    with st.spinner("Loading dividend history ..."):
+        divs = fetch_dividends(tickers, start_str, end_str)
+    with st.spinner("Loading FX (USDCHF) ..."):
+        fx = fetch_series("USDCHF=X", start_str, end_str)
+    with st.spinner("Loading Bitcoin series ..."):
+        btc_spot = fetch_series("BTC-USD", start_str, end_str)
+        if btc_source.startswith("IBIT"):
+            ibit = fetch_series("IBIT", "2024-01-11", end_str)
+            if not btc_spot.empty and not ibit.empty:
+                overlap = pd.concat([btc_spot, ibit], axis=1, join="inner").dropna()
+                overlap.columns = ["btc", "ibit"]
+                if not overlap.empty:
+                    scale = overlap["btc"].iloc[0] / overlap["ibit"].iloc[0]
+                    btc_series = ibit * scale
+                else:
+                    btc_series = ibit
+            else:
+                btc_series = ibit if not ibit.empty else btc_spot
+        elif btc_source.startswith("BTC-USD bis"):
+            cutoff = pd.Timestamp("2024-01-11")
+            ibit = fetch_series("IBIT", "2024-01-11", end_str)
+            if not ibit.empty and not btc_spot.empty:
+                btc_pre = btc_spot[btc_spot.index < cutoff]
+                btc_at_cut = btc_spot[btc_spot.index <= cutoff]
+                if not btc_at_cut.empty:
+                    scale = btc_at_cut.iloc[-1] / ibit.iloc[0]
+                    btc_series = pd.concat([btc_pre, ibit * scale]).sort_index()
+                    btc_series = _clean_index(btc_series)
+                else:
+                    btc_series = btc_spot
+            else:
+                btc_series = btc_spot
+        else:
+            btc_series = btc_spot
+        btc_series = _clean_index(btc_series)
+
+    if prices.empty:
+        st.error("No price data received.")
+        st.stop()
+
+    rebal_dates = get_rebalance_dates(prices.index, rebalance_freq)
+
+    with st.spinner("Running integrated simulation ..."):
+        ts, txs, evts = run_strategy(
+            prices, divs, btc_series, fx,
+            initial_capital, weights,
+            initial_btc_pct, upper_threshold, target_btc_pct,
+            rebal_dates, dca_months
+        )
+
+    if ts.empty:
+        st.error(
+            "Strategy could not be executed. Likely cause: insufficient overlapping "
+            "price history across the universe. Check the warnings above for missing "
+            "tickers, or shorten the backtest period to a range where all titles trade."
+        )
+        st.stop()
+
+    with st.spinner("Computing benchmark portfolios ..."):
+        bench = simulate_smi_benchmarks(prices, divs, initial_capital, weights, rebal_dates)
+
+    with st.spinner("Applying fee structure ..."):
+        ts_net, total_mgmt_fees, total_perf_fees, fee_events_df = apply_fees(
+            ts["total_value"], initial_capital,
+            mgmt_fee_annual=mgmt_fee_pct,
+            perf_fee_rate=perf_fee_pct,
+            hwm_hurdle=hwm_hurdle_pct,
+            crystallization_freq=crystallization_freq,
+        )
+        ts["total_value_net"] = ts_net
+
+    # =====================================================================
+    # KPIs
+    # =====================================================================
+    st.markdown("## Performance Summary")
+
+    # ---- KPI Row 1: Performance vs benchmarks (NET of fees) ----
+    smi_final = ts["smi_value"].iloc[-1]
+    btc_final = ts["btc_value_chf"].iloc[-1]
+    strategy_gross = ts["total_value"].iloc[-1]
+    strategy_net = ts["total_value_net"].iloc[-1]
+    years = (ts.index[-1] - ts.index[0]).days / 365.25
+    strat_gross_cagr = (strategy_gross / initial_capital) ** (1 / years) - 1 if years > 0 else 0
+    strat_net_cagr = (strategy_net / initial_capital) ** (1 / years) - 1 if years > 0 else 0
+    smi_tr_final = float(bench["smi_tr"].iloc[-1]) if not bench.empty else initial_capital
+    smi_price_final = float(bench["smi_price"].iloc[-1]) if not bench.empty else initial_capital
+    smi_tr_cagr = (smi_tr_final / initial_capital) ** (1 / years) - 1 if years > 0 else 0
+    smi_price_cagr = (smi_price_final / initial_capital) ** (1 / years) - 1 if years > 0 else 0
+    excess_vs_tr = strat_net_cagr - smi_tr_cagr
+    excess_vs_price = strat_net_cagr - smi_price_cagr
+    fee_drag = strat_gross_cagr - strat_net_cagr
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Strategy (Net of Fees)", f"CHF {strategy_net:,.0f}",
+              f"{(strategy_net/initial_capital - 1)*100:+.1f}%")
+    c2.metric("Strategy (Gross)", f"CHF {strategy_gross:,.0f}",
+              f"Fee drag: {fee_drag*100:.2f}% p.a.")
+    c3.metric("Top 10 Total Return", f"CHF {smi_tr_final:,.0f}",
+              f"{(smi_tr_final/initial_capital - 1)*100:+.1f}%")
+    c4.metric("Top 10 Price Index", f"CHF {smi_price_final:,.0f}",
+              f"{(smi_price_final/initial_capital - 1)*100:+.1f}%")
+
+    # ---- KPI Row 2: CAGR comparison + alpha ----
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Net CAGR", f"{strat_net_cagr*100:.2f}%",
+              f"after all fees · {years:.1f} years")
+    c6.metric("Gross CAGR", f"{strat_gross_cagr*100:.2f}%",
+              f"before fees")
+    c7.metric("Excess vs Top 10 TR", f"{excess_vs_tr*100:+.2f}% p.a.",
+              f"net of fees")
+    c8.metric("Excess vs Price Index", f"{excess_vs_price*100:+.2f}% p.a.",
+              f"net of fees")
+
+    # ---- KPI Row 3: Fee breakdown ----
+    fees_total = total_mgmt_fees + total_perf_fees
+    fees_total_pct_initial = (fees_total / initial_capital) * 100
+    n_perf_periods = int(fee_events_df["perf_fee"].gt(0).sum()) if not fee_events_df.empty else 0
+    n_perf_total_periods = int(len(fee_events_df)) if not fee_events_df.empty else 0
+
+    c9, c10, c11, c12 = st.columns(4)
+    c9.metric("Total Mgmt Fees", f"CHF {total_mgmt_fees:,.0f}",
+              f"{mgmt_fee_pct*100:.2f}% p.a. on NAV")
+    c10.metric("Total Perf Fees", f"CHF {total_perf_fees:,.0f}",
+               f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged")
+    c11.metric("Total Fees Paid", f"CHF {fees_total:,.0f}",
+               f"{fees_total_pct_initial:.1f}% of initial capital")
+    c12.metric("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% / {initial_btc_pct*100:.0f}%",
+               f"Equity / BTC")
+
+    # ---- KPI Row 4: Strategy mechanics ----
+    n_thresholds = len(evts)
+    total_btc_sold = float(-txs[txs["type"]=="SELL"]["btc_amount"].sum()) if not txs.empty else 0
+    chf_redeployed = float(-txs[txs["type"]=="SELL"]["chf_amount"].sum()) if not txs.empty else 0
+    n_buys = int((txs["type"] == "BUY").sum()) if not txs.empty else 0
+
+    c13, c14, c15, c16 = st.columns(4)
+    c13.metric("Threshold Rebalances", f"{n_thresholds}",
+               f"trigger > {upper_threshold*100:.0f}%")
+    c14.metric("BTC Bought (Total)", f"{ts['btc_held'].iloc[-1] + total_btc_sold:.4f}",
+               f"{n_buys} transactions")
+    c15.metric("BTC Sold", f"{total_btc_sold:.4f}",
+               f"CHF {chf_redeployed:,.0f} to Equity")
+    c16.metric("Equity / BTC (today)",
+               f"{smi_final/strategy_gross*100:.0f}% / {btc_final/strategy_gross*100:.0f}%",
+               f"BTC: {ts['btc_held'].iloc[-1]:.4f}")
+
+    # =====================================================================
+    # Portfolio Evolution
+    # =====================================================================
+    st.markdown("## Portfolio Evolution vs. Benchmarks")
+    fig = make_subplots(specs=[[{"secondary_y": False}]])
+    # Net strategy (primary, gold, filled)
+    fig.add_trace(go.Scatter(x=ts.index, y=ts["total_value_net"],
+                             name="Strategy (Net of Fees)",
+                             line=dict(color=OAK_GOLD, width=3),
+                             fill="tozeroy", fillcolor="rgba(201,169,97,0.08)"))
+    # Gross strategy (faded dotted)
+    fig.add_trace(go.Scatter(x=ts.index, y=ts["total_value"],
+                             name="Strategy (Gross)",
+                             line=dict(color=OAK_GOLD, width=1.2, dash="dot"),
+                             opacity=0.55))
+    if not bench.empty:
+        fig.add_trace(go.Scatter(x=bench.index, y=bench["smi_tr"],
+                                 name="Top 10 Total Return",
+                                 line=dict(color=OAK_SAGE, width=2, dash="dash")))
+        fig.add_trace(go.Scatter(x=bench.index, y=bench["smi_price"],
+                                 name="Top 10 Price Index",
+                                 line=dict(color=OAK_SAGE_DIM, width=1.5, dash="dot")))
+    fig.add_trace(go.Scatter(x=ts.index, y=ts["smi_value"],
+                             name="Strategy · Equity Sleeve",
+                             line=dict(color=OAK_CREAM, width=1.2),
+                             opacity=0.7))
+    fig.add_trace(go.Scatter(x=ts.index, y=ts["btc_value_chf"],
+                             name="Strategy · BTC Sleeve",
+                             line=dict(color=OAK_BTC, width=1.2),
+                             opacity=0.7))
+    # Mark threshold rebalances
+    if not evts.empty:
+        evts_with_values = evts.copy()
+        evts_with_values["total_at_event"] = evts_with_values["date"].map(
+            lambda d: ts.loc[d, "total_value_net"] if d in ts.index else None
+        )
+        fig.add_trace(go.Scatter(
+            x=evts_with_values["date"], y=evts_with_values["total_at_event"],
+            mode="markers", name="Threshold Rebalance",
+            marker=dict(symbol="diamond", size=11,
+                        color=OAK_RED, line=dict(color=OAK_CREAM, width=1.5)),
+        ))
+    # Mark performance fee events
+    if not fee_events_df.empty:
+        perf_paid = fee_events_df[fee_events_df["perf_fee"] > 0]
+        if not perf_paid.empty:
+            fig.add_trace(go.Scatter(
+                x=perf_paid["date"], y=perf_paid["nav_after_perf"],
+                mode="markers", name="Performance Fee Charged",
+                marker=dict(symbol="triangle-down", size=11,
+                            color=OAK_CREAM, line=dict(color=OAK_GOLD, width=1.5)),
+            ))
+    fig = style_plotly(fig, height=580)
+    fig.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # =====================================================================
+    # RISK ANALYTICS
+    # =====================================================================
+    st.markdown("## Risk Analytics")
+
+    # Compute metrics for all three series — Strategy is NET of fees
+    strat_m = compute_risk_metrics(ts["total_value_net"], risk_free_rate)
+    tr_m = compute_risk_metrics(bench["smi_tr"], risk_free_rate) if not bench.empty else {}
+    pr_m = compute_risk_metrics(bench["smi_price"], risk_free_rate) if not bench.empty else {}
+    bm_tr = compute_benchmark_metrics(ts["total_value_net"],
+                                       bench["smi_tr"] if not bench.empty else pd.Series(dtype=float),
+                                       risk_free_rate)
+
+    # ---- Master risk metrics table (HTML for full styling control) ----
+    def _row(label, key, fmt="pct", hint=""):
+        if fmt == "pct":
+            s = _fmt_pct(strat_m.get(key))
+            tr = _fmt_pct(tr_m.get(key))
+            pr = _fmt_pct(pr_m.get(key))
+        else:
+            s = _fmt_num(strat_m.get(key))
+            tr = _fmt_num(tr_m.get(key))
+            pr = _fmt_num(pr_m.get(key))
+        hint_html = f"<span class='hint'>{hint}</span>" if hint else ""
+        return (f"<tr><td class='metric-label'>{label}{hint_html}</td>"
+                f"<td class='strategy-col'>{s}</td><td>{tr}</td><td>{pr}</td></tr>")
+
+    def _section(title):
+        return f"<tr class='oak-section'><td colspan='4'>{title}</td></tr>"
+
+    table_html = f"""
+    <table class="oak-metrics-table">
+        <thead>
+            <tr><th>Metric</th><th>Strategy (Net)</th><th>Top 10 Total Return</th><th>Top 10 Price Index</th></tr>
+        </thead>
+        <tbody>
+            {_section("Return")}
+            {_row("Total Return", "total_return")}
+            {_row("Annualized Return (CAGR)", "cagr")}
+            {_section("Risk")}
+            {_row("Annualized Volatility", "vol_ann", hint="Std. dev. of daily returns × √252")}
+            {_row("Downside Deviation", "downside_vol", hint="Volatility of negative returns only")}
+            {_row("Maximum Drawdown", "max_drawdown", hint="Largest peak-to-trough loss")}
+            {_section("Risk-Adjusted Performance")}
+            {_row("Sharpe Ratio", "sharpe", "num", "(CAGR − Rf) / Volatility")}
+            {_row("Sortino Ratio", "sortino", "num", "(CAGR − Rf) / Downside Vol")}
+            {_row("Calmar Ratio", "calmar", "num", "CAGR / |Max DD|")}
+            {_section("Tail Risk · Monthly")}
+            {_row("Value at Risk (95%)", "var_95_monthly", hint="5th-percentile monthly return")}
+            {_row("Expected Shortfall (95%)", "cvar_95_monthly", hint="Avg. return in worst 5% of months")}
+            {_row("Worst Month", "worst_month")}
+            {_section("Consistency")}
+            {_row("Best Month", "best_month")}
+            {_row("Positive Months", "pct_positive_months", hint="% of months with positive return")}
+        </tbody>
+    </table>
+    """
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    st.markdown(
+        f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-8px;'>"
+        f"Risk-free rate assumption: {risk_free_rate*100:.2f}% p.a. · "
+        f"Adjust in sidebar to recalculate."
+        "</p>",
+        unsafe_allow_html=True
+    )
+
+    # ---- Strategy vs SMI TR benchmark metrics (4 KPI tiles) ----
+    st.markdown("### Strategy vs. Top 10 Total Return")
+    bc1, bc2, bc3, bc4 = st.columns(4)
+    bc1.metric("Alpha (Jensen, annualized)",
+               _fmt_pct(bm_tr.get("alpha")),
+               "Excess return adj. for beta")
+    bc2.metric("Beta", _fmt_num(bm_tr.get("beta")),
+               "Sensitivity to Top 10 TR")
+    bc3.metric("Tracking Error",
+               _fmt_pct(bm_tr.get("tracking_error")),
+               "Std. dev. of excess returns")
+    bc4.metric("Information Ratio",
+               _fmt_num(bm_tr.get("information_ratio")),
+               "Excess return / TE")
+
+    bc5, bc6 = st.columns([1, 3])
+    bc5.metric("Correlation",
+               _fmt_num(bm_tr.get("correlation")),
+               f"R² = {_fmt_num(bm_tr.get('r_squared'))}")
+    with bc6:
+        if strat_m.get("dd_peak") and strat_m.get("dd_trough"):
+            peak = pd.Timestamp(strat_m["dd_peak"]).strftime("%Y-%m-%d")
+            trough = pd.Timestamp(strat_m["dd_trough"]).strftime("%Y-%m-%d")
+            rec = pd.Timestamp(strat_m["dd_recovery"]).strftime("%Y-%m-%d") if strat_m.get("dd_recovery") else "not yet recovered"
+            days = strat_m.get("dd_duration_days", 0)
+            st.markdown(
+                f"<div style='background:{OAK_GREEN_2}; padding:16px 20px; "
+                f"border:1px solid {OAK_BORDER}; border-left:3px solid {OAK_RED}; "
+                f"border-radius:2px; margin-top:0;'>"
+                f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
+                f"letter-spacing:0.12em; font-weight:600;'>Strategy Max Drawdown Episode</div>"
+                f"<div style='color:{OAK_CREAM}; font-family:Cormorant Garamond, serif; "
+                f"font-size:22px; margin-top:6px;'>{_fmt_pct(strat_m['max_drawdown'])}</div>"
+                f"<div style='color:{OAK_CREAM_DIM}; font-size:11px; margin-top:6px;'>"
+                f"Peak: <strong style='color:{OAK_CREAM};'>{peak}</strong> · "
+                f"Trough: <strong style='color:{OAK_CREAM};'>{trough}</strong> · "
+                f"Recovery: <strong style='color:{OAK_CREAM};'>{rec}</strong> · "
+                f"Duration: <strong style='color:{OAK_CREAM};'>{days} days</strong>"
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
+
+    # ---- Drawdown Chart (Underwater) ----
+    st.markdown("### Drawdown Analysis")
+    dd_strat = compute_drawdown(ts["total_value_net"]) * 100
+    fig_dd = go.Figure()
+    fig_dd.add_trace(go.Scatter(
+        x=dd_strat.index, y=dd_strat.values, name="Strategy (Net)",
+        line=dict(color=OAK_GOLD, width=2),
+        fill="tozeroy", fillcolor="rgba(201,169,97,0.2)",
+    ))
+    if not bench.empty:
+        dd_tr = compute_drawdown(bench["smi_tr"]) * 100
+        fig_dd.add_trace(go.Scatter(
+            x=dd_tr.index, y=dd_tr.values, name="Top 10 Total Return",
+            line=dict(color=OAK_SAGE, width=1.5, dash="dash"),
+        ))
+        dd_pr = compute_drawdown(bench["smi_price"]) * 100
+        fig_dd.add_trace(go.Scatter(
+            x=dd_pr.index, y=dd_pr.values, name="Top 10 Price Index",
+            line=dict(color=OAK_SAGE_DIM, width=1, dash="dot"),
+        ))
+    fig_dd = style_plotly(fig_dd, height=350)
+    fig_dd.update_yaxes(title_text="Drawdown from Peak", ticksuffix="%")
+    st.plotly_chart(fig_dd, use_container_width=True)
+
+    # ---- Rolling Volatility Chart ----
+    st.markdown("### Rolling Volatility (60-day window, annualized)")
+    strat_ret = ts["total_value_net"].pct_change().dropna()
+    roll_strat = strat_ret.rolling(60).std() * np.sqrt(252) * 100
+    fig_vol = go.Figure()
+    fig_vol.add_trace(go.Scatter(
+        x=roll_strat.index, y=roll_strat.values, name="Strategy (Net)",
+        line=dict(color=OAK_GOLD, width=2),
+    ))
+    if not bench.empty:
+        tr_ret = bench["smi_tr"].pct_change().dropna()
+        roll_tr = tr_ret.rolling(60).std() * np.sqrt(252) * 100
+        fig_vol.add_trace(go.Scatter(
+            x=roll_tr.index, y=roll_tr.values, name="Top 10 Total Return",
+            line=dict(color=OAK_SAGE, width=1.5, dash="dash"),
+        ))
+    fig_vol = style_plotly(fig_vol, height=320)
+    fig_vol.update_yaxes(title_text="Annualized Volatility", ticksuffix="%")
+    st.plotly_chart(fig_vol, use_container_width=True)
+
+    # ---- Monthly Returns Heatmap ----
+    st.markdown("### Monthly Returns · Strategy (Net)")
+    matrix = monthly_returns_matrix(ts["total_value_net"])
+    if not matrix.empty:
+        # Build heatmap with custom colorscale (red → cream → sage/green)
+        z = matrix.values.astype(float) * 100  # to percent
+        years_idx = matrix.index.astype(str).tolist()
+        cols = matrix.columns.tolist()
+        # Custom diverging colorscale
+        colorscale = [
+            [0.0, "#7A2A1F"],
+            [0.25, "#B85042"],
+            [0.5, OAK_GREEN_2],
+            [0.75, "#7A8975"],
+            [1.0, OAK_SAGE],
+        ]
+        # Use symmetric range so 0 is in the middle
+        vmax = max(abs(np.nanmin(z)), abs(np.nanmax(z)))
+        text = [[f"{v:+.1f}%" if not np.isnan(v) else "" for v in row] for row in z]
+        fig_hm = go.Figure(data=go.Heatmap(
+            z=z, x=cols, y=years_idx,
+            colorscale=colorscale, zmid=0, zmin=-vmax, zmax=vmax,
+            text=text, texttemplate="%{text}",
+            textfont=dict(size=11, color=OAK_CREAM, family="Inter"),
+            xgap=2, ygap=2,
+            colorbar=dict(
+                title=dict(text="Return %", font=dict(color=OAK_CREAM, size=11)),
+                tickfont=dict(color=OAK_CREAM_DIM, size=10),
+                outlinecolor=OAK_BORDER, outlinewidth=1,
+                len=0.85, thickness=12,
+            ),
+            hovertemplate="%{y} · %{x}: <b>%{z:+.2f}%</b><extra></extra>",
+        ))
+        fig_hm = style_plotly(fig_hm, height=max(280, 38 * len(years_idx) + 80))
+        fig_hm.update_xaxes(side="top", showgrid=False, ticks="")
+        fig_hm.update_yaxes(showgrid=False, ticks="", autorange="reversed")
+        st.plotly_chart(fig_hm, use_container_width=True)
+
+    # ---- Yearly Returns Bar Chart with HWM ----
+    if not fee_events_df.empty:
+        st.markdown("### Yearly Performance & High Water Mark")
+        yearly_net = ts["total_value_net"].resample("YE").last()
+        yearly_ret = yearly_net.pct_change()
+        # First-year return: compute from start
+        first_year_ret = yearly_net.iloc[0] / initial_capital - 1
+        yearly_ret.iloc[0] = first_year_ret
+
+        years_list = yearly_net.index.year.tolist()
+        rets_pct = (yearly_ret.values * 100).tolist()
+        bar_colors = [OAK_SAGE if r >= 0 else OAK_RED for r in rets_pct]
+
+        fig_yr = go.Figure()
+        fig_yr.add_trace(go.Bar(
+            x=years_list, y=rets_pct, marker=dict(color=bar_colors,
+                                                   line=dict(color=OAK_GREEN_2, width=1)),
+            name="Strategy Annual Return (Net)",
+            text=[f"{r:+.1f}%" for r in rets_pct],
+            textposition="outside",
+            textfont=dict(color=OAK_CREAM, size=11),
+        ))
+        # Hurdle line for year 1
+        fig_yr.add_hline(y=hwm_hurdle_pct * 100,
+                         line=dict(color=OAK_GOLD, width=1.5, dash="dash"),
+                         annotation_text=f"Year-1 Hurdle {hwm_hurdle_pct*100:.0f}%",
+                         annotation_position="top right",
+                         annotation_font=dict(color=OAK_GOLD, size=11))
+        fig_yr.add_hline(y=0, line=dict(color=OAK_SAGE_DIM, width=1))
+        fig_yr = style_plotly(fig_yr, height=380)
+        fig_yr.update_xaxes(title_text="Year", dtick=1)
+        fig_yr.update_yaxes(title_text="Annual Return (Net)", ticksuffix="%")
+        st.plotly_chart(fig_yr, use_container_width=True)
+
+    # ---- Fee Detail Section ----
+    st.markdown("## Fee Structure & Cost Detail")
+    fee_col_a, fee_col_b = st.columns([1, 2])
+    with fee_col_a:
+        st.markdown(
+            f"<div style='background:{OAK_GREEN_2}; padding:20px 24px; "
+            f"border:1px solid {OAK_BORDER}; border-left:3px solid {OAK_GOLD}; "
+            f"border-radius:3px;'>"
+            f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
+            f"letter-spacing:0.14em; font-weight:600;'>Fee Structure</div>"
+            f"<div style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:12px; line-height:1.8;'>"
+            f"<strong style='color:{OAK_CREAM};'>Management Fee:</strong> {mgmt_fee_pct*100:.2f}% p.a.<br>"
+            f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Accrued daily (1/252 per trading day)</span><br><br>"
+            f"<strong style='color:{OAK_CREAM};'>Performance Fee:</strong> {perf_fee_pct*100:.0f}%<br>"
+            f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Crystallized {crystallization_freq.lower()} on gains above HWM</span><br><br>"
+            f"<strong style='color:{OAK_CREAM};'>HWM Hurdle:</strong> {hwm_hurdle_pct*100:.1f}% (Year 1)<br>"
+            f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Initial HWM = Initial × (1 + Hurdle)</span><br><br>"
+            f"<strong style='color:{OAK_CREAM};'>Total Fees Paid:</strong> CHF {fees_total:,.0f}<br>"
+            f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>"
+            f"{fees_total_pct_initial:.2f}% of initial capital over {years:.1f} years"
+            f"</span>"
+            f"</div></div>",
+            unsafe_allow_html=True
+        )
+    with fee_col_b:
+        if not fee_events_df.empty:
+            # Build annual fee event table
+            fed = fee_events_df.copy()
+            fed["date"] = pd.to_datetime(fed["date"]).dt.strftime("%Y-%m-%d")
+            fed_disp = fed.rename(columns={
+                "date": "Period-End", "period": "Period", "year": "Year",
+                "nav_before_perf": "NAV before Perf Fee",
+                "hwm_before": "HWM",
+                "excess": "Excess over HWM",
+                "perf_fee": "Perf Fee Charged",
+                "nav_after_perf": "NAV after Perf Fee",
+            })
+            for col in ["NAV before Perf Fee", "HWM", "Excess over HWM",
+                        "Perf Fee Charged", "NAV after Perf Fee"]:
+                fed_disp[col] = fed_disp[col].apply(lambda x: f"CHF {x:,.0f}")
+            # Show Period column, drop Year and date
+            display_cols = ["Period", "NAV before Perf Fee", "HWM",
+                           "Excess over HWM", "Perf Fee Charged", "NAV after Perf Fee"]
+            st.dataframe(fed_disp[display_cols],
+                         use_container_width=True, hide_index=True, height=320)
+
+    # =====================================================================
+    # BTC Weight Over Time
+    # =====================================================================
+    st.markdown("## Bitcoin Weight & Threshold")
+    fig_w = go.Figure()
+    fig_w.add_trace(go.Scatter(x=ts.index, y=ts["btc_pct"] * 100,
+                               name="BTC % of Portfolio",
+                               line=dict(color=OAK_BTC, width=2.5),
+                               fill="tozeroy", fillcolor="rgba(247,147,26,0.1)"))
+    # Threshold lines
+    fig_w.add_hline(y=upper_threshold * 100, line=dict(color=OAK_RED, width=2, dash="dash"),
+                    annotation_text=f"Upper Threshold {upper_threshold*100:.0f}%",
+                    annotation_position="top right",
+                    annotation_font=dict(color=OAK_RED, size=11))
+    fig_w.add_hline(y=target_btc_pct * 100, line=dict(color=OAK_SAGE, width=1.5, dash="dot"),
+                    annotation_text=f"Target {target_btc_pct*100:.0f}%",
+                    annotation_position="bottom right",
+                    annotation_font=dict(color=OAK_SAGE, size=11))
+    fig_w.add_hline(y=initial_btc_pct * 100, line=dict(color=OAK_CREAM_DIM, width=1, dash="dot"),
+                    annotation_text=f"Initial {initial_btc_pct*100:.0f}%",
+                    annotation_position="bottom left",
+                    annotation_font=dict(color=OAK_CREAM_DIM, size=11))
+    if not evts.empty:
+        evts2 = evts.copy()
+        evts2["btc_pct_pct"] = evts2["btc_pct_before"] * 100
+        fig_w.add_trace(go.Scatter(
+            x=evts2["date"], y=evts2["btc_pct_pct"], mode="markers",
+            name="Sell Trigger",
+            marker=dict(symbol="diamond", size=12, color=OAK_RED,
+                        line=dict(color=OAK_CREAM, width=1.5)),
+        ))
+    fig_w = style_plotly(fig_w, height=380)
+    fig_w.update_yaxes(title_text="BTC % of Portfolio", ticksuffix="%")
+    st.plotly_chart(fig_w, use_container_width=True)
+
+    # =====================================================================
+    # BTC Accumulation
+    # =====================================================================
+    st.markdown("## Bitcoin Holdings vs. Market Price")
+    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig2.add_trace(go.Scatter(x=ts.index, y=ts["btc_held"],
+                              name="BTC held", line=dict(color=OAK_BTC, width=2.5),
+                              fill="tozeroy", fillcolor="rgba(247,147,26,0.12)"),
+                   secondary_y=False)
+    fig2.add_trace(go.Scatter(x=btc_series.index, y=btc_series.values,
+                              name="BTC price (USD)",
+                              line=dict(color=OAK_CREAM, width=1.5, dash="dot")),
+                   secondary_y=True)
+    fig2 = style_plotly(fig2, height=400)
+    fig2.update_yaxes(title_text="BTC holding", secondary_y=False, tickformat=",.4f")
+    fig2.update_yaxes(title_text="BTC price (USD)", secondary_y=True,
+                      tickformat=",.0f", showgrid=False)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # =====================================================================
+    # Dividends by Year
+    # =====================================================================
+    if not divs.empty:
+        st.markdown("## Dividend Income by Year")
+        # Compute actual cashflows received based on shares over time
+        # (approximation: shares at ex-date — using ts via interpolation is overkill)
+        # Use the initial share counts at start day for approximate display
+        # Actually we want to use the actual shares from simulation - need to track
+        # For simplicity, compute from prices_clean shares at start (approximation)
+        smi_shares_init = {}
+        prices_local = prices[[t for t in weights if t in prices.columns]].dropna()
+        first_day = prices_local.index[0]
+        if weighting_method.startswith("Equal"):
+            w_dict = {t: 5.0 for t in weights}
+        else:
+            w_dict = {t: min(weights[t], 18.0) for t in weights}
+        w_norm = pd.Series(w_dict) / sum(w_dict.values())
+        for t in prices_local.columns:
+            smi_shares_init[t] = (initial_capital * (1 - initial_btc_pct) * w_norm[t]) / prices_local.loc[first_day, t]
+        div_yearly = divs.copy()
+        div_yearly["year"] = pd.to_datetime(div_yearly["date"]).dt.year
+        div_yearly["cash_chf"] = div_yearly.apply(
+            lambda r: smi_shares_init.get(r["ticker"], 0) * r["dividend_per_share"], axis=1
+        )
+        agg = div_yearly.groupby(["year", "ticker"])["cash_chf"].sum().reset_index()
+        fig3 = go.Figure()
+        tickers_sorted = sorted(agg["ticker"].unique(),
+                                key=lambda t: -agg[agg["ticker"]==t]["cash_chf"].sum())
+        for i, t in enumerate(tickers_sorted):
+            sub = agg[agg["ticker"] == t]
+            name = SMI_CONSTITUENTS.get(t, (t,))[0]
+            fig3.add_trace(go.Bar(x=sub["year"], y=sub["cash_chf"], name=name,
+                marker=dict(color=CHART_BAR_COLORS[i % len(CHART_BAR_COLORS)],
+                            line=dict(color=OAK_GREEN_2, width=0.5))))
+        fig3.update_layout(barmode="stack")
+        fig3 = style_plotly(fig3, height=420)
+        fig3.update_xaxes(title_text="Year", dtick=1)
+        fig3.update_yaxes(title_text="Dividends (CHF, approx.)", tickformat=",.0f")
+        st.plotly_chart(fig3, use_container_width=True)
+        st.caption("Approximation based on initial share counts. Actual reinvested dividends in simulation differ due to weight drift and rebalances.")
+
+    # =====================================================================
+    # Detail tables
+    # =====================================================================
+    st.markdown("## Transaction Detail")
+    with st.expander("BTC Transactions (Buy & Sell)"):
+        if not txs.empty:
+            tx_disp = txs.copy()
+            tx_disp["date"] = pd.to_datetime(tx_disp["date"]).dt.strftime("%Y-%m-%d")
+            st.dataframe(tx_disp, use_container_width=True, height=400)
+            st.download_button("Download CSV", tx_disp.to_csv(index=False).encode(),
+                               "btc_transactions.csv", "text/csv")
+
+    with st.expander("Threshold Rebalance Events"):
+        if not evts.empty:
+            evt_disp = evts.copy()
+            evt_disp["date"] = pd.to_datetime(evt_disp["date"]).dt.strftime("%Y-%m-%d")
+            evt_disp["btc_pct_before"] = (evt_disp["btc_pct_before"] * 100).round(2).astype(str) + "%"
+            evt_disp["btc_pct_after"] = (evt_disp["btc_pct_after"] * 100).round(2).astype(str) + "%"
+            st.dataframe(evt_disp, use_container_width=True, height=300)
+            st.download_button("Download CSV", evts.to_csv(index=False).encode(),
+                               "threshold_events.csv", "text/csv")
+        else:
+            st.info("No threshold rebalances triggered in this period.")
+
+    with st.expander("Daily Portfolio Time Series"):
+        df_export = ts.reset_index()
+        st.dataframe(df_export.tail(50), use_container_width=True)
+        st.download_button("Download Full CSV", df_export.to_csv(index=False).encode(),
+                           "portfolio_timeseries.csv", "text/csv")
+
+    with st.expander("Benchmarks · Daily Series (Top 10 TR & Price)"):
+        if not bench.empty:
+            bench_export = bench.reset_index()
+            st.dataframe(bench_export.tail(50), use_container_width=True)
+            st.download_button("Download Benchmarks CSV",
+                               bench_export.to_csv(index=False).encode(),
+                               "benchmarks.csv", "text/csv")
+
+    footer()
+
+else:
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        st.markdown("### Strategy Logic")
+        st.markdown(f"""
+<div style='color:{OAK_CREAM_DIM}; line-height:1.7;'>
+<strong style='color:{OAK_CREAM};'>Universe.</strong> Concentrated portfolio of the 10
+highest-yielding equities from the combined SMI &amp; SPI universe — predominantly
+insurance, telecom, banking, real estate and utilities. Equal-weighted by default.<br><br>
+<strong style='color:{OAK_CREAM};'>Initial allocation.</strong> Capital split at day 0
+between Equity Sleeve (10 dividend titles) and Bitcoin Sleeve (target % via spot purchase).<br><br>
+<strong style='color:{OAK_CREAM};'>Dividend harvesting.</strong> Each dividend collected in CHF
+and split into N monthly tranches (DCA), bought at month-end into BTC via USDCHF FX.
+High-yield universe generates ~2× the dividend stream of the broader SMI.<br><br>
+<strong style='color:{OAK_CREAM};'>Equity rebalancing.</strong> Quarterly return to target
+weights to maintain diversification across the 10 names.<br><br>
+<strong style='color:{OAK_CREAM};'>Risk management — Threshold rebalance.</strong>
+At each month-end, if BTC sleeve exceeds upper threshold, sell down to target weight.
+Proceeds reinvested across the 10 dividend titles by target weights.<br><br>
+<strong style='color:{OAK_CREAM};'>Result.</strong> High dividend yield + structural BTC exposure
+with mechanical profit-taking on outsized crypto appreciation.<br><br>
+<strong style='color:{OAK_CREAM};'>Benchmarks.</strong> Strategy (net of fees) is compared against
+<em>Top 10 Total Return</em> (same universe with full dividend reinvestment, quarterly rebalanced)
+and the <em>Top 10 Price Index</em> (no dividend reinvestment).<br><br>
+<strong style='color:{OAK_CREAM};'>Fees.</strong> Management fee accrued daily, performance fee
+charged annually on returns above a High Water Mark with a Year-1 hurdle. All risk metrics
+computed on the net-of-fees series.
+</div>
+        """, unsafe_allow_html=True)
+    with col_b:
+        st.markdown("### Default Parameters")
+        st.markdown(f"""
+<div style='color:{OAK_CREAM_DIM}; line-height:1.9;'>
+<strong style='color:{OAK_SAGE};'>Universe</strong><br>
+Top 10 — SMI &amp; SPI High Yield<br><br>
+<strong style='color:{OAK_SAGE};'>Weighting</strong><br>
+Equal Weight · 10 % per name<br><br>
+<strong style='color:{OAK_SAGE};'>Initial Allocation</strong><br>
+85 % Equity · 15 % BTC<br><br>
+<strong style='color:{OAK_SAGE};'>Upper Threshold</strong><br>
+25 % — sell-down trigger<br><br>
+<strong style='color:{OAK_SAGE};'>Target</strong><br>
+15 % — post-rebalance weight<br><br>
+<strong style='color:{OAK_SAGE};'>DCA Window</strong><br>
+12 months per dividend<br><br>
+<strong style='color:{OAK_SAGE};'>Rebalancing</strong><br>
+Quarterly (Equity) · Monthly (BTC check)<br><br>
+<strong style='color:{OAK_SAGE};'>Fees</strong><br>
+1.5 % p.a. mgmt · 15 % perf · 5 % hurdle Y1
+</div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.info("Configure parameters in the sidebar, then click **Run Backtest** to begin analysis.")
+    footer()
