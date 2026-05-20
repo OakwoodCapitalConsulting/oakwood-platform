@@ -1100,6 +1100,13 @@ if run_btn:
         st.error("No price data received.")
         st.stop()
 
+    # Renormalize weights across loaded tickers if any failed
+    loaded_tickers = list(prices.columns)
+    weights = {t: w for t, w in weights.items() if t in loaded_tickers}
+    total_w = sum(weights.values())
+    if total_w > 0:
+        weights = {t: w / total_w * 100.0 for t, w in weights.items()}
+
     rebal_dates = get_rebalance_dates(prices.index, rebalance_freq)
 
     with st.spinner("Running integrated simulation ..."):

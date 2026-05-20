@@ -50,7 +50,7 @@ CHART_BAR_COLORS = [
 SMI_CONSTITUENTS = {
     "NESN.SW": ("Nestlé", 16.5, "Consumer Staples"),
     "NOVN.SW": ("Novartis", 14.5, "Healthcare"),
-    "ROG.SW":  ("Roche", 13.0, "Healthcare"),
+    "RO.SW":   ("Roche", 13.0, "Healthcare"),
     "UBSG.SW": ("UBS Group", 7.0, "Financials"),
     "ZURN.SW": ("Zurich Insurance", 6.0, "Financials"),
     "ABBN.SW": ("ABB", 6.5, "Industrials"),
@@ -477,6 +477,8 @@ def fetch_prices(tickers, start, end):
         return pd.DataFrame()
     out = pd.DataFrame(cols)
     out = _clean_index(out)
+    # Drop columns that are entirely empty (failed / delisted tickers)
+    out = out.dropna(axis=1, how="all")
     return out.dropna(how="all")
 
 
@@ -1092,6 +1094,22 @@ if run_btn:
     if prices.empty:
         st.error("No price data received.")
         st.stop()
+
+    # Handle tickers that failed to load (delisted, ticker change, data outage)
+    loaded_tickers = list(prices.columns)
+    missing = [t for t in tickers if t not in loaded_tickers]
+    if missing:
+        missing_names = [f"{SMI_CONSTITUENTS[t][0]} ({t})" for t in missing if t in SMI_CONSTITUENTS]
+        st.warning(
+            f"⚠️ Price data unavailable for: {', '.join(missing_names)}. "
+            f"The backtest continues with the remaining {len(loaded_tickers)} titles, "
+            f"and their weights are renormalized to 100 %."
+        )
+        # Renormalize weights across the loaded tickers only
+        weights = {t: w for t, w in weights.items() if t in loaded_tickers}
+        total_w = sum(weights.values())
+        if total_w > 0:
+            weights = {t: w / total_w * 100.0 for t, w in weights.items()}
 
     rebal_dates = get_rebalance_dates(prices.index, rebalance_freq)
 
