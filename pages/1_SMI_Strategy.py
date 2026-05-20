@@ -481,19 +481,63 @@ def fetch_prices(tickers, start, end):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def _get_dividend_series(ticker_symbol):
+    """Robustly fetch a dividend Series across yfinance versions.
+    Newer yfinance versions changed internals ('PriceHistory' object has no
+    attribute '_dividends'), so we try several access paths and fall back
+    to parsing the 'Dividends' column from full history."""
+    tk = yf.Ticker(ticker_symbol)
+    # Method 1: the .dividends property (works on most versions)
+    try:
+        divs = tk.dividends
+        if divs is not None and not divs.empty:
+            return divs
+    except Exception:
+        pass
+    # Method 2: extract from .history(actions=True) Dividends column
+    try:
+        hist = tk.history(period="max", actions=True, auto_adjust=False)
+        if hist is not None and not hist.empty and "Dividends" in hist.columns:
+            divs = hist["Dividends"]
+            divs = divs[divs > 0]
+            if not divs.empty:
+                return divs
+    except Exception:
+        pass
+    # Method 3: get_dividends() method (older/alternative API)
+    try:
+        divs = tk.get_dividends()
+        if divs is not None and not divs.empty:
+            return divs
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
+
 def fetch_dividends(tickers, start, end):
     rows = []
+    failed = []
     for t in tickers:
         try:
-            divs = yf.Ticker(t).dividends
-            if divs is None or divs.empty:
+            divs = _get_dividend_series(t)
+            if divs is None or len(divs) == 0:
                 continue
             divs = _clean_index(divs)
+            # Normalize timezone-aware index to naive for comparison
+            try:
+                if divs.index.tz is not None:
+                    divs.index = divs.index.tz_localize(None)
+            except (AttributeError, TypeError):
+                pass
             divs = divs[(divs.index >= pd.Timestamp(start)) & (divs.index <= pd.Timestamp(end))]
             for d, v in divs.items():
-                rows.append({"date": d, "ticker": t, "dividend_per_share": float(v)})
-        except Exception as e:
-            st.warning(f"Dividendendaten {t}: {e}")
+                if float(v) > 0:
+                    rows.append({"date": d, "ticker": t, "dividend_per_share": float(v)})
+        except Exception:
+            failed.append(t)
+    if failed:
+        st.info(f"Dividend data unavailable for: {', '.join(failed)}. "
+                f"These titles contribute price returns only (no dividend DCA into BTC).")
     if not rows:
         return pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
     return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
@@ -1059,6 +1103,14 @@ if run_btn:
             rebal_dates, dca_months
         )
 
+    if ts is None or ts.empty or "total_value" not in ts.columns:
+        st.error(
+            "Strategy could not be executed — no valid price series was built. "
+            "This is usually a temporary Yahoo Finance data issue. Please wait a "
+            "moment and click 'Run Backtest' again, or try a shorter date range."
+        )
+        st.stop()
+
     with st.spinner("Computing SMI benchmarks ..."):
         bench = simulate_smi_benchmarks(prices, divs, initial_capital, weights, rebal_dates)
 
@@ -1071,10 +1123,6 @@ if run_btn:
             crystallization_freq=crystallization_freq,
         )
         ts["total_value_net"] = ts_net
-
-    if ts.empty:
-        st.error("Simulation failed.")
-        st.stop()
 
     # =====================================================================
     # KPIs

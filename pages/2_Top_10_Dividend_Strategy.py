@@ -495,19 +495,56 @@ def fetch_prices(tickers, start, end):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def _get_dividend_series(ticker_symbol):
+    """Robustly fetch a dividend Series across yfinance versions."""
+    tk = yf.Ticker(ticker_symbol)
+    try:
+        divs = tk.dividends
+        if divs is not None and not divs.empty:
+            return divs
+    except Exception:
+        pass
+    try:
+        hist = tk.history(period="max", actions=True, auto_adjust=False)
+        if hist is not None and not hist.empty and "Dividends" in hist.columns:
+            divs = hist["Dividends"]
+            divs = divs[divs > 0]
+            if not divs.empty:
+                return divs
+    except Exception:
+        pass
+    try:
+        divs = tk.get_dividends()
+        if divs is not None and not divs.empty:
+            return divs
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
+
 def fetch_dividends(tickers, start, end):
     rows = []
+    failed = []
     for t in tickers:
         try:
-            divs = yf.Ticker(t).dividends
-            if divs is None or divs.empty:
+            divs = _get_dividend_series(t)
+            if divs is None or len(divs) == 0:
                 continue
             divs = _clean_index(divs)
+            try:
+                if divs.index.tz is not None:
+                    divs.index = divs.index.tz_localize(None)
+            except (AttributeError, TypeError):
+                pass
             divs = divs[(divs.index >= pd.Timestamp(start)) & (divs.index <= pd.Timestamp(end))]
             for d, v in divs.items():
-                rows.append({"date": d, "ticker": t, "dividend_per_share": float(v)})
-        except Exception as e:
-            st.warning(f"Dividendendaten {t}: {e}")
+                if float(v) > 0:
+                    rows.append({"date": d, "ticker": t, "dividend_per_share": float(v)})
+        except Exception:
+            failed.append(t)
+    if failed:
+        st.info(f"Dividend data unavailable for: {', '.join(failed)}. "
+                f"These titles contribute price returns only (no dividend DCA into BTC).")
     if not rows:
         return pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
     return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
@@ -1073,11 +1110,11 @@ if run_btn:
             rebal_dates, dca_months
         )
 
-    if ts.empty:
+    if ts is None or ts.empty or "total_value" not in ts.columns:
         st.error(
-            "Strategy could not be executed. Likely cause: insufficient overlapping "
-            "price history across the universe. Check the warnings above for missing "
-            "tickers, or shorten the backtest period to a range where all titles trade."
+            "Strategy could not be executed — no valid price series was built. "
+            "This is usually a temporary Yahoo Finance data issue. Please wait a "
+            "moment and click 'Run Backtest' again, or try a shorter date range."
         )
         st.stop()
 
