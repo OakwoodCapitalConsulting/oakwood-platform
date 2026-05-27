@@ -251,6 +251,22 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .stButton > button[kind="primary"]:hover {{
     background-color: {OAK_CREAM} !important; border-color: {OAK_CREAM} !important;
 }}
+/* Secondary buttons (e.g. stress-test scenario tiles) */
+.stButton > button[kind="secondary"] {{
+    background-color: {OAK_GREEN_3} !important; color: {OAK_CREAM} !important;
+    border: 1px solid {OAK_BORDER} !important;
+    text-transform: none !important; letter-spacing: 0.02em !important;
+    font-size: 11px !important; padding: 8px 10px !important;
+    min-height: 56px !important; white-space: normal !important;
+    line-height: 1.25 !important;
+}}
+.stButton > button[kind="secondary"]:hover {{
+    border-color: {OAK_GOLD} !important; color: {OAK_CREAM} !important;
+    background-color: {OAK_GREEN} !important;
+}}
+.stButton > button[kind="secondary"] p {{
+    color: {OAK_CREAM} !important; font-size: 11px !important;
+}}
 
 [data-testid="stMetric"] {{
     background: {OAK_GREEN_2};
