@@ -10,6 +10,11 @@ Requires: reportlab, kaleido (for Plotly chart -> PNG export).
 import io
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")  # headless backend — no browser, stable on any server
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
@@ -19,6 +24,108 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
     Image, PageBreak, HRFlowable, KeepTogether
 )
+
+# Matplotlib palette matching Oakwood CI
+MPL_GREEN = "#293624"
+MPL_SAGE  = "#99A796"
+MPL_GOLD  = "#C9A961"
+MPL_CREAM = "#F5F5F1"
+MPL_BTC   = "#F7931A"
+MPL_RED   = "#B85042"
+MPL_GRID  = "#D8DCD3"
+
+
+def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_first=False):
+    """Render a line chart to PNG bytes using matplotlib (no browser needed).
+    series_dict: ordered dict-like list of (label, pandas Series, color, style)."""
+    try:
+        fig, ax = plt.subplots(figsize=(9.5, 4.2), dpi=150)
+        fig.patch.set_facecolor("white")
+        ax.set_facecolor("white")
+        for i, (label, s, color, style) in enumerate(series_dict):
+            if s is None or len(s) == 0:
+                continue
+            vals = s.values * 100 if percent else s.values
+            ax.plot(s.index, vals, label=label, color=color,
+                    linewidth=style.get("lw", 1.8),
+                    linestyle=style.get("ls", "-"),
+                    alpha=style.get("alpha", 1.0))
+            if fill_first and i == 0:
+                ax.fill_between(s.index, vals, alpha=0.08, color=color)
+        ax.set_ylabel(ylabel, fontsize=9, color="#2A2A26")
+        ax.tick_params(labelsize=8, colors="#5C6B57")
+        ax.grid(True, color=MPL_GRID, linewidth=0.6, alpha=0.8)
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+        for spine in ["left", "bottom"]:
+            ax.spines[spine].set_color(MPL_GRID)
+        if percent:
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+        else:
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+        leg = ax.legend(fontsize=7.5, loc="best", frameon=False)
+        if leg:
+            for text in leg.get_texts():
+                text.set_color("#2A2A26")
+        try:
+            ax.xaxis.set_major_locator(mdates.YearLocator())
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+        except Exception:
+            pass
+        fig.tight_layout(pad=1.2)
+        bio = io.BytesIO()
+        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight")
+        plt.close(fig)
+        bio.seek(0)
+        return bio.getvalue()
+    except Exception:
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None
+
+
+def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
+    """Render a bar chart (e.g. yearly returns) to PNG bytes."""
+    try:
+        fig, ax = plt.subplots(figsize=(9.5, 4.0), dpi=150)
+        fig.patch.set_facecolor("white")
+        ax.set_facecolor("white")
+        bar_colors = [MPL_SAGE if v >= 0 else MPL_RED for v in values]
+        ax.bar(range(len(values)), values, color=bar_colors,
+               edgecolor=MPL_GREEN, linewidth=0.5)
+        ax.set_xticks(range(len(x_labels)))
+        ax.set_xticklabels(x_labels, fontsize=8, color="#5C6B57")
+        ax.set_ylabel(ylabel, fontsize=9, color="#2A2A26")
+        ax.tick_params(labelsize=8, colors="#5C6B57")
+        ax.grid(True, axis="y", color=MPL_GRID, linewidth=0.6, alpha=0.8)
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+        for spine in ["left", "bottom"]:
+            ax.spines[spine].set_color(MPL_GRID)
+        ax.axhline(0, color="#5C6B57", linewidth=0.8)
+        if hurdle is not None:
+            ax.axhline(hurdle, color=MPL_GOLD, linewidth=1.3, linestyle="--",
+                       label=f"Year-1 Hurdle {hurdle:.0f}%")
+            leg = ax.legend(fontsize=7.5, frameon=False)
+            if leg:
+                for t in leg.get_texts():
+                    t.set_color("#2A2A26")
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+        fig.tight_layout(pad=1.2)
+        bio = io.BytesIO()
+        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight")
+        plt.close(fig)
+        bio.seek(0)
+        return bio.getvalue()
+    except Exception:
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Brand palette (reportlab Color objects)
@@ -83,15 +190,13 @@ def _styles():
     return styles
 
 
-def _fig_to_image(fig, width_mm, height_mm, scale=2):
-    """Convert a Plotly figure to a reportlab Image flowable via kaleido."""
+def _png_to_image(png_bytes, width_mm, height_mm):
+    """Wrap pre-rendered PNG bytes into a reportlab Image flowable."""
+    if not png_bytes:
+        return None
     try:
-        png_bytes = fig.to_image(format="png", scale=scale,
-                                 width=int(width_mm / mm * 72 / 25.4 * 4),
-                                 height=int(height_mm / mm * 72 / 25.4 * 4))
         bio = io.BytesIO(png_bytes)
-        img = Image(bio, width=width_mm * mm, height=height_mm * mm)
-        return img
+        return Image(bio, width=width_mm * mm, height=height_mm * mm)
     except Exception:
         return None
 
@@ -236,14 +341,20 @@ def build_tearsheet(
 
     # ===== PAGE 2: Charts =====
     story.append(Paragraph("Portfolio Evolution &amp; Risk Charts", styles["h2"]))
-    for title, fig in figures:
-        if fig is None:
-            continue
-        img = _fig_to_image(fig, width_mm=170, height_mm=80)
+    any_chart = False
+    for title, png_bytes in figures:
+        img = _png_to_image(png_bytes, width_mm=170, height_mm=80)
         if img is not None:
+            any_chart = True
             story.append(Paragraph(title, styles["h3"]))
             story.append(img)
             story.append(Spacer(1, 8))
+    if not any_chart:
+        story.append(Paragraph(
+            "Charts could not be embedded in this PDF (chart rendering engine "
+            "unavailable in the current environment). All numerical data is "
+            "provided in full in the tables on the following pages.",
+            styles["body"]))
 
     story.append(PageBreak())
 

@@ -77,6 +77,27 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 [data-testid="stSidebar"] {{ background-color: {OAK_GREEN_2}; border-right: 1px solid {OAK_BORDER}; }}
 [data-testid="stSidebar"] * {{ color: {OAK_CREAM} !important; }}
 
+/* Sidebar page navigation links (Streamlit multipage nav) */
+[data-testid="stSidebarNav"] a {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebarNav"] a span {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebarNav"] a:hover {{ background-color: {OAK_GREEN_3} !important; }}
+[data-testid="stSidebarNav"] li div a span {{ color: {OAK_CREAM} !important; }}
+
+/* page_link cards ("Open ... Strategy") */
+[data-testid="stPageLink"] a, [data-testid="stPageLink"] *,
+a[data-testid="stPageLink-NavLink"], a[data-testid="stPageLink-NavLink"] * {{
+    color: {OAK_CREAM} !important;
+}}
+[data-testid="stPageLink"] {{
+    background-color: {OAK_GREEN_3};
+    border: 1px solid {OAK_BORDER};
+    border-radius: 3px;
+}}
+[data-testid="stPageLink"]:hover {{
+    border-color: {OAK_GOLD};
+}}
+[data-testid="stPageLink"] p {{ color: {OAK_CREAM} !important; font-weight: 600; }}
+
 /* Strategy cards */
 .strategy-card {{
     background: {OAK_GREEN_2};

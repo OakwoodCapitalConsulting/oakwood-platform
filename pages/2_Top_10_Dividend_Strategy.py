@@ -200,6 +200,12 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 
 [data-testid="stSidebar"] {{ background-color: {OAK_GREEN_2}; border-right: 1px solid {OAK_BORDER}; }}
 [data-testid="stSidebar"] * {{ color: {OAK_CREAM} !important; }}
+
+/* Sidebar page navigation links (multipage nav) */
+[data-testid="stSidebarNav"] a {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebarNav"] a span {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebarNav"] a:hover {{ background-color: {OAK_GREEN_3} !important; }}
+[data-testid="stSidebarNav"] li div a span {{ color: {OAK_CREAM} !important; }}
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {{
     color: {OAK_CREAM} !important;
     font-family: 'Cormorant Garamond', Georgia, serif !important;
@@ -1690,15 +1696,37 @@ if run_btn:
     if st.button("Generate PDF Tearsheet", use_container_width=False):
         with st.spinner("Building PDF tearsheet ..."):
             try:
-                from pdf_report import build_tearsheet
+                from pdf_report import (build_tearsheet, render_line_chart,
+                                        render_bar_chart)
 
-                pdf_figures = [
-                    ("Portfolio Evolution vs. Benchmarks", fig),
-                    ("Drawdown Analysis", fig_dd),
-                    ("Rolling Volatility (60-day, annualized)", fig_vol),
+                pdf_figures = []
+                _evo = [
+                    ("Strategy (Net of Fees)", ts["total_value_net"], OAK_GOLD, {"lw": 2.2}),
                 ]
-                if "fig_yr" in dir():
-                    pdf_figures.append(("Yearly Performance & High Water Mark", fig_yr))
+                if not bench.empty:
+                    _evo.append(("Top 10 Total Return", bench["smi_tr"], OAK_SAGE, {"lw": 1.5, "ls": "--"}))
+                    _evo.append(("Top 10 Price Index", bench["smi_price"], "#7D8A78", {"lw": 1.2, "ls": ":"}))
+                png1 = render_line_chart(_evo, ylabel="Value (CHF)", fill_first=True)
+                pdf_figures.append(("Portfolio Evolution vs. Benchmarks", png1))
+
+                dd_strat = compute_drawdown(ts["total_value_net"])
+                _dd = [("Strategy (Net)", dd_strat, OAK_GOLD, {"lw": 1.8})]
+                if not bench.empty:
+                    _dd.append(("Top 10 Total Return", compute_drawdown(bench["smi_tr"]), OAK_SAGE, {"lw": 1.3, "ls": "--"}))
+                png2 = render_line_chart(_dd, ylabel="Drawdown", percent=True, fill_first=True)
+                pdf_figures.append(("Drawdown Analysis", png2))
+
+                try:
+                    yearly_net = ts["total_value_net"].resample("YE").last()
+                    yearly_ret = yearly_net.pct_change()
+                    yearly_ret.iloc[0] = yearly_net.iloc[0] / initial_capital - 1
+                    yr_labels = [str(y) for y in yearly_net.index.year]
+                    yr_vals = list(yearly_ret.values * 100)
+                    png3 = render_bar_chart(yr_labels, yr_vals, ylabel="Annual Return (Net)",
+                                            hurdle=hwm_hurdle_pct * 100)
+                    pdf_figures.append(("Yearly Performance & High Water Mark", png3))
+                except Exception:
+                    pass
 
                 def _row(metric, key, fmt):
                     s = strat_m.get(key)
