@@ -1666,6 +1666,210 @@ if _show_results:
         fig_yr.update_yaxes(title_text="Annual Return (Net)", ticksuffix="%")
         st.plotly_chart(fig_yr, use_container_width=True)
 
+    # =====================================================================
+    # Parameter Sensitivity Analysis (Heatmap)
+    # =====================================================================
+    st.markdown("## Parameter Sensitivity")
+    st.markdown(
+        f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
+        "Robustness check: re-runs the backtest across a grid of initial BTC "
+        "allocations and rebalancing thresholds, holding all other parameters "
+        "fixed. Shows how net CAGR and maximum drawdown respond to the two key "
+        "risk levers — a single strong path means little if nearby parameters "
+        "collapse.</p>",
+        unsafe_allow_html=True
+    )
+
+    if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
+        # Grids: initial BTC weight × upper threshold
+        btc_grid = [0.05, 0.10, 0.15, 0.20, 0.25]
+        thr_grid = [0.20, 0.25, 0.30, 0.35]
+        # Ensure target < threshold for each cell; keep target = current target
+        # but clamp below the threshold being tested.
+        cagr_matrix = []
+        dd_matrix = []
+        prog = st.progress(0.0, text="Running grid backtests ...")
+        total_cells = len(btc_grid) * len(thr_grid)
+        done = 0
+        for b in btc_grid:
+            cagr_row = []
+            dd_row = []
+            for thr in thr_grid:
+                tgt = min(target_btc_pct, thr - 0.05)
+                if tgt <= 0:
+                    tgt = thr * 0.6
+                try:
+                    ts_g, _, _ = run_strategy(
+                        prices, divs, btc_series, fx,
+                        initial_capital, weights,
+                        b, thr, tgt,
+                        rebal_dates, dca_months, tx_cost_bps=tx_cost_bps
+                    )
+                    if ts_g is not None and not ts_g.empty and "total_value" in ts_g.columns:
+                        net_g, _, _, _ = apply_fees(
+                            ts_g["total_value"], initial_capital,
+                            mgmt_fee_annual=mgmt_fee_pct, perf_fee_rate=perf_fee_pct,
+                            hwm_hurdle=hwm_hurdle_pct,
+                            crystallization_freq=crystallization_freq,
+                            hurdle_type=hurdle_type,
+                        )
+                        m_g = compute_risk_metrics(net_g, risk_free_rate)
+                        cagr_row.append(m_g.get("cagr", float("nan")) * 100)
+                        dd_row.append(m_g.get("max_drawdown", float("nan")) * 100)
+                    else:
+                        cagr_row.append(float("nan"))
+                        dd_row.append(float("nan"))
+                except Exception:
+                    cagr_row.append(float("nan"))
+                    dd_row.append(float("nan"))
+                done += 1
+                prog.progress(done / total_cells, text=f"Running grid backtests ... {done}/{total_cells}")
+            cagr_matrix.append(cagr_row)
+            dd_matrix.append(dd_row)
+        prog.empty()
+
+        x_labels = [f"{int(t*100)}%" for t in thr_grid]
+        y_labels = [f"{int(b*100)}%" for b in btc_grid]
+
+        sens_col1, sens_col2 = st.columns(2)
+        with sens_col1:
+            fig_cagr = go.Figure(data=go.Heatmap(
+                z=cagr_matrix, x=x_labels, y=y_labels,
+                colorscale=[[0, OAK_RED], [0.5, OAK_GREEN_3], [1, OAK_GOLD]],
+                text=[[f"{v:.1f}%" for v in row] for row in cagr_matrix],
+                texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
+                colorbar=dict(title="CAGR %", tickfont=dict(color=OAK_CREAM)),
+                hovertemplate="BTC init %{y} · Threshold %{x}<br>Net CAGR %{z:.2f}%<extra></extra>",
+            ))
+            fig_cagr.update_layout(title="Net CAGR (%)")
+            fig_cagr = style_plotly(fig_cagr, height=380)
+            fig_cagr.update_xaxes(title_text="Upper Threshold")
+            fig_cagr.update_yaxes(title_text="Initial BTC %")
+            st.plotly_chart(fig_cagr, use_container_width=True)
+
+        with sens_col2:
+            fig_dd = go.Figure(data=go.Heatmap(
+                z=dd_matrix, x=x_labels, y=y_labels,
+                colorscale=[[0, OAK_RED], [1, OAK_GREEN_3]],
+                text=[[f"{v:.1f}%" for v in row] for row in dd_matrix],
+                texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
+                colorbar=dict(title="Max DD %", tickfont=dict(color=OAK_CREAM)),
+                hovertemplate="BTC init %{y} · Threshold %{x}<br>Max Drawdown %{z:.2f}%<extra></extra>",
+            ))
+            fig_dd.update_layout(title="Maximum Drawdown (%)")
+            fig_dd = style_plotly(fig_dd, height=380)
+            fig_dd.update_xaxes(title_text="Upper Threshold")
+            fig_dd.update_yaxes(title_text="Initial BTC %")
+            st.plotly_chart(fig_dd, use_container_width=True)
+
+        st.markdown(
+            f"<p style='color:{OAK_SAGE_DIM}; font-size:11px;'>"
+            "Rows: initial BTC allocation · Columns: BTC upper threshold. "
+            "All other parameters held at current sidebar values. The rebalance "
+            "target is clamped to stay below each tested threshold.</p>",
+            unsafe_allow_html=True
+        )
+
+    # =====================================================================
+    # Monte-Carlo Forward Projection
+    # =====================================================================
+    st.markdown("## Monte-Carlo Projection")
+    st.markdown(
+        f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
+        "Forward-looking simulation: bootstraps the strategy's historical daily "
+        "net returns to generate thousands of possible future paths, showing the "
+        "range of outcomes as percentile bands. This is a statistical "
+        "illustration based on past behaviour — <strong>not a forecast</strong>.</p>",
+        unsafe_allow_html=True
+    )
+
+    mc_col1, mc_col2, mc_col3 = st.columns(3)
+    with mc_col1:
+        mc_years = st.slider("Projection Horizon (years)", 1, 10, 5, key="mc_years")
+    with mc_col2:
+        mc_paths = st.select_slider("Number of Paths", options=[500, 1000, 2000, 5000],
+                                    value=1000, key="mc_paths")
+    with mc_col3:
+        mc_method = st.selectbox("Method", ["Bootstrap (historical)", "Normal (parametric)"],
+                                 key="mc_method",
+                                 help="Bootstrap resamples actual historical daily returns "
+                                      "(keeps fat tails). Normal assumes Gaussian returns "
+                                      "with the same mean/volatility.")
+
+    if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
+        net_series = ts["total_value_net"]
+        daily_ret = net_series.pct_change().dropna().values
+        if len(daily_ret) < 30:
+            st.warning("Not enough history for a meaningful projection.")
+        else:
+            start_value = float(net_series.iloc[-1])
+            horizon_days = int(mc_years * 252)
+            n_paths = int(mc_paths)
+            rng = np.random.default_rng(42)
+
+            if mc_method.startswith("Bootstrap"):
+                # Resample daily returns with replacement
+                sampled = rng.choice(daily_ret, size=(n_paths, horizon_days), replace=True)
+            else:
+                mu = float(np.mean(daily_ret))
+                sigma = float(np.std(daily_ret))
+                sampled = rng.normal(mu, sigma, size=(n_paths, horizon_days))
+
+            # Cumulative paths
+            cum = start_value * np.cumprod(1.0 + sampled, axis=1)
+            # Percentile bands across paths at each time step
+            pcts = [5, 25, 50, 75, 95]
+            bands = {p: np.percentile(cum, p, axis=0) for p in pcts}
+
+            future_idx = pd.bdate_range(net_series.index[-1], periods=horizon_days + 1, freq="B")[1:]
+
+            fig_mc = go.Figure()
+            # Shaded 5-95 band
+            fig_mc.add_trace(go.Scatter(
+                x=future_idx, y=bands[95], mode="lines",
+                line=dict(width=0), showlegend=False, hoverinfo="skip"))
+            fig_mc.add_trace(go.Scatter(
+                x=future_idx, y=bands[5], mode="lines", fill="tonexty",
+                fillcolor="rgba(153,167,150,0.15)", line=dict(width=0),
+                name="5th–95th percentile"))
+            # 25-75 band
+            fig_mc.add_trace(go.Scatter(
+                x=future_idx, y=bands[75], mode="lines",
+                line=dict(width=0), showlegend=False, hoverinfo="skip"))
+            fig_mc.add_trace(go.Scatter(
+                x=future_idx, y=bands[25], mode="lines", fill="tonexty",
+                fillcolor="rgba(153,167,150,0.30)", line=dict(width=0),
+                name="25th–75th percentile"))
+            # Median
+            fig_mc.add_trace(go.Scatter(
+                x=future_idx, y=bands[50], mode="lines",
+                line=dict(color=OAK_GOLD, width=2.5), name="Median path"))
+            fig_mc = style_plotly(fig_mc, height=420)
+            fig_mc.update_xaxes(title_text="Projected Date")
+            fig_mc.update_yaxes(title_text="Projected Value (CHF)", tickformat=",.0f")
+            st.plotly_chart(fig_mc, use_container_width=True)
+
+            # Summary table of terminal outcomes
+            terminal = cum[:, -1]
+            t1, t2, t3, t4, t5 = st.columns(5)
+            t1.metric("5th percentile", f"CHF {np.percentile(terminal,5):,.0f}")
+            t2.metric("25th percentile", f"CHF {np.percentile(terminal,25):,.0f}")
+            t3.metric("Median", f"CHF {np.percentile(terminal,50):,.0f}")
+            t4.metric("75th percentile", f"CHF {np.percentile(terminal,75):,.0f}")
+            t5.metric("95th percentile", f"CHF {np.percentile(terminal,95):,.0f}")
+
+            prob_loss = float(np.mean(terminal < start_value)) * 100
+            st.markdown(
+                f"<p style='color:{OAK_SAGE_DIM}; font-size:12px;'>"
+                f"Starting from the current net value of CHF {start_value:,.0f}, "
+                f"over a {mc_years}-year horizon across {n_paths:,} simulated paths: "
+                f"<strong>{prob_loss:.1f}%</strong> of paths end below today's value. "
+                "Bootstrapping preserves the historical return distribution including "
+                "its tails; results are illustrative and assume the future resembles "
+                "the backtest period — which it may not.</p>",
+                unsafe_allow_html=True
+            )
+
     # ---- Fee Detail Section ----
     st.markdown("## Fee Structure & Cost Detail")
     fee_col_a, fee_col_b = st.columns([1, 2])
