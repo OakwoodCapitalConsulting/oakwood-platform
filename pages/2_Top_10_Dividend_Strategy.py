@@ -57,16 +57,19 @@ CHART_BAR_COLORS = [
 # PSP Swiss Property (real estate yield) and Galenica (healthcare yield).
 # ---------------------------------------------------------------------------
 UNIVERSE_CONSTITUENTS = {
-    "SREN.SW":  ("Swiss Re", 10.0, "Insurance"),
-    "ZURN.SW":  ("Zurich Insurance", 10.0, "Insurance"),
-    "PSPN.SW":  ("PSP Swiss Property", 10.0, "Real Estate"),
-    "GALE.SW":  ("Galenica", 10.0, "Healthcare"),
-    "SLHN.SW":  ("Swiss Life", 10.0, "Insurance"),
-    "SCMN.SW":  ("Swisscom", 10.0, "Telecom"),
-    "VONN.SW":  ("Vontobel", 10.0, "Wealth Management"),
-    "CMBN.SW":  ("Cembra Money Bank", 10.0, "Banking"),
-    "BKW.SW":   ("BKW", 10.0, "Utilities"),
-    "MOBN.SW":  ("Mobimo", 10.0, "Real Estate"),
+    # (Name, equal-weight %, sector, approx. market cap in CHF bn)
+    # Market caps are approximate free-float values used only for the optional
+    # cap-weighting mode; equal-weight mode ignores them and uses 10% each.
+    "SREN.SW":  ("Swiss Re", 10.0, "Insurance", 35.0),
+    "ZURN.SW":  ("Zurich Insurance", 10.0, "Insurance", 80.0),
+    "PSPN.SW":  ("PSP Swiss Property", 10.0, "Real Estate", 6.5),
+    "GALE.SW":  ("Galenica", 10.0, "Healthcare", 4.0),
+    "SLHN.SW":  ("Swiss Life", 10.0, "Insurance", 22.0),
+    "SCMN.SW":  ("Swisscom", 10.0, "Telecom", 27.0),
+    "VONN.SW":  ("Vontobel", 10.0, "Wealth Management", 3.5),
+    "CMBN.SW":  ("Cembra Money Bank", 10.0, "Banking", 2.4),
+    "BKW.SW":   ("BKW", 10.0, "Utilities", 9.0),
+    "MOBN.SW":  ("Mobimo", 10.0, "Real Estate", 2.0),
 }
 
 # Backward-compatible alias so existing references still work
@@ -389,12 +392,32 @@ st.markdown(
 with st.sidebar:
     st.markdown("## Parameters")
 
+    st.markdown("### Stress-Test Scenarios")
+    st.markdown(
+        f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-6px;'>"
+        "One-click historical crisis windows. Sets the backtest period below.</p>",
+        unsafe_allow_html=True)
+    _scenarios = {
+        "COVID Crash (2020)": (date(2020, 1, 1), date(2020, 12, 31)),
+        "BTC Bear Market (2022)": (date(2022, 1, 1), date(2022, 12, 31)),
+        "Banking Crisis / CS (2023)": (date(2023, 1, 1), date(2023, 12, 31)),
+        "Full History (2018–today)": (date(2018, 1, 1), date.today()),
+    }
+    _sc_cols = st.columns(2)
+    for _i, (_label, (_s, _e)) in enumerate(_scenarios.items()):
+        if _sc_cols[_i % 2].button(_label, use_container_width=True, key=f"sc_{_i}"):
+            st.session_state["scenario_start"] = _s
+            st.session_state["scenario_end"] = _e
+            st.session_state["top10_has_run"] = True
+
     st.markdown("### Backtest Period")
-    start_date = st.date_input("Startdatum", value=date(2018, 1, 1),
+    _default_start = st.session_state.get("scenario_start", date(2018, 1, 1))
+    _default_end = st.session_state.get("scenario_end", date.today())
+    start_date = st.date_input("Startdatum", value=_default_start,
                                min_value=date(2010, 1, 1),
-                               max_value=date.today() - relativedelta(years=1))
-    end_date = st.date_input("Enddatum", value=date.today(),
-                             min_value=start_date + relativedelta(months=13),
+                               max_value=date.today() - relativedelta(months=6))
+    end_date = st.date_input("Enddatum", value=_default_end,
+                             min_value=start_date + relativedelta(months=6),
                              max_value=date.today())
     initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
                                       max_value=100_000_000, value=1_000_000, step=10_000)
@@ -412,7 +435,14 @@ with st.sidebar:
 
     st.markdown("### Equity Sleeve")
     weighting_method = st.radio("Gewichtung",
-        ["Equal Weight (10 % je Titel)", "Marktkapitalisierung (mit 18% Cap)"])
+        ["Equal Weight (10 % je Titel)",
+         "Dividendenrendite-gewichtet",
+         "Marktkapitalisierung (18 % Cap)"],
+        help="Equal Weight hält jeden der 10 Titel mit 10 %. "
+             "Dividendenrendite-gewichtet übergewichtet Titel mit höherer "
+             "historischer Dividendenrendite (passend zur Income-Idee der Strategie). "
+             "Marktkapitalisierung gewichtet nach ungefährer Unternehmensgrösse "
+             "(mit 18 %-Obergrenze je Titel).")
     rebalance_freq = st.selectbox("Rebalancing-Frequenz",
         ["Quartalsweise", "Halbjährlich", "Jährlich", "Keine"], index=0)
 
@@ -428,15 +458,26 @@ with st.sidebar:
                                help="Annualisiert. Default ~1% entspricht historischem CHF/SARON-Durchschnitt.") / 100.0
 
     st.markdown("### Costs & Fees")
+    tx_cost_bps = st.slider("Transaction Cost (bps per trade)", min_value=0.0, max_value=50.0,
+                            value=10.0, step=1.0,
+                            help="Cost in basis points applied to traded notional at each "
+                                 "trade (initial allocation, DCA buys, threshold sells, "
+                                 "rebalancing turnover). 10 bps = 0.10%.")
     mgmt_fee_pct = st.slider("Management Fee (% p.a.)", min_value=0.0, max_value=3.0,
                              value=1.5, step=0.05,
                              help="Daily accrual, deducted from NAV (1/252 per trading day).") / 100.0
     perf_fee_pct = st.slider("Performance Fee (%)", min_value=0.0, max_value=30.0,
                              value=15.0, step=1.0,
-                             help="Charged annually on gains above the High Water Mark.") / 100.0
-    hwm_hurdle_pct = st.slider("HWM Hurdle Year 1 (%)", min_value=0.0, max_value=15.0,
+                             help="Charged on gains above the High Water Mark.") / 100.0
+    hurdle_type = st.selectbox("Hurdle Type",
+                               ["Hard Hurdle", "Soft Hurdle", "No Hurdle (HWM only)"], index=0,
+                               help="Hard: performance fee only on returns ABOVE the hurdle rate. "
+                                    "Soft: once the hurdle is cleared, the fee applies to the ENTIRE "
+                                    "gain above HWM (catch-up). No Hurdle: fee on all gains above HWM.")
+    hwm_hurdle_pct = st.slider("Hurdle Rate Year 1 (%)", min_value=0.0, max_value=15.0,
                                value=5.0, step=0.5,
-                               help="Initial HWM = Initial Capital × (1 + Hurdle). After Year 1 the HWM only moves up to new highs.") / 100.0
+                               help="Annual hurdle return the strategy must beat before performance "
+                                    "fees apply in Year 1. After Year 1 the HWM governs.") / 100.0
     crystallization_freq = st.selectbox("Performance Fee Crystallization",
                                          ["Quarterly", "Semi-Annual", "Annual"], index=0,
                                          help="How often the performance fee is crystallized against the HWM.")
@@ -635,10 +676,16 @@ def get_rebalance_dates(idx, freq):
 def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                  initial_capital, weights,
                  initial_btc_pct, upper_threshold, target_btc_pct,
-                 rebalance_dates_set, dca_months):
+                 rebalance_dates_set, dca_months, tx_cost_bps=0.0):
     """Integrated daily simulation.
     Returns: timeseries_df, transactions_df, threshold_events_df
+
+    tx_cost_bps: round-trip transaction cost in basis points applied to the
+    traded notional at each trade (initial buy, DCA buys, threshold sells, and
+    quarterly equity rebalancing turnover). 10 bps = 0.10%.
     """
+    tx_cost = tx_cost_bps / 10000.0  # bps -> fraction
+    total_tx_costs = 0.0  # accumulator in CHF
     available = [t for t in weights if t in prices.columns]
     if not available:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -684,13 +731,21 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     if btc_price_0 is None or fx_0 is None or fx_0 == 0 or btc_price_0 == 0 or initial_btc_pct == 0:
         # No initial BTC possible — full to SMI
+        cost = initial_capital * tx_cost
+        total_tx_costs += cost
+        investable = initial_capital - cost
         for t in available:
-            smi_shares[t] = (initial_capital * w[t]) / prices_clean.loc[first_day, t]
+            smi_shares[t] = (investable * w[t]) / prices_clean.loc[first_day, t]
         btc_held = 0.0
     else:
+        # Cost charged on both equity and BTC legs of the initial allocation
+        cost = initial_capital * tx_cost
+        total_tx_costs += cost
+        smi_invest = initial_smi_chf - initial_smi_chf * tx_cost
         for t in available:
-            smi_shares[t] = (initial_smi_chf * w[t]) / prices_clean.loc[first_day, t]
-        usd_0 = initial_btc_chf / fx_0
+            smi_shares[t] = (smi_invest * w[t]) / prices_clean.loc[first_day, t]
+        btc_invest = initial_btc_chf - initial_btc_chf * tx_cost
+        usd_0 = btc_invest / fx_0
         btc_held = usd_0 / btc_price_0
         transactions.append({
             "date": first_day, "type": "BUY", "reason": "INITIAL",
@@ -730,7 +785,10 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
             pending_dca = [e for e in pending_dca if e["remaining"] > 0]
 
             if total_dca_chf > 0 and btc_price_d and fx_d and fx_d > 0:
-                usd = total_dca_chf / fx_d
+                cost = total_dca_chf * tx_cost
+                total_tx_costs += cost
+                net_dca_chf = total_dca_chf - cost
+                usd = net_dca_chf / fx_d
                 btc_bought = usd / btc_price_d
                 btc_held += btc_bought
                 transactions.append({
@@ -753,9 +811,15 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     sell_btc = sell_usd / btc_price_d
                     btc_held -= sell_btc
 
-                    # Reallocate proceeds to SMI by target weights
+                    # Transaction cost on the BTC sale and the equity re-purchase
+                    # (two legs: selling BTC, buying equity with the proceeds)
+                    cost = sell_chf * tx_cost * 2
+                    total_tx_costs += cost
+                    net_to_smi = sell_chf - cost
+
+                    # Reallocate net proceeds to SMI by target weights
                     for t in available:
-                        extra_chf = sell_chf * w[t]
+                        extra_chf = net_to_smi * w[t]
                         smi_shares[t] += extra_chf / row[t]
 
                     transactions.append({
@@ -776,9 +840,24 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         # 4. Quarterly SMI rebalance (back to target weights)
         if d in rebalance_dates_set and d != first_day:
             smi_value = sum(smi_shares[t] * row[t] for t in available)
-            for t in available:
-                target_value = smi_value * w[t]
-                smi_shares[t] = target_value / row[t]
+            if smi_value > 0:
+                # Turnover = sum of absolute value changes / 2 (one-way turnover)
+                turnover_chf = 0.0
+                for t in available:
+                    current_val = smi_shares[t] * row[t]
+                    target_value = smi_value * w[t]
+                    turnover_chf += abs(target_value - current_val)
+                turnover_chf /= 2.0
+                cost = turnover_chf * tx_cost
+                total_tx_costs += cost
+                # Apply rebalance, then scale all holdings down to absorb the cost
+                for t in available:
+                    target_value = smi_value * w[t]
+                    smi_shares[t] = target_value / row[t]
+                if smi_value > 0:
+                    shrink = (smi_value - cost) / smi_value
+                    for t in available:
+                        smi_shares[t] *= shrink
 
         # 5. Record state of day
         smi_value = sum(smi_shares[t] * row[t] for t in available)
@@ -793,6 +872,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     ts = pd.DataFrame(records).set_index("date")
     txs = pd.DataFrame(transactions) if transactions else pd.DataFrame()
     evts = pd.DataFrame(threshold_events) if threshold_events else pd.DataFrame()
+    ts.attrs["total_tx_costs"] = total_tx_costs
     return ts, txs, evts
 
 
@@ -859,27 +939,39 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
 
 def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                perf_fee_rate=0.15, hwm_hurdle=0.05,
-               crystallization_freq="Quarterly"):
+               crystallization_freq="Quarterly", hurdle_type="Hard Hurdle"):
     """Apply management fee (daily accrual) + performance fee (period-end, HWM).
+
     crystallization_freq: 'Quarterly', 'Semi-Annual', or 'Annual'.
+    hurdle_type:
+      - 'Hard Hurdle': performance fee charged only on the NAV gain ABOVE the
+        hurdle-grown HWM (the hurdle return is fee-free).
+      - 'Soft Hurdle': if NAV clears the hurdle-grown HWM, the fee applies to the
+        ENTIRE gain above the plain HWM (catch-up over the hurdle).
+      - 'No Hurdle (HWM only)': fee on all gains above the HWM (no hurdle).
+
     Returns (net_series, total_mgmt_chf, total_perf_chf, fee_events_df).
-    HWM starts at initial_capital × (1 + hwm_hurdle). After period 1, the HWM
-    only advances to new post-fee highs at each crystallization date.
     """
     if gross_values is None or gross_values.empty:
         return gross_values, 0.0, 0.0, pd.DataFrame()
 
     if crystallization_freq == "Quarterly":
         crystal_months = {3, 6, 9, 12}
+        periods_per_year = 4
     elif crystallization_freq == "Semi-Annual":
         crystal_months = {6, 12}
+        periods_per_year = 2
     else:
         crystal_months = {12}
+        periods_per_year = 1
+
+    # Per-period hurdle rate (annual hurdle pro-rated to the crystallization period)
+    period_hurdle = hwm_hurdle / periods_per_year if hwm_hurdle > 0 else 0.0
 
     daily_mgmt = mgmt_fee_annual / 252.0
     net = pd.Series(index=gross_values.index, dtype=float)
     net.iloc[0] = float(initial_capital)
-    hwm = float(initial_capital) * (1.0 + hwm_hurdle)
+    hwm = float(initial_capital)            # plain high water mark (post-fee highs)
     total_mgmt = 0.0
     total_perf = 0.0
     fee_events = []
@@ -890,16 +982,14 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         gross_prev = float(gross_values.iloc[i - 1])
         gross_ret = (gross_today / gross_prev - 1.0) if gross_prev > 0 else 0.0
 
-        # Apply daily return then daily management fee
         nv = net.iloc[i - 1] * (1.0 + gross_ret)
         mgmt_today = nv * daily_mgmt
         nv -= mgmt_today
         total_mgmt += mgmt_today
 
-        # Period-end check: last trading day in a crystallization month
         is_last = (i == len(gross_values) - 1)
         if is_last:
-            is_period_end = (d.month in crystal_months) or True
+            is_period_end = True
         else:
             next_d = gross_values.index[i + 1]
             is_period_end = (d.month in crystal_months and next_d.month != d.month)
@@ -907,9 +997,28 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         if is_period_end:
             quarter = (d.month - 1) // 3 + 1
             period_label = f"Q{quarter} {d.year}"
-            if nv > hwm:
-                excess = nv - hwm
-                perf_today = excess * perf_fee_rate
+
+            # The hurdle-grown threshold the NAV must clear this period
+            hurdle_threshold = hwm * (1.0 + period_hurdle)
+
+            perf_today = 0.0
+            excess = 0.0
+            if hurdle_type == "No Hurdle (HWM only)":
+                if nv > hwm:
+                    excess = nv - hwm
+                    perf_today = excess * perf_fee_rate
+            elif hurdle_type == "Soft Hurdle":
+                # Must clear the hurdle; if so, fee on the WHOLE gain above HWM
+                if nv > hurdle_threshold:
+                    excess = nv - hwm
+                    perf_today = excess * perf_fee_rate
+            else:  # Hard Hurdle (default)
+                # Fee only on the gain ABOVE the hurdle threshold
+                if nv > hurdle_threshold:
+                    excess = nv - hurdle_threshold
+                    perf_today = excess * perf_fee_rate
+
+            if perf_today > 0:
                 nv_after = nv - perf_today
                 total_perf += perf_today
                 fee_events.append({
@@ -917,7 +1026,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                     "nav_before_perf": nv, "hwm_before": hwm, "excess": excess,
                     "perf_fee": perf_today, "nav_after_perf": nv_after,
                 })
-                hwm = nv_after
+                hwm = max(hwm, nv_after)
                 nv = nv_after
             else:
                 fee_events.append({
@@ -925,6 +1034,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                     "nav_before_perf": nv, "hwm_before": hwm,
                     "excess": nv - hwm, "perf_fee": 0.0, "nav_after_perf": nv,
                 })
+                hwm = max(hwm, nv)
 
         net.iloc[i] = nv
 
@@ -1098,14 +1208,53 @@ if _show_results:
 
     if weighting_method.startswith("Equal"):
         weights = {t: 10.0 for t in tickers}
+    elif weighting_method.startswith("Dividenden"):
+        # Placeholder; real dividend-yield weights computed after data load below
+        weights = {t: 10.0 for t in tickers}
     else:
-        weights = {t: v[1] for t, v in SMI_CONSTITUENTS.items()}
-        weights = {t: min(w, 18.0) for t, w in weights.items()}
+        # Market-cap weighting with a hard 18% cap per name.
+        # Capping then renormalizing can push capped names back above the cap,
+        # so we iterate: cap, redistribute excess to uncapped names, repeat.
+        raw = {t: float(SMI_CONSTITUENTS[t][3]) for t in tickers}
+        total_cap = sum(raw.values())
+        w = {t: raw[t] / total_cap * 100.0 for t in tickers}
+        CAP = 18.0
+        for _ in range(20):
+            over = {t: v for t, v in w.items() if v > CAP + 1e-9}
+            if not over:
+                break
+            excess = sum(v - CAP for v in over.values())
+            for t in over:
+                w[t] = CAP
+            uncapped = [t for t in w if w[t] < CAP - 1e-9]
+            base = sum(w[t] for t in uncapped)
+            if base <= 0:
+                break
+            for t in uncapped:
+                w[t] += excess * (w[t] / base)
+        weights = w
 
     with st.spinner("Loading dividend universe prices ..."):
         prices = fetch_prices(tickers, start_str, end_str)
     with st.spinner("Loading dividend history ..."):
         divs = fetch_dividends(tickers, start_str, end_str)
+
+    # Dividend-yield weighting: weight each name by its trailing dividend yield
+    # (sum of dividends per share over the period / average price), normalized.
+    if weighting_method.startswith("Dividenden") and not prices.empty and not divs.empty:
+        yields = {}
+        for t in tickers:
+            if t not in prices.columns:
+                continue
+            tdivs = divs[divs["ticker"] == t]["dividend_per_share"].sum()
+            avg_price = prices[t].mean()
+            if avg_price and avg_price > 0 and tdivs > 0:
+                yields[t] = tdivs / avg_price
+        if yields and sum(yields.values()) > 0:
+            total_y = sum(yields.values())
+            # Names without yield data get a zero weight (excluded)
+            weights = {t: (yields.get(t, 0.0) / total_y * 100.0) for t in tickers}
+        # else: keep the equal-weight placeholder
     with st.spinner("Loading FX (USDCHF) ..."):
         fx = fetch_series("USDCHF=X", start_str, end_str)
     with st.spinner("Loading Bitcoin series ..."):
@@ -1158,7 +1307,7 @@ if _show_results:
             prices, divs, btc_series, fx,
             initial_capital, weights,
             initial_btc_pct, upper_threshold, target_btc_pct,
-            rebal_dates, dca_months
+            rebal_dates, dca_months, tx_cost_bps=tx_cost_bps
         )
 
     if ts is None or ts.empty or "total_value" not in ts.columns:
@@ -1179,6 +1328,7 @@ if _show_results:
             perf_fee_rate=perf_fee_pct,
             hwm_hurdle=hwm_hurdle_pct,
             crystallization_freq=crystallization_freq,
+            hurdle_type=hurdle_type,
         )
         ts["total_value_net"] = ts_net
 
@@ -1225,7 +1375,8 @@ if _show_results:
               f"net of fees")
 
     # ---- KPI Row 3: Fee breakdown ----
-    fees_total = total_mgmt_fees + total_perf_fees
+    total_tx_costs = float(ts.attrs.get("total_tx_costs", 0.0))
+    fees_total = total_mgmt_fees + total_perf_fees + total_tx_costs
     fees_total_pct_initial = (fees_total / initial_capital) * 100
     n_perf_periods = int(fee_events_df["perf_fee"].gt(0).sum()) if not fee_events_df.empty else 0
     n_perf_total_periods = int(len(fee_events_df)) if not fee_events_df.empty else 0
@@ -1235,10 +1386,10 @@ if _show_results:
               f"{mgmt_fee_pct*100:.2f}% p.a. on NAV")
     c10.metric("Total Perf Fees", f"CHF {total_perf_fees:,.0f}",
                f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged")
-    c11.metric("Total Fees Paid", f"CHF {fees_total:,.0f}",
+    c11.metric("Transaction Costs", f"CHF {total_tx_costs:,.0f}",
+               f"{tx_cost_bps:.0f} bps per trade")
+    c12.metric("Total Cost (incl. TX)", f"CHF {fees_total:,.0f}",
                f"{fees_total_pct_initial:.1f}% of initial capital")
-    c12.metric("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% / {initial_btc_pct*100:.0f}%",
-               f"Equity / BTC")
 
     # ---- KPI Row 4: Strategy mechanics ----
     n_thresholds = len(evts)
@@ -1651,10 +1802,9 @@ if _show_results:
         smi_shares_init = {}
         prices_local = prices[[t for t in weights if t in prices.columns]].dropna()
         first_day = prices_local.index[0]
-        if weighting_method.startswith("Equal"):
-            w_dict = {t: 5.0 for t in weights}
-        else:
-            w_dict = {t: min(weights[t], 18.0) for t in weights}
+        # Reuse the weights already computed above (equal or cap-weighted),
+        # renormalized across the tickers that actually have price data.
+        w_dict = {t: weights[t] for t in weights if t in prices_local.columns}
         w_norm = pd.Series(w_dict) / sum(w_dict.values())
         for t in prices_local.columns:
             smi_shares_init[t] = (initial_capital * (1 - initial_btc_pct) * w_norm[t]) / prices_local.loc[first_day, t]
@@ -1839,9 +1989,10 @@ if _show_results:
                         ("Equity Weighting", weighting_method),
                         ("Rebalancing Frequency", rebalance_freq),
                         ("DCA Window", f"{dca_months} months per dividend"),
+                        ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
                         ("Management Fee", f"{mgmt_fee_pct*100:.2f}% p.a."),
                         ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({crystallization_freq})"),
-                        ("HWM Hurdle Year 1", f"{hwm_hurdle_pct*100:.1f}%"),
+                        ("Hurdle", f"{hurdle_type}, {hwm_hurdle_pct*100:.1f}% (Year 1)"),
                         ("Risk-Free Rate", f"{risk_free_rate*100:.2f}%"),
                     ],
                     universe_rows=universe_rows,
