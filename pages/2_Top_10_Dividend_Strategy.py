@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import date
+from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 
 # ---------------------------------------------------------------------------
@@ -28,7 +28,8 @@ OAK_GREEN     = "#293624"
 OAK_GREEN_2   = "#1F2A1B"
 OAK_GREEN_3   = "#3A4A33"
 OAK_SAGE      = "#99A796"
-OAK_SAGE_DIM  = "#6B7868"
+OAK_SAGE_DIM  = "#A9B5A4"   # lightened for legibility (was #6B7868)
+OAK_AXIS      = "#6B7868"   # dark muted tone for chart axes only
 OAK_CREAM     = "#F5F5F1"
 OAK_CREAM_DIM = "#D4D4CE"
 OAK_GOLD      = "#C9A961"
@@ -116,11 +117,11 @@ def style_plotly(fig, height=500):
                     font=dict(size=11, color=OAK_CREAM)),
     )
     fig.update_xaxes(showgrid=True, gridcolor=CHART_GRID, gridwidth=1,
-                     showline=True, linewidth=1, linecolor=OAK_SAGE_DIM, zeroline=False,
+                     showline=True, linewidth=1, linecolor=OAK_AXIS, zeroline=False,
                      ticks="outside", tickfont=dict(color=OAK_CREAM_DIM, size=11),
                      title_font=dict(color=OAK_CREAM, size=12))
     fig.update_yaxes(showgrid=True, gridcolor=CHART_GRID, gridwidth=1,
-                     showline=True, linewidth=1, linecolor=OAK_SAGE_DIM, zeroline=False,
+                     showline=True, linewidth=1, linecolor=OAK_AXIS, zeroline=False,
                      ticks="outside", tickfont=dict(color=OAK_CREAM_DIM, size=11),
                      title_font=dict(color=OAK_CREAM, size=12))
     return fig
@@ -295,7 +296,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 hr {{ border-color: {OAK_BORDER} !important; margin: 32px 0 !important; }}
 .stSpinner > div {{ border-top-color: {OAK_SAGE} !important; }}
 .modebar {{ background-color: transparent !important; }}
-.modebar-btn path {{ fill: {OAK_SAGE_DIM} !important; }}
+.modebar-btn path {{ fill: {OAK_AXIS} !important; }}
 .modebar-btn:hover path {{ fill: {OAK_CREAM} !important; }}
 
 .oak-footer {{
@@ -1673,6 +1674,123 @@ if run_btn:
             st.download_button("Download Benchmarks CSV",
                                bench_export.to_csv(index=False).encode(),
                                "benchmarks.csv", "text/csv")
+
+    # =====================================================================
+    # PDF Tearsheet Export
+    # =====================================================================
+    st.markdown("## Export")
+    st.markdown(
+        f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
+        "Generate a presentation-ready PDF tearsheet with all key metrics, charts, "
+        "methodology and disclosures — suitable for internal review or qualified "
+        "investor discussions.</p>",
+        unsafe_allow_html=True
+    )
+
+    if st.button("Generate PDF Tearsheet", use_container_width=False):
+        with st.spinner("Building PDF tearsheet ..."):
+            try:
+                from pdf_report import build_tearsheet
+
+                pdf_figures = [
+                    ("Portfolio Evolution vs. Benchmarks", fig),
+                    ("Drawdown Analysis", fig_dd),
+                    ("Rolling Volatility (60-day, annualized)", fig_vol),
+                ]
+                if "fig_yr" in dir():
+                    pdf_figures.append(("Yearly Performance & High Water Mark", fig_yr))
+
+                def _row(metric, key, fmt):
+                    s = strat_m.get(key)
+                    t = tr_m.get(key) if tr_m else None
+                    p = pr_m.get(key) if pr_m else None
+                    return [metric, fmt(s), fmt(t), fmt(p)]
+
+                pct = lambda x: _fmt_pct(x) if x is not None else "—"
+                num = lambda x: _fmt_num(x) if x is not None else "—"
+
+                risk_rows = [
+                    _row("Total Return", "total_return", pct),
+                    _row("CAGR", "cagr", pct),
+                    _row("Annualized Volatility", "vol_ann", pct),
+                    _row("Downside Deviation", "downside_vol", pct),
+                    _row("Max Drawdown", "max_drawdown", pct),
+                    _row("Sharpe Ratio", "sharpe", num),
+                    _row("Sortino Ratio", "sortino", num),
+                    _row("Calmar Ratio", "calmar", num),
+                    _row("VaR 95% (monthly)", "var_95_monthly", pct),
+                    _row("CVaR 95% (monthly)", "cvar_95_monthly", pct),
+                ]
+
+                fee_rows = []
+                if not fee_events_df.empty:
+                    for _, r in fee_events_df.iterrows():
+                        if r["perf_fee"] > 0:
+                            fee_rows.append([
+                                r.get("period", str(r.get("year", ""))),
+                                f"CHF {r['nav_before_perf']:,.0f}",
+                                f"CHF {r['hwm_before']:,.0f}",
+                                f"CHF {r['perf_fee']:,.0f}",
+                            ])
+
+                universe_rows = [[v[0], t, v[2]] for t, v in UNIVERSE_CONSTITUENTS.items()]
+
+                pdf_bytes = build_tearsheet(
+                    strategy_name="Swiss Dividend Income + Bitcoin",
+                    strategy_subtitle=(
+                        "Concentrated 10-stock portfolio of the highest-yielding equities "
+                        "from SMI and SPI, with structural BTC allocation and threshold-based "
+                        "risk management."
+                    ),
+                    period_str=f"{ts.index[0].strftime('%Y-%m-%d')} to {ts.index[-1].strftime('%Y-%m-%d')}",
+                    kpis_performance=[
+                        ("Strategy (Net)", f"CHF {strategy_net:,.0f}"),
+                        ("Net CAGR", f"{strat_net_cagr*100:.2f}%"),
+                        ("Top 10 Total Return", f"CHF {smi_tr_final:,.0f}"),
+                        ("Excess vs Top 10 TR", f"{excess_vs_tr*100:+.2f}% p.a."),
+                    ],
+                    kpis_risk=[
+                        ("Sharpe Ratio", _fmt_num(strat_m.get("sharpe"))),
+                        ("Sortino Ratio", _fmt_num(strat_m.get("sortino"))),
+                        ("Max Drawdown", _fmt_pct(strat_m.get("max_drawdown"))),
+                        ("Volatility", _fmt_pct(strat_m.get("vol_ann"))),
+                    ],
+                    fee_summary=[
+                        ("Mgmt Fees", f"CHF {total_mgmt_fees:,.0f}"),
+                        ("Perf Fees", f"CHF {total_perf_fees:,.0f}"),
+                        ("Total Fees", f"CHF {fees_total:,.0f}"),
+                        ("Fee Drag", f"{fee_drag*100:.2f}% p.a."),
+                    ],
+                    risk_table_headers=["Metric", "Strategy (Net)", "Top 10 Total Return", "Top 10 Price Index"],
+                    risk_table_rows=risk_rows,
+                    fee_table_headers=["Period", "NAV before Perf Fee", "HWM", "Perf Fee Charged"],
+                    fee_table_rows=fee_rows,
+                    figures=pdf_figures,
+                    params_summary=[
+                        ("Initial Capital", f"CHF {initial_capital:,.0f}"),
+                        ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Equity / {initial_btc_pct*100:.0f}% BTC"),
+                        ("BTC Upper Threshold", f"{upper_threshold*100:.0f}%"),
+                        ("BTC Target after Rebalance", f"{target_btc_pct*100:.0f}%"),
+                        ("Equity Weighting", weighting_method),
+                        ("Rebalancing Frequency", rebalance_freq),
+                        ("DCA Window", f"{dca_months} months per dividend"),
+                        ("Management Fee", f"{mgmt_fee_pct*100:.2f}% p.a."),
+                        ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({crystallization_freq})"),
+                        ("HWM Hurdle Year 1", f"{hwm_hurdle_pct*100:.1f}%"),
+                        ("Risk-Free Rate", f"{risk_free_rate*100:.2f}%"),
+                    ],
+                    universe_rows=universe_rows,
+                )
+
+                st.download_button(
+                    "Download PDF Tearsheet",
+                    data=pdf_bytes,
+                    file_name=f"Oakwood_Top10_Dividend_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                )
+                st.success("PDF generated. Click the download button above.")
+            except Exception as e:
+                st.error(f"PDF generation failed: {e}")
 
     footer()
 
