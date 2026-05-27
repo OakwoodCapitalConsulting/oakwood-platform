@@ -699,9 +699,18 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     w = pd.Series({t: weights[t] for t in available})
     w = w / w.sum()
-    prices_clean = prices[available].dropna()
+    # IMPORTANT: do NOT do a cross-column dropna() here — that would throw out
+    # every trading day where any one ticker is missing (e.g. Alcon listed only
+    # from April 2019, which would cut all 2018 data). Keep all dates where at
+    # least one ticker has a price; per-day we work with the active universe.
+    prices_clean = prices[available].dropna(how="all")
     if prices_clean.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    # First trading date for each ticker (the day it starts having a price).
+    # Tickers added later (e.g. Alcon spin-off Apr 2019) enter the portfolio
+    # on or after this date at the next rebalance.
+    ticker_first_date = {t: prices_clean[t].first_valid_index() for t in available}
 
     btc_prices_usd = _clean_index(btc_prices_usd.copy())
     fx_chf_usd = _clean_index(fx_chf_usd.copy())
@@ -730,10 +739,17 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     btc_price_0 = get_btc_price(first_day)
     fx_0 = get_fx(first_day)
 
+    # Subset of tickers that already have a price on the first day
+    active_t0 = [t for t in available if pd.notna(prices_clean.loc[first_day, t])]
+    if not active_t0:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    # Renormalize weights across the day-0 active universe
+    w_t0 = w[active_t0] / w[active_t0].sum()
+
     initial_smi_chf = initial_capital * (1 - initial_btc_pct)
     initial_btc_chf = initial_capital * initial_btc_pct
 
-    smi_shares = {}
+    smi_shares = {t: 0.0 for t in available}
     transactions = []
 
     if btc_price_0 is None or fx_0 is None or fx_0 == 0 or btc_price_0 == 0 or initial_btc_pct == 0:
@@ -741,16 +757,16 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         cost = initial_capital * tx_cost
         total_tx_costs += cost
         investable = initial_capital - cost
-        for t in available:
-            smi_shares[t] = (investable * w[t]) / prices_clean.loc[first_day, t]
+        for t in active_t0:
+            smi_shares[t] = (investable * w_t0[t]) / prices_clean.loc[first_day, t]
         btc_held = 0.0
     else:
         # Cost charged on both equity and BTC legs of the initial allocation
         cost = initial_capital * tx_cost
         total_tx_costs += cost
         smi_invest = initial_smi_chf - initial_smi_chf * tx_cost
-        for t in available:
-            smi_shares[t] = (smi_invest * w[t]) / prices_clean.loc[first_day, t]
+        for t in active_t0:
+            smi_shares[t] = (smi_invest * w_t0[t]) / prices_clean.loc[first_day, t]
         btc_invest = initial_btc_chf - initial_btc_chf * tx_cost
         usd_0 = btc_invest / fx_0
         btc_held = usd_0 / btc_price_0
@@ -766,13 +782,22 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     records = []
     threshold_events = []
 
+    def _active_on(d):
+        """Tickers with a valid price on day d."""
+        return [t for t in available if pd.notna(prices_clean.loc[d, t])]
+
+    def _smi_value_on(d, row):
+        """Sum portfolio value across tickers that have a price on day d."""
+        return sum(smi_shares[t] * row[t] for t in available if pd.notna(row[t]))
+
     for d in prices_clean.index:
         row = prices_clean.loc[d]
         btc_price_d = get_btc_price(d)
         fx_d = get_fx(d)
+        active_today = _active_on(d)
 
         # 1. Dividend ex-date — collect cash, queue DCA tranches
-        for t in available:
+        for t in active_today:
             key = (d, t)
             if key in div_lookup:
                 cash = smi_shares[t] * div_lookup[key]
@@ -806,7 +831,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
         # 3. Threshold check (after DCA at month-end)
         if is_month_end and btc_price_d and fx_d and fx_d > 0:
-            smi_value = sum(smi_shares[t] * row[t] for t in available)
+            smi_value = _smi_value_on(d, row)
             btc_value_chf = btc_held * btc_price_d * fx_d
             total = smi_value + btc_value_chf
             if total > 0:
@@ -824,10 +849,12 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     total_tx_costs += cost
                     net_to_smi = sell_chf - cost
 
-                    # Reallocate net proceeds to SMI by target weights
-                    for t in available:
-                        extra_chf = net_to_smi * w[t]
-                        smi_shares[t] += extra_chf / row[t]
+                    # Reallocate net proceeds to active tickers by renormalized weights
+                    if active_today:
+                        w_active = w[active_today] / w[active_today].sum()
+                        for t in active_today:
+                            extra_chf = net_to_smi * w_active[t]
+                            smi_shares[t] += extra_chf / row[t]
 
                     transactions.append({
                         "date": d, "type": "SELL", "reason": "THRESHOLD",
@@ -835,7 +862,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                         "usd_amount": -sell_usd, "btc_price_usd": btc_price_d, "usdchf": fx_d,
                     })
 
-                    smi_value_after = sum(smi_shares[t] * row[t] for t in available)
+                    smi_value_after = _smi_value_on(d, row)
                     btc_value_after = btc_held * btc_price_d * fx_d
                     total_after = smi_value_after + btc_value_after
                     threshold_events.append({
@@ -845,29 +872,32 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     })
 
         # 4. Quarterly SMI rebalance (back to target weights)
-        if d in rebalance_dates_set and d != first_day:
-            smi_value = sum(smi_shares[t] * row[t] for t in available)
+        # This is also where new index members (e.g. Alcon from Apr 2019) enter
+        # the portfolio: the active-today set grows, weights re-renormalize.
+        if d in rebalance_dates_set and d != first_day and active_today:
+            smi_value = _smi_value_on(d, row)
             if smi_value > 0:
+                w_active = w[active_today] / w[active_today].sum()
                 # Turnover = sum of absolute value changes / 2 (one-way turnover)
                 turnover_chf = 0.0
-                for t in available:
+                for t in active_today:
                     current_val = smi_shares[t] * row[t]
-                    target_value = smi_value * w[t]
+                    target_value = smi_value * w_active[t]
                     turnover_chf += abs(target_value - current_val)
                 turnover_chf /= 2.0
                 cost = turnover_chf * tx_cost
                 total_tx_costs += cost
-                # Apply rebalance, then scale all holdings down to absorb the cost
-                for t in available:
-                    target_value = smi_value * w[t]
+                # Apply rebalance to active tickers, then scale to absorb cost
+                for t in active_today:
+                    target_value = smi_value * w_active[t]
                     smi_shares[t] = target_value / row[t]
                 if smi_value > 0:
                     shrink = (smi_value - cost) / smi_value
-                    for t in available:
+                    for t in active_today:
                         smi_shares[t] *= shrink
 
         # 5. Record state of day
-        smi_value = sum(smi_shares[t] * row[t] for t in available)
+        smi_value = _smi_value_on(d, row)
         btc_value_chf = btc_held * btc_price_d * fx_d if (btc_price_d and fx_d) else 0
         total = smi_value + btc_value_chf
         records.append({
@@ -896,7 +926,9 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
 
     w = pd.Series({t: weights[t] for t in available})
     w = w / w.sum()
-    prices_clean = prices[available].dropna()
+    # Same fix as in run_strategy: keep dates where any ticker has a price,
+    # work per-day with the active universe (handles late spin-offs like Alcon).
+    prices_clean = prices[available].dropna(how="all")
     if prices_clean.empty:
         return pd.DataFrame()
 
@@ -907,20 +939,27 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
 
     first_day = prices_clean.index[0]
 
-    # Two parallel portfolios with identical starting allocations
-    shares_tr = {}
-    shares_price = {}
-    for t in available:
-        s = (initial_capital * w[t]) / prices_clean.loc[first_day, t]
+    # Subset of tickers active on day 0
+    active_t0 = [t for t in available if pd.notna(prices_clean.loc[first_day, t])]
+    if not active_t0:
+        return pd.DataFrame()
+    w_t0 = w[active_t0] / w[active_t0].sum()
+
+    # Two parallel portfolios with identical starting allocations across day-0 active tickers
+    shares_tr = {t: 0.0 for t in available}
+    shares_price = {t: 0.0 for t in available}
+    for t in active_t0:
+        s = (initial_capital * w_t0[t]) / prices_clean.loc[first_day, t]
         shares_tr[t] = s
         shares_price[t] = s
 
     records = []
     for d in prices_clean.index:
         row = prices_clean.loc[d]
+        active_today = [t for t in available if pd.notna(row[t])]
 
         # Total Return: reinvest dividends into the same stock at today's price
-        for t in available:
+        for t in active_today:
             key = (d, t)
             if key in div_lookup:
                 dps = div_lookup[key]
@@ -929,16 +968,17 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
                     shares_tr[t] += cash / row[t]
                 # Price Only: dividends discarded (no change)
 
-        # Quarterly rebalance to target weights (both portfolios)
-        if d in rebalance_dates_set and d != first_day:
-            tr_total = sum(shares_tr[t] * row[t] for t in available)
-            pr_total = sum(shares_price[t] * row[t] for t in available)
-            for t in available:
-                shares_tr[t] = (tr_total * w[t]) / row[t]
-                shares_price[t] = (pr_total * w[t]) / row[t]
+        # Quarterly rebalance to target weights, renormalized over active tickers
+        if d in rebalance_dates_set and d != first_day and active_today:
+            tr_total = sum(shares_tr[t] * row[t] for t in active_today)
+            pr_total = sum(shares_price[t] * row[t] for t in active_today)
+            w_active = w[active_today] / w[active_today].sum()
+            for t in active_today:
+                shares_tr[t] = (tr_total * w_active[t]) / row[t]
+                shares_price[t] = (pr_total * w_active[t]) / row[t]
 
-        smi_tr = sum(shares_tr[t] * row[t] for t in available)
-        smi_price = sum(shares_price[t] * row[t] for t in available)
+        smi_tr = sum(shares_tr[t] * row[t] for t in active_today)
+        smi_price = sum(shares_price[t] * row[t] for t in active_today)
         records.append({"date": d, "smi_tr": smi_tr, "smi_price": smi_price})
 
     return pd.DataFrame(records).set_index("date")
@@ -1981,15 +2021,20 @@ if _show_results:
         # Actually we want to use the actual shares from simulation - need to track
         # For simplicity, compute from prices_clean shares at start (approximation)
         smi_shares_init = {}
-        prices_local = prices[[t for t in weights if t in prices.columns]].dropna()
+        prices_local = prices[[t for t in weights if t in prices.columns]].dropna(how="all")
         first_day = prices_local.index[0]
         if weighting_method.startswith("Equal"):
             w_dict = {t: 5.0 for t in weights}
         else:
             w_dict = {t: min(weights[t], 18.0) for t in weights}
         w_norm = pd.Series(w_dict) / sum(w_dict.values())
-        for t in prices_local.columns:
-            smi_shares_init[t] = (initial_capital * (1 - initial_btc_pct) * w_norm[t]) / prices_local.loc[first_day, t]
+        # Use only tickers that are listed on day 0 for the initial-share approximation
+        active_t0 = [t for t in prices_local.columns
+                     if pd.notna(prices_local.loc[first_day, t])]
+        if active_t0:
+            w_norm_active = w_norm[active_t0] / w_norm[active_t0].sum()
+            for t in active_t0:
+                smi_shares_init[t] = (initial_capital * (1 - initial_btc_pct) * w_norm_active[t]) / prices_local.loc[first_day, t]
         div_yearly = divs.copy()
         div_yearly["year"] = pd.to_datetime(div_yearly["date"]).dt.year
         div_yearly["cash_chf"] = div_yearly.apply(
