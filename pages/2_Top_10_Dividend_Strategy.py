@@ -445,6 +445,10 @@ with st.sidebar:
     run_btn = st.button("Run Backtest", type="primary", use_container_width=True,
                         disabled=(target_btc_pct >= upper_threshold))
 
+    if run_btn:
+        st.session_state["top10_has_run"] = True
+    _show_results = run_btn or st.session_state.get("top10_has_run", False)
+
     st.markdown(
         f"<div style='font-size:10px; color:{OAK_SAGE_DIM}; text-transform:uppercase; "
         f"letter-spacing:0.12em; padding-top:24px; margin-top:24px; "
@@ -459,49 +463,82 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Data fetching
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=3600, show_spinner=False)
+import time as _time
+
+
+def _download_with_retry(tickers, start, end, attempts=3):
+    """Download with retry/backoff to survive Yahoo Finance rate limiting."""
+    for i in range(attempts):
+        try:
+            data = yf.download(tickers, start=start, end=end, progress=False,
+                               auto_adjust=False, actions=False,
+                               group_by="ticker", threads=False)
+            if data is not None and not data.empty:
+                return data
+        except Exception:
+            pass
+        if i < attempts - 1:
+            _time.sleep(2 * (2 ** i))
+    return None
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_prices(tickers, start, end):
-    data = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=False,
-                       actions=False, group_by="ticker", threads=False)
-    if data is None or data.empty:
-        return pd.DataFrame()
+    data = _download_with_retry(tickers, start, end)
     cols = {}
-    if isinstance(data.columns, pd.MultiIndex):
-        level0 = data.columns.get_level_values(0).unique().tolist()
-        for t in tickers:
-            if t in level0:
-                try:
-                    sub = data[t]
-                    if "Adj Close" in sub.columns:
-                        cols[t] = sub["Adj Close"]
-                    elif "Close" in sub.columns:
-                        cols[t] = sub["Close"]
-                except Exception:
-                    pass
-    else:
-        col = "Adj Close" if "Adj Close" in data.columns else "Close"
-        if col in data.columns:
-            cols[tickers[0]] = data[col]
+    if data is not None and not data.empty:
+        if isinstance(data.columns, pd.MultiIndex):
+            level0 = data.columns.get_level_values(0).unique().tolist()
+            for t in tickers:
+                if t in level0:
+                    try:
+                        sub = data[t]
+                        if "Adj Close" in sub.columns:
+                            cols[t] = sub["Adj Close"]
+                        elif "Close" in sub.columns:
+                            cols[t] = sub["Close"]
+                    except Exception:
+                        pass
+        else:
+            col = "Adj Close" if "Adj Close" in data.columns else "Close"
+            if col in data.columns:
+                cols[tickers[0]] = data[col]
+
+    # Per-ticker fallback for tickers the batch download missed
+    missing = [t for t in tickers if t not in cols]
+    for t in missing:
+        try:
+            _time.sleep(0.5)
+            single = yf.download(t, start=start, end=end, progress=False,
+                                 auto_adjust=False, actions=False, threads=False)
+            if single is not None and not single.empty:
+                if isinstance(single.columns, pd.MultiIndex):
+                    single.columns = single.columns.get_level_values(0)
+                if "Adj Close" in single.columns:
+                    cols[t] = single["Adj Close"]
+                elif "Close" in single.columns:
+                    cols[t] = single["Close"]
+        except Exception:
+            pass
+
     if not cols:
         return pd.DataFrame()
     out = pd.DataFrame(cols)
     out = _clean_index(out)
-    # Drop columns that are entirely NaN (failed downloads / delisted tickers)
     out = out.dropna(axis=1, how="all")
     if out.empty or out.shape[1] == 0:
         return pd.DataFrame()
-    # Warn user about any tickers that failed
-    missing = [t for t in tickers if t not in out.columns]
-    if missing:
+    still_missing = [t for t in tickers if t not in out.columns]
+    if still_missing:
         st.warning(
-            f"⚠️ Could not load price data for: {', '.join(missing)}. "
-            f"These titles will be excluded from the backtest. "
-            f"Possible cause: delisting, ticker change, or temporary data issue."
+            f"⚠️ Could not load price data for: {', '.join(still_missing)}. "
+            f"These titles will be excluded and remaining weights renormalized. "
+            f"Possible cause: rate limiting, delisting, or ticker change."
         )
     return out.dropna(how="all")
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def _get_dividend_series(ticker_symbol):
     """Robustly fetch a dividend Series across yfinance versions."""
     tk = yf.Ticker(ticker_symbol)
@@ -557,7 +594,7 @@ def fetch_dividends(tickers, start, end):
     return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_series(ticker, start, end):
     df = yf.download(ticker, start=start, end=end, progress=False,
                      auto_adjust=False, threads=False)
@@ -1054,7 +1091,7 @@ def footer():
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-if run_btn:
+if _show_results:
     tickers = list(SMI_CONSTITUENTS.keys())
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
