@@ -98,9 +98,10 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
     series_dict: ordered dict-like list of (label, pandas Series, color, style)."""
     try:
         plt.rcParams["font.family"] = "DejaVu Sans"
+        PANEL = "#222E1C"   # matches C_PANEL — chart blends into the dark panel
         fig, ax = plt.subplots(figsize=(9.5, 4.0), dpi=170)
-        fig.patch.set_facecolor("white")
-        ax.set_facecolor("#FCFCFA")
+        fig.patch.set_facecolor(PANEL)
+        ax.set_facecolor(PANEL)
         for i, (label, s, color, style) in enumerate(series_dict):
             if s is None or len(s) == 0:
                 continue
@@ -111,15 +112,15 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
                     alpha=style.get("alpha", 1.0),
                     solid_capstyle="round")
             if fill_first and i == 0:
-                ax.fill_between(s.index, vals, alpha=0.10, color=color, linewidth=0)
-        ax.set_ylabel(ylabel, fontsize=8.5, color="#5C6B57", labelpad=8)
-        ax.tick_params(labelsize=8, colors="#8A958466", length=0)
-        ax.tick_params(axis="both", labelcolor="#5C6B57")
-        ax.grid(True, color="#E4E7E0", linewidth=0.6, alpha=0.9)
+                ax.fill_between(s.index, vals, alpha=0.14, color=color, linewidth=0)
+        ax.set_ylabel(ylabel, fontsize=8.5, color="#99A796", labelpad=8)
+        ax.tick_params(labelsize=8, colors="#99A796", length=0)
+        ax.tick_params(axis="both", labelcolor="#A9B5A4")
+        ax.grid(True, color="#3A4A33", linewidth=0.6, alpha=0.55)
         ax.set_axisbelow(True)
         for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
-        ax.spines["bottom"].set_color("#D8DCD3")
+        ax.spines["bottom"].set_color("#3A4A33")
         if percent:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
         else:
@@ -129,7 +130,7 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
                         ncol=len(series_dict) if len(series_dict) <= 3 else 2)
         if leg:
             for text in leg.get_texts():
-                text.set_color("#3A4A33")
+                text.set_color("#D4D4CE")
         try:
             ax.xaxis.set_major_locator(mdates.YearLocator())
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
@@ -137,7 +138,7 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
             pass
         fig.tight_layout(pad=1.0)
         bio = io.BytesIO()
-        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight", dpi=170)
+        fig.savefig(bio, format="png", facecolor=PANEL, bbox_inches="tight", dpi=170)
         plt.close(fig)
         bio.seek(0)
         return bio.getvalue()
@@ -153,10 +154,11 @@ def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
     """Render a bar chart (e.g. yearly returns) to PNG bytes."""
     try:
         plt.rcParams["font.family"] = "DejaVu Sans"
+        PANEL = "#222E1C"   # matches C_PANEL
         fig, ax = plt.subplots(figsize=(9.5, 3.8), dpi=170)
-        fig.patch.set_facecolor("white")
-        ax.set_facecolor("#FCFCFA")
-        bar_colors = [MPL_SAGE if v >= 0 else MPL_RED for v in values]
+        fig.patch.set_facecolor(PANEL)
+        ax.set_facecolor(PANEL)
+        bar_colors = [MPL_SAGE if v >= 0 else "#C76B5E" for v in values]
         bars = ax.bar(range(len(values)), values, color=bar_colors,
                       width=0.62, edgecolor="none", zorder=3)
         # Value labels above/below each bar
@@ -164,28 +166,28 @@ def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
             ax.annotate(f"{v:+.1f}%", xy=(rect.get_x() + rect.get_width()/2,
                         rect.get_height()),
                         xytext=(0, 4 if v >= 0 else -12), textcoords="offset points",
-                        ha="center", fontsize=7.5, color="#3A4A33", zorder=4)
+                        ha="center", fontsize=7.5, color="#D4D4CE", zorder=4)
         ax.set_xticks(range(len(x_labels)))
-        ax.set_xticklabels(x_labels, fontsize=8.5, color="#5C6B57")
-        ax.set_ylabel(ylabel, fontsize=8.5, color="#5C6B57", labelpad=8)
-        ax.tick_params(labelsize=8, colors="#5C6B57", length=0)
-        ax.grid(True, axis="y", color="#E4E7E0", linewidth=0.6, alpha=0.9, zorder=0)
+        ax.set_xticklabels(x_labels, fontsize=8.5, color="#A9B5A4")
+        ax.set_ylabel(ylabel, fontsize=8.5, color="#99A796", labelpad=8)
+        ax.tick_params(labelsize=8, colors="#A9B5A4", length=0)
+        ax.grid(True, axis="y", color="#3A4A33", linewidth=0.6, alpha=0.55, zorder=0)
         ax.set_axisbelow(True)
         for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
-        ax.spines["bottom"].set_color("#D8DCD3")
-        ax.axhline(0, color="#8A9584", linewidth=0.8, zorder=2)
+        ax.spines["bottom"].set_color("#3A4A33")
+        ax.axhline(0, color="#7C8978", linewidth=0.8, zorder=2)
         if hurdle is not None:
             ax.axhline(hurdle, color=MPL_GOLD, linewidth=1.3, linestyle="--",
                        label=f"Year-1 Hurdle {hurdle:.0f}%", zorder=2)
             leg = ax.legend(fontsize=8, frameon=False, loc="upper right")
             if leg:
                 for t in leg.get_texts():
-                    t.set_color("#3A4A33")
+                    t.set_color("#D4D4CE")
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
         fig.tight_layout(pad=1.0)
         bio = io.BytesIO()
-        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight", dpi=170)
+        fig.savefig(bio, format="png", facecolor=PANEL, bbox_inches="tight", dpi=170)
         plt.close(fig)
         bio.seek(0)
         return bio.getvalue()
@@ -198,19 +200,27 @@ def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
 
 
 # ---------------------------------------------------------------------------
-# Brand palette (reportlab Color objects)
+# Brand palette — DARK THEME (reportlab Color objects)
+# Page background is deep green; panels/cards sit slightly lighter on top to
+# create depth. Text is cream/sage. Gold is the accent. Optimised for on-screen
+# reading (investor send-outs), not print.
 # ---------------------------------------------------------------------------
-C_GREEN   = colors.HexColor("#293624")
-C_GREEN2  = colors.HexColor("#1F2A1B")
-C_SAGE    = colors.HexColor("#99A796")
-C_CREAM   = colors.HexColor("#F5F5F1")
-C_CREAMD  = colors.HexColor("#E8E8E2")
-C_GOLD    = colors.HexColor("#C9A961")
-C_BORDER  = colors.HexColor("#C8CCC2")
-C_TEXT    = colors.HexColor("#2A2A26")
-C_MUTED   = colors.HexColor("#5C6B57")
-C_RED     = colors.HexColor("#B85042")
-C_WHITE   = colors.white
+C_PAGE    = colors.HexColor("#1B241699")  # deepest — page background
+C_PAGE_BG = colors.HexColor("#1B2416")    # deepest — page background (opaque)
+C_PANEL   = colors.HexColor("#222E1C")    # slightly lighter — cards/panels
+C_PANEL_2 = colors.HexColor("#2B3823")    # lighter still — panel headers / hover
+C_GREEN   = colors.HexColor("#293624")    # mid green (legacy references)
+C_GREEN2  = colors.HexColor("#1F2A1B")    # darker green (legacy references)
+C_SAGE    = colors.HexColor("#99A796")    # sage — muted text/labels
+C_SAGE_DIM= colors.HexColor("#7C8978")    # dimmer sage — fine print
+C_CREAM   = colors.HexColor("#F5F5F1")    # primary light text
+C_CREAMD  = colors.HexColor("#D4D4CE")    # secondary light text
+C_GOLD    = colors.HexColor("#C9A961")    # accent
+C_BORDER  = colors.HexColor("#3A4A33")    # subtle borders on dark
+C_TEXT    = colors.HexColor("#E8E8E2")    # body text on dark (was dark!)
+C_MUTED   = colors.HexColor("#99A796")    # muted labels (sage on dark)
+C_RED     = colors.HexColor("#C76B5E")    # softened red for dark bg
+C_WHITE   = colors.HexColor("#F5F5F1")    # "white" → cream on dark
 
 
 def _styles():
@@ -219,19 +229,19 @@ def _styles():
     styles = {}
     styles["title"] = ParagraphStyle(
         "OakTitle", parent=ss["Title"], fontName=F_SERIF,
-        fontSize=26, textColor=C_GREEN, spaceAfter=2, leading=30, alignment=TA_LEFT,
+        fontSize=26, textColor=C_CREAM, spaceAfter=2, leading=30, alignment=TA_LEFT,
     )
     styles["subtitle"] = ParagraphStyle(
         "OakSubtitle", parent=ss["Normal"], fontName=F_SANS,
-        fontSize=10.5, textColor=C_MUTED, spaceAfter=14, leading=15, alignment=TA_LEFT,
+        fontSize=10.5, textColor=C_SAGE, spaceAfter=14, leading=15, alignment=TA_LEFT,
     )
     styles["h2"] = ParagraphStyle(
         "OakH2", parent=ss["Heading2"], fontName=F_SERIF,
-        fontSize=16, textColor=C_GREEN, spaceBefore=16, spaceAfter=8, leading=19,
+        fontSize=16, textColor=C_CREAM, spaceBefore=16, spaceAfter=8, leading=19,
     )
     styles["h3"] = ParagraphStyle(
         "OakH3", parent=ss["Heading3"], fontName=F_SANS_BOLD,
-        fontSize=8, textColor=C_MUTED, spaceBefore=10, spaceAfter=4,
+        fontSize=8, textColor=C_GOLD, spaceBefore=10, spaceAfter=4,
         leading=11, alignment=TA_LEFT,
     )
     styles["body"] = ParagraphStyle(
@@ -252,7 +262,7 @@ def _styles():
     )
     styles["kpi_value"] = ParagraphStyle(
         "OakKpiValue", parent=ss["Normal"], fontName=F_SERIF,
-        fontSize=15, textColor=C_GREEN, leading=18, alignment=TA_CENTER,
+        fontSize=16, textColor=C_CREAM, leading=19, alignment=TA_CENTER,
     )
     styles["kpi_label_light"] = ParagraphStyle(
         "OakKpiLabelLight", parent=ss["Normal"], fontName=F_SANS,
@@ -260,7 +270,7 @@ def _styles():
     )
     styles["kpi_value_light"] = ParagraphStyle(
         "OakKpiValueLight", parent=ss["Normal"], fontName=F_SERIF,
-        fontSize=15, textColor=C_CREAM, leading=18, alignment=TA_CENTER,
+        fontSize=16, textColor=C_GOLD, leading=19, alignment=TA_CENTER,
     )
     styles["foot"] = ParagraphStyle(
         "OakFoot", parent=ss["Normal"], fontName=F_SANS,
@@ -310,9 +320,9 @@ def _kpi_grid(kpis, styles, cols=4, accent=False):
             ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
             ("LEFTPADDING", (0, 0), (-1, -1), 12),
             ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-            ("BACKGROUND", (0, 0), (-1, -1), C_GREEN),
+            ("BACKGROUND", (0, 0), (-1, -1), C_PANEL_2),
             ("LINEABOVE", (0, 0), (-1, 0), 2, C_GOLD),
-            ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_GREEN2),
+            ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_PAGE_BG),
         ]
     else:
         style = [
@@ -321,11 +331,9 @@ def _kpi_grid(kpis, styles, cols=4, accent=False):
             ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
             ("LEFTPADDING", (0, 0), (-1, -1), 12),
             ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-            ("BACKGROUND", (0, 0), (-1, -1), C_CREAM),
+            ("BACKGROUND", (0, 0), (-1, -1), C_PANEL),
             ("LINEABOVE", (0, 0), (-1, 0), 1.5, C_SAGE),
-            ("LINEBELOW", (0, 0), (-1, -2), 0.5, C_BORDER),
-            ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_BORDER),
-            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [C_CREAM]),
+            ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_PAGE_BG),
         ]
     tbl.setStyle(TableStyle(style))
     return tbl
@@ -351,12 +359,13 @@ def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True
         col_widths = [170 * mm / n] * n
     tbl = Table(data, colWidths=col_widths, repeatRows=1)
     tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), C_GREEN),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_CREAM]),
+        ("BACKGROUND", (0, 0), (-1, 0), C_PANEL_2),
+        ("LINEABOVE", (0, 0), (-1, 0), 1, C_GOLD),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PANEL, C_PAGE_BG]),
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, C_BORDER),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
@@ -376,22 +385,21 @@ def _monthly_returns_table(monthly_returns, styles):
         leading=8, alignment=TA_CENTER)) for h in header]
     data = [head_cells]
 
-    # Colour helper: map a monthly return to a soft green/red background
+    # Colour helper: blend from the dark panel tone toward sage (positive) or
+    # red (negative); intensity scales with magnitude.
     def _bg(v):
         if v is None:
-            return C_CREAM
-        # clamp intensity at +/-10%
+            return C_PANEL
         mag = min(abs(v) / 10.0, 1.0)
+        base_r, base_g, base_b = 0x22, 0x2E, 0x1C  # panel tone
         if v >= 0:
-            # blend cream -> sage
-            r = int(0xF5 + (0x99 - 0xF5) * mag)
-            g = int(0xF5 + (0xA7 - 0xF5) * mag)
-            b = int(0xF1 + (0x96 - 0xF1) * mag)
+            r = int(base_r + (0x99 - base_r) * mag)
+            g = int(base_g + (0xA7 - base_g) * mag)
+            b = int(base_b + (0x96 - base_b) * mag)
         else:
-            # blend cream -> red
-            r = int(0xF5 + (0xB8 - 0xF5) * mag)
-            g = int(0xF5 + (0x50 - 0xF5) * mag)
-            b = int(0xF1 + (0x42 - 0xF1) * mag)
+            r = int(base_r + (0xC7 - base_r) * mag)
+            g = int(base_g + (0x6B - base_g) * mag)
+            b = int(base_b + (0x5E - base_b) * mag)
         return colors.Color(r / 255, g / 255, b / 255)
 
     bg_cmds = []
@@ -399,7 +407,7 @@ def _monthly_returns_table(monthly_returns, styles):
     for ri, year in enumerate(sorted_years, start=1):
         vals = monthly_returns[year]
         row = [Paragraph(str(year), ParagraphStyle(
-            "myr", fontName=F_SANS_BOLD, fontSize=6.8, textColor=C_TEXT,
+            "myr", fontName=F_SANS_BOLD, fontSize=6.8, textColor=C_CREAM,
             leading=8, alignment=TA_CENTER))]
         fy_product = 1.0
         has_any = False
@@ -410,17 +418,19 @@ def _monthly_returns_table(monthly_returns, styles):
                 has_any = True
                 fy_product *= (1 + v / 100.0)
                 txt = f"{v:.1f}"
+                # Bright text on intense cells, dimmer on faint ones
+                tcol = C_CREAM if abs(v) > 3 else C_CREAMD
                 row.append(Paragraph(txt, ParagraphStyle(
                     "mv", fontName=F_SANS, fontSize=6.3,
-                    textColor=C_TEXT, leading=8, alignment=TA_CENTER)))
+                    textColor=tcol, leading=8, alignment=TA_CENTER)))
                 bg_cmds.append(("BACKGROUND", (ci, ri), (ci, ri), _bg(v)))
         # Full-year column
         fy = (fy_product - 1) * 100 if has_any else None
         if fy is not None:
             row.append(Paragraph(f"<b>{fy:.1f}</b>", ParagraphStyle(
                 "mfy", fontName=F_SANS_BOLD, fontSize=6.3,
-                textColor=C_GREEN, leading=8, alignment=TA_CENTER)))
-            bg_cmds.append(("BACKGROUND", (13, ri), (13, ri), C_CREAMD))
+                textColor=C_GOLD, leading=8, alignment=TA_CENTER)))
+            bg_cmds.append(("BACKGROUND", (13, ri), (13, ri), C_PANEL_2))
         else:
             row.append(Paragraph("", styles["small"]))
         data.append(row)
@@ -428,15 +438,15 @@ def _monthly_returns_table(monthly_returns, styles):
     col_widths = [12 * mm] + [11.7 * mm] * 12 + [13 * mm]
     tbl = Table(data, colWidths=col_widths)
     base_style = [
-        ("BACKGROUND", (0, 0), (-1, 0), C_GREEN),
+        ("BACKGROUND", (0, 0), (-1, 0), C_PANEL_2),
+        ("LINEABOVE", (0, 0), (-1, 0), 1, C_GOLD),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.5, C_GREEN),
-        ("GRID", (0, 1), (-1, -1), 0.4, C_WHITE),
-        ("BACKGROUND", (0, 1), (0, -1), C_CREAMD),
+        ("GRID", (0, 1), (-1, -1), 0.4, C_PAGE_BG),
+        ("BACKGROUND", (0, 1), (0, -1), C_PANEL_2),
     ]
     tbl.setStyle(TableStyle(base_style + bg_cmds))
     return tbl
@@ -463,12 +473,13 @@ def _two_col_universe(rows, styles):
             data.append([name_p, tick_p])
         t = Table(data, colWidths=[52 * mm, 28 * mm])
         t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), C_GREEN),
+            ("BACKGROUND", (0, 0), (-1, 0), C_PANEL_2),
+            ("LINEABOVE", (0, 0), (-1, 0), 1, C_GOLD),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_CREAM]),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PANEL, C_PAGE_BG]),
             ("LINEBELOW", (0, 0), (-1, -1), 0.3, C_BORDER),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
@@ -492,8 +503,8 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
     canvas.saveState()
     W, H = A4
 
-    # Full-page dark green background
-    canvas.setFillColor(C_GREEN)
+    # Full-page dark background
+    canvas.setFillColor(C_PAGE_BG)
     canvas.rect(0, 0, W, H, fill=1, stroke=0)
 
     # Subtle darker band at the very top and bottom for depth
@@ -591,26 +602,37 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
 
 def _header_footer(canvas, doc, strategy_name):
     canvas.saveState()
-    # Header band
-    canvas.setFillColor(C_GREEN)
-    canvas.rect(0, A4[1] - 22 * mm, A4[0], 22 * mm, fill=1, stroke=0)
+    W, H = A4
+    # Full-page dark background (ReportLab doesn't fill it automatically)
+    canvas.setFillColor(C_PAGE_BG)
+    canvas.rect(0, 0, W, H, fill=1, stroke=0)
+
+    # Header band — slightly lighter panel tone for subtle depth
+    canvas.setFillColor(C_PANEL)
+    canvas.rect(0, H - 22 * mm, W, 22 * mm, fill=1, stroke=0)
+    # Thin gold hairline under the header band
+    canvas.setStrokeColor(C_GOLD)
+    canvas.setLineWidth(0.75)
+    canvas.line(0, H - 22 * mm, W, H - 22 * mm)
+
     canvas.setFillColor(C_CREAM)
     canvas.setFont(F_SERIF, 15)
-    canvas.drawString(20 * mm, A4[1] - 14 * mm, "Oakwood Capital")
+    canvas.drawString(20 * mm, H - 14 * mm, "Oakwood Capital")
     canvas.setFillColor(C_SAGE)
     canvas.setFont(F_SANS, 7)
-    canvas.drawRightString(A4[0] - 20 * mm, A4[1] - 11 * mm, "STRATEGY RESEARCH PLATFORM")
-    canvas.drawRightString(A4[0] - 20 * mm, A4[1] - 15 * mm, "INTERNAL · CONFIDENTIAL")
+    canvas.drawRightString(W - 20 * mm, H - 11 * mm, "STRATEGY RESEARCH PLATFORM")
+    canvas.drawRightString(W - 20 * mm, H - 15 * mm, "INTERNAL · CONFIDENTIAL")
+
     # Footer
-    canvas.setFillColor(C_MUTED)
+    canvas.setFillColor(C_SAGE_DIM)
     canvas.setFont(F_SANS, 7)
     canvas.drawString(20 * mm, 12 * mm,
                       "For Illustrative Purposes · Not Investment Advice")
-    canvas.drawCentredString(A4[0] / 2, 12 * mm, strategy_name)
-    canvas.drawRightString(A4[0] - 20 * mm, 12 * mm, f"Page {doc.page}")
+    canvas.drawCentredString(W / 2, 12 * mm, strategy_name)
+    canvas.drawRightString(W - 20 * mm, 12 * mm, f"{doc.page}")
     canvas.setStrokeColor(C_BORDER)
     canvas.setLineWidth(0.5)
-    canvas.line(20 * mm, 15 * mm, A4[0] - 20 * mm, 15 * mm)
+    canvas.line(20 * mm, 15 * mm, W - 20 * mm, 15 * mm)
     canvas.restoreState()
 
 
