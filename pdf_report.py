@@ -588,14 +588,20 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
     canvas.drawCentredString(W / 2, 45 * mm,
                              f"Generated {datetime.now().strftime('%d %B %Y, %H:%M')}")
 
-    # Confidential footer mark
+    # Contact + confidential footer mark
     canvas.setFillColor(C_SAGE)
+    canvas.setFont(F_SANS, 7.5)
+    canvas.drawCentredString(W / 2, 26 * mm,
+                             "Gotthardstrasse 15  ·  6300 Zug  ·  Switzerland")
+    canvas.drawCentredString(W / 2, 21 * mm,
+                             "info@oakwood-capital.ch  ·  www.oakwood-capital.ch")
+    canvas.setFillColor(C_SAGE_DIM)
     canvas.setFont(F_SANS, 7)
-    canvas.drawCentredString(W / 2, 20 * mm,
+    canvas.drawCentredString(W / 2, 15 * mm,
                              "STRATEGY RESEARCH PLATFORM   ·   INTERNAL · CONFIDENTIAL")
     canvas.setFillColor(C_GOLD)
     canvas.setFont(F_SERIF_ITALIC, 12)
-    canvas.drawCentredString(W / 2, 13 * mm, "Oakwood Capital · Quantitative Research")
+    canvas.drawCentredString(W / 2, 9 * mm, "Oakwood Capital · Quantitative Research")
 
     canvas.restoreState()
 
@@ -805,6 +811,28 @@ def build_tearsheet(
     ]
     for p in disclaimer_paragraphs:
         story.append(Paragraph(p, styles["disclaimer"]))
+
+    # Contact block — a panel with a gold top rule, in the brand style
+    story.append(Spacer(1, 16))
+    contact_name = Paragraph(
+        "Oakwood Capital", ParagraphStyle(
+            "cn", fontName=F_SERIF, fontSize=13, textColor=C_CREAM, leading=16))
+    contact_lines = Paragraph(
+        "Gotthardstrasse 15&nbsp;&nbsp;·&nbsp;&nbsp;6300 Zug&nbsp;&nbsp;·&nbsp;&nbsp;Switzerland<br/>"
+        "info@oakwood-capital.ch&nbsp;&nbsp;·&nbsp;&nbsp;www.oakwood-capital.ch",
+        ParagraphStyle("cl", fontName=F_SANS, fontSize=8.5, textColor=C_SAGE,
+                       leading=14))
+    contact_tbl = Table([[contact_name], [contact_lines]], colWidths=[170 * mm])
+    contact_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), C_PANEL),
+        ("LINEABOVE", (0, 0), (-1, 0), 1.5, C_GOLD),
+        ("TOPPADDING", (0, 0), (-1, 0), 12),
+        ("TOPPADDING", (0, 1), (-1, 1), 2),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 12),
+        ("LEFTPADDING", (0, 0), (-1, -1), 16),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+    ]))
+    story.append(contact_tbl)
 
     # First page = full cover art; all later pages = header/footer band.
     def on_first(canvas, doc_):
