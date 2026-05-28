@@ -2,12 +2,14 @@
 Oakwood Capital — PDF Tearsheet Generator
 ==========================================
 Builds a multi-page institutional-style PDF report from backtest results.
-Used by both strategy pages. Returns PDF bytes for st.download_button.
+Used by the SMI strategy page. Returns PDF bytes for st.download_button.
 
-Requires: reportlab, kaleido (for Plotly chart -> PNG export).
+Charts are rendered to PNG via matplotlib (headless, no browser needed).
+Requires: reportlab, matplotlib.
 """
 
 import io
+import os
 from datetime import datetime
 
 import matplotlib
@@ -22,7 +24,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    Image, PageBreak, HRFlowable, KeepTogether
+    Image, PageBreak, HRFlowable, KeepTogether,
 )
 
 # Matplotlib palette matching Oakwood CI
@@ -39,9 +41,10 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
     """Render a line chart to PNG bytes using matplotlib (no browser needed).
     series_dict: ordered dict-like list of (label, pandas Series, color, style)."""
     try:
-        fig, ax = plt.subplots(figsize=(9.5, 4.2), dpi=150)
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        fig, ax = plt.subplots(figsize=(9.5, 4.0), dpi=170)
         fig.patch.set_facecolor("white")
-        ax.set_facecolor("white")
+        ax.set_facecolor("#FCFCFA")
         for i, (label, s, color, style) in enumerate(series_dict):
             if s is None or len(s) == 0:
                 continue
@@ -49,32 +52,36 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
             ax.plot(s.index, vals, label=label, color=color,
                     linewidth=style.get("lw", 1.8),
                     linestyle=style.get("ls", "-"),
-                    alpha=style.get("alpha", 1.0))
+                    alpha=style.get("alpha", 1.0),
+                    solid_capstyle="round")
             if fill_first and i == 0:
-                ax.fill_between(s.index, vals, alpha=0.08, color=color)
-        ax.set_ylabel(ylabel, fontsize=9, color="#2A2A26")
-        ax.tick_params(labelsize=8, colors="#5C6B57")
-        ax.grid(True, color=MPL_GRID, linewidth=0.6, alpha=0.8)
-        for spine in ["top", "right"]:
+                ax.fill_between(s.index, vals, alpha=0.10, color=color, linewidth=0)
+        ax.set_ylabel(ylabel, fontsize=8.5, color="#5C6B57", labelpad=8)
+        ax.tick_params(labelsize=8, colors="#8A958466", length=0)
+        ax.tick_params(axis="both", labelcolor="#5C6B57")
+        ax.grid(True, color="#E4E7E0", linewidth=0.6, alpha=0.9)
+        ax.set_axisbelow(True)
+        for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
-        for spine in ["left", "bottom"]:
-            ax.spines[spine].set_color(MPL_GRID)
+        ax.spines["bottom"].set_color("#D8DCD3")
         if percent:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
         else:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-        leg = ax.legend(fontsize=7.5, loc="best", frameon=False)
+        leg = ax.legend(fontsize=8, loc="upper left", frameon=False,
+                        handlelength=1.6, handletextpad=0.6, columnspacing=1.2,
+                        ncol=len(series_dict) if len(series_dict) <= 3 else 2)
         if leg:
             for text in leg.get_texts():
-                text.set_color("#2A2A26")
+                text.set_color("#3A4A33")
         try:
             ax.xaxis.set_major_locator(mdates.YearLocator())
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
         except Exception:
             pass
-        fig.tight_layout(pad=1.2)
+        fig.tight_layout(pad=1.0)
         bio = io.BytesIO()
-        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight")
+        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight", dpi=170)
         plt.close(fig)
         bio.seek(0)
         return bio.getvalue()
@@ -89,33 +96,40 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
 def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
     """Render a bar chart (e.g. yearly returns) to PNG bytes."""
     try:
-        fig, ax = plt.subplots(figsize=(9.5, 4.0), dpi=150)
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        fig, ax = plt.subplots(figsize=(9.5, 3.8), dpi=170)
         fig.patch.set_facecolor("white")
-        ax.set_facecolor("white")
+        ax.set_facecolor("#FCFCFA")
         bar_colors = [MPL_SAGE if v >= 0 else MPL_RED for v in values]
-        ax.bar(range(len(values)), values, color=bar_colors,
-               edgecolor=MPL_GREEN, linewidth=0.5)
+        bars = ax.bar(range(len(values)), values, color=bar_colors,
+                      width=0.62, edgecolor="none", zorder=3)
+        # Value labels above/below each bar
+        for rect, v in zip(bars, values):
+            ax.annotate(f"{v:+.1f}%", xy=(rect.get_x() + rect.get_width()/2,
+                        rect.get_height()),
+                        xytext=(0, 4 if v >= 0 else -12), textcoords="offset points",
+                        ha="center", fontsize=7.5, color="#3A4A33", zorder=4)
         ax.set_xticks(range(len(x_labels)))
-        ax.set_xticklabels(x_labels, fontsize=8, color="#5C6B57")
-        ax.set_ylabel(ylabel, fontsize=9, color="#2A2A26")
-        ax.tick_params(labelsize=8, colors="#5C6B57")
-        ax.grid(True, axis="y", color=MPL_GRID, linewidth=0.6, alpha=0.8)
-        for spine in ["top", "right"]:
+        ax.set_xticklabels(x_labels, fontsize=8.5, color="#5C6B57")
+        ax.set_ylabel(ylabel, fontsize=8.5, color="#5C6B57", labelpad=8)
+        ax.tick_params(labelsize=8, colors="#5C6B57", length=0)
+        ax.grid(True, axis="y", color="#E4E7E0", linewidth=0.6, alpha=0.9, zorder=0)
+        ax.set_axisbelow(True)
+        for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
-        for spine in ["left", "bottom"]:
-            ax.spines[spine].set_color(MPL_GRID)
-        ax.axhline(0, color="#5C6B57", linewidth=0.8)
+        ax.spines["bottom"].set_color("#D8DCD3")
+        ax.axhline(0, color="#8A9584", linewidth=0.8, zorder=2)
         if hurdle is not None:
             ax.axhline(hurdle, color=MPL_GOLD, linewidth=1.3, linestyle="--",
-                       label=f"Year-1 Hurdle {hurdle:.0f}%")
-            leg = ax.legend(fontsize=7.5, frameon=False)
+                       label=f"Year-1 Hurdle {hurdle:.0f}%", zorder=2)
+            leg = ax.legend(fontsize=8, frameon=False, loc="upper right")
             if leg:
                 for t in leg.get_texts():
-                    t.set_color("#2A2A26")
+                    t.set_color("#3A4A33")
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
-        fig.tight_layout(pad=1.2)
+        fig.tight_layout(pad=1.0)
         bio = io.BytesIO()
-        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight")
+        fig.savefig(bio, format="png", facecolor="white", bbox_inches="tight", dpi=170)
         plt.close(fig)
         bio.seek(0)
         return bio.getvalue()
@@ -183,6 +197,14 @@ def _styles():
         "OakKpiValue", parent=ss["Normal"], fontName="Times-Roman",
         fontSize=15, textColor=C_GREEN, leading=18, alignment=TA_CENTER,
     )
+    styles["kpi_label_light"] = ParagraphStyle(
+        "OakKpiLabelLight", parent=ss["Normal"], fontName="Helvetica",
+        fontSize=7, textColor=C_SAGE, leading=9, alignment=TA_CENTER,
+    )
+    styles["kpi_value_light"] = ParagraphStyle(
+        "OakKpiValueLight", parent=ss["Normal"], fontName="Times-Roman",
+        fontSize=15, textColor=C_CREAM, leading=18, alignment=TA_CENTER,
+    )
     styles["foot"] = ParagraphStyle(
         "OakFoot", parent=ss["Normal"], fontName="Helvetica",
         fontSize=7, textColor=C_MUTED, leading=9, alignment=TA_CENTER,
@@ -201,15 +223,18 @@ def _png_to_image(png_bytes, width_mm, height_mm):
         return None
 
 
-def _kpi_grid(kpis, styles, cols=4):
-    """kpis: list of (label, value) tuples. Renders as a grid of cells."""
+def _kpi_grid(kpis, styles, cols=4, accent=False):
+    """kpis: list of (label, value) tuples. Renders as a grid of cells.
+    accent=True gives dark cards with a gold top accent (for highlight rows)."""
     cells = []
     row = []
+    label_style = styles["kpi_label_light"] if accent else styles["kpi_label"]
+    value_style = styles["kpi_value_light"] if accent else styles["kpi_value"]
     for i, (label, value) in enumerate(kpis):
         cell = [
-            Paragraph(label.upper(), styles["kpi_label"]),
-            Spacer(1, 2),
-            Paragraph(str(value), styles["kpi_value"]),
+            Paragraph(label.upper(), label_style),
+            Spacer(1, 3),
+            Paragraph(str(value), value_style),
         ]
         row.append(cell)
         if len(row) == cols:
@@ -217,18 +242,35 @@ def _kpi_grid(kpis, styles, cols=4):
             row = []
     if row:
         while len(row) < cols:
-            row.append([Paragraph("", styles["kpi_label"])])
+            row.append([Paragraph("", label_style)])
         cells.append(row)
 
     tbl = Table(cells, colWidths=[(170 * mm) / cols] * cols)
-    tbl.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ("LINEBELOW", (0, 0), (-1, -2), 0.5, C_BORDER),
-        ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_BORDER),
-        ("BACKGROUND", (0, 0), (-1, -1), C_CREAM),
-    ]))
+    if accent:
+        style = [
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 14),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ("BACKGROUND", (0, 0), (-1, -1), C_GREEN),
+            ("LINEABOVE", (0, 0), (-1, 0), 2, C_GOLD),
+            ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_GREEN2),
+        ]
+    else:
+        style = [
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ("BACKGROUND", (0, 0), (-1, -1), C_CREAM),
+            ("LINEABOVE", (0, 0), (-1, 0), 1.5, C_SAGE),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.5, C_BORDER),
+            ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_BORDER),
+            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [C_CREAM]),
+        ]
+    tbl.setStyle(TableStyle(style))
     return tbl
 
 
@@ -262,6 +304,108 @@ def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     return tbl
+
+
+def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
+                highlight_kpis, logo_path):
+    """Full-bleed dark-green cover page drawn directly on the canvas.
+    highlight_kpis: list of up to 3 (label, value) tuples for the hero band."""
+    canvas.saveState()
+    W, H = A4
+
+    # Full-page dark green background
+    canvas.setFillColor(C_GREEN)
+    canvas.rect(0, 0, W, H, fill=1, stroke=0)
+
+    # Subtle darker band at the very top and bottom for depth
+    canvas.setFillColor(C_GREEN2)
+    canvas.rect(0, H - 6 * mm, W, 6 * mm, fill=1, stroke=0)
+    canvas.rect(0, 0, W, 6 * mm, fill=1, stroke=0)
+
+    # Logo (cream-on-transparent) centered in the upper third
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from reportlab.lib.utils import ImageReader
+            img = ImageReader(logo_path)
+            iw, ih = img.getSize()
+            disp_w = 70 * mm
+            disp_h = disp_w * ih / iw
+            canvas.drawImage(img, (W - disp_w) / 2, H - 78 * mm,
+                             width=disp_w, height=disp_h,
+                             mask="auto", preserveAspectRatio=True)
+        except Exception:
+            pass
+
+    # Thin gold rule under the logo area
+    canvas.setStrokeColor(C_GOLD)
+    canvas.setLineWidth(1)
+    canvas.line(W / 2 - 30 * mm, H - 92 * mm, W / 2 + 30 * mm, H - 92 * mm)
+
+    # Strategy title (centered, serif, cream)
+    canvas.setFillColor(C_CREAM)
+    canvas.setFont("Times-Roman", 30)
+    canvas.drawCentredString(W / 2, H - 112 * mm, strategy_name)
+
+    # Subtitle (wrapped, centered, sage) — simple word wrap
+    canvas.setFont("Helvetica", 10.5)
+    canvas.setFillColor(C_SAGE)
+    words = strategy_subtitle.split()
+    lines, cur = [], ""
+    for w in words:
+        test = (cur + " " + w).strip()
+        if canvas.stringWidth(test, "Helvetica", 10.5) < 150 * mm:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    y = H - 122 * mm
+    for ln in lines[:3]:
+        canvas.drawCentredString(W / 2, y, ln)
+        y -= 6 * mm
+
+    # Hero highlight metrics band (up to 3), centered
+    if highlight_kpis:
+        n = len(highlight_kpis)
+        band_w = 170 * mm
+        cell_w = band_w / n
+        x0 = (W - band_w) / 2
+        y_band = 95 * mm
+        # divider lines between cells
+        canvas.setStrokeColor(C_GREEN2)
+        canvas.setLineWidth(0.75)
+        for i in range(1, n):
+            xd = x0 + i * cell_w
+            canvas.line(xd, y_band - 4 * mm, xd, y_band + 20 * mm)
+        for i, (label, value) in enumerate(highlight_kpis):
+            cx = x0 + i * cell_w + cell_w / 2
+            canvas.setFillColor(C_GOLD)
+            canvas.setFont("Times-Roman", 26)
+            canvas.drawCentredString(cx, y_band + 8 * mm, str(value))
+            canvas.setFillColor(C_SAGE)
+            canvas.setFont("Helvetica", 7.5)
+            canvas.drawCentredString(cx, y_band, label.upper())
+
+    # Period + generation block near the bottom
+    canvas.setFillColor(C_CREAMD)
+    canvas.setFont("Helvetica", 9)
+    canvas.drawCentredString(W / 2, 52 * mm, f"Backtest Period   {period_str}")
+    canvas.setFillColor(C_SAGE)
+    canvas.setFont("Helvetica", 8)
+    canvas.drawCentredString(W / 2, 45 * mm,
+                             f"Generated {datetime.now().strftime('%d %B %Y, %H:%M')}")
+
+    # Confidential footer mark
+    canvas.setFillColor(C_SAGE)
+    canvas.setFont("Helvetica", 7)
+    canvas.drawCentredString(W / 2, 20 * mm,
+                             "STRATEGY RESEARCH PLATFORM   ·   INTERNAL · CONFIDENTIAL")
+    canvas.setFillColor(C_GOLD)
+    canvas.setFont("Times-Italic", 11)
+    canvas.drawCentredString(W / 2, 13 * mm, "Oakwood Capital · Quantitative Research")
+
+    canvas.restoreState()
 
 
 def _header_footer(canvas, doc, strategy_name):
@@ -307,48 +451,66 @@ def build_tearsheet(
     """Build the PDF and return raw bytes."""
     styles = _styles()
     buf = io.BytesIO()
+
+    # Locate the logo for the cover
+    logo_path = None
+    for cand in (
+        os.path.join(os.path.dirname(__file__), "assets", "oakwood_logo.png"),
+        os.path.join(os.path.dirname(__file__), "assets", "logo.png"),
+    ):
+        if os.path.exists(cand):
+            logo_path = cand
+            break
+
+    # Pick up to 3 hero metrics from the performance KPIs for the cover band
+    highlight_kpis = kpis_performance[:3] if kpis_performance else []
+
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=30 * mm, bottomMargin=20 * mm,
+        topMargin=28 * mm, bottomMargin=18 * mm,
         leftMargin=20 * mm, rightMargin=20 * mm,
         title=f"Oakwood Capital — {strategy_name}",
         author="Oakwood Capital",
     )
+
     story = []
 
-    # ===== PAGE 1: Cover + KPIs =====
-    story.append(Paragraph(strategy_name, styles["title"]))
-    story.append(Paragraph(strategy_subtitle, styles["subtitle"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=C_GOLD, spaceAfter=4))
-    story.append(Paragraph(
-        f"Backtest Period: {period_str} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"Generated: {datetime.now().strftime('%d %B %Y, %H:%M')}",
-        styles["small"]))
-    story.append(Spacer(1, 10))
+    # ===== PAGE 1: COVER =====
+    # The cover is drawn entirely by the onFirstPage canvas callback. We just
+    # need one flowable so the first page exists, then break to content.
+    story.append(Spacer(1, 1))
+    story.append(PageBreak())
 
-    story.append(Paragraph("Performance Summary (Net of Fees)", styles["h2"]))
-    story.append(_kpi_grid(kpis_performance, styles, cols=4))
-    story.append(Spacer(1, 10))
+    # ===== PAGE 2: KPIs / Summary =====
+    story.append(Paragraph("Performance Summary", styles["h2"]))
+    story.append(Paragraph("Net of fees, transaction costs and 35% dividend withholding tax",
+                           styles["h3"]))
+    story.append(Spacer(1, 2))
+    story.append(_kpi_grid(kpis_performance, styles, cols=4, accent=True))
+    story.append(Spacer(1, 12))
 
     story.append(Paragraph("Risk &amp; Risk-Adjusted Metrics", styles["h2"]))
     story.append(_kpi_grid(kpis_risk, styles, cols=4))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 12))
 
     story.append(Paragraph("Fee Summary", styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
 
     story.append(PageBreak())
 
-    # ===== PAGE 2: Charts =====
+    # ===== Charts =====
     story.append(Paragraph("Portfolio Evolution &amp; Risk Charts", styles["h2"]))
     any_chart = False
     for title, png_bytes in figures:
-        img = _png_to_image(png_bytes, width_mm=170, height_mm=80)
+        img = _png_to_image(png_bytes, width_mm=168, height_mm=71)
         if img is not None:
             any_chart = True
-            story.append(Paragraph(title, styles["h3"]))
-            story.append(img)
-            story.append(Spacer(1, 8))
+            block = KeepTogether([
+                Paragraph(title, styles["h3"]),
+                img,
+                Spacer(1, 10),
+            ])
+            story.append(block)
     if not any_chart:
         story.append(Paragraph(
             "Charts could not be embedded in this PDF (chart rendering engine "
@@ -425,10 +587,14 @@ def build_tearsheet(
     for p in disclaimer_paragraphs:
         story.append(Paragraph(p, styles["disclaimer"]))
 
-    # Build with header/footer on every page
-    def on_page(canvas, doc_):
+    # First page = full cover art; all later pages = header/footer band.
+    def on_first(canvas, doc_):
+        _draw_cover(canvas, doc_, strategy_name, strategy_subtitle, period_str,
+                    highlight_kpis, logo_path)
+
+    def on_later(canvas, doc_):
         _header_footer(canvas, doc_, strategy_name)
 
-    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
     buf.seek(0)
     return buf.getvalue()
