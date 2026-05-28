@@ -432,6 +432,55 @@ ul[role="listbox"] li, [data-baseweb="select"] span {{
 [data-testid="stMetric"] {{
     box-shadow: 0 2px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.03) !important;
 }}
+
+/* ---- Visibility fixes for default Streamlit chrome ---- */
+/* 1. Sidebar collapse/expand arrow (both the in-sidebar control and the
+      collapsed floating control that reopens it) */
+[data-testid="stSidebarCollapseButton"] svg,
+[data-testid="collapsedControl"] svg,
+[data-testid="stSidebarCollapseButton"] path,
+[data-testid="collapsedControl"] path,
+button[kind="header"] svg {{
+    fill: {OAK_CREAM} !important; color: {OAK_CREAM} !important;
+}}
+[data-testid="stSidebarCollapseButton"], [data-testid="collapsedControl"] {{
+    color: {OAK_CREAM} !important;
+}}
+[data-testid="stSidebarCollapseButton"]:hover svg,
+[data-testid="collapsedControl"]:hover svg {{
+    fill: {OAK_GOLD} !important;
+}}
+
+/* 2. Scrollbars (main area + sidebar) — light thumb on the dark theme */
+::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+::-webkit-scrollbar-track {{ background: {OAK_GREEN_2}; }}
+::-webkit-scrollbar-thumb {{
+    background: {OAK_SAGE_DIM}; border-radius: 8px;
+    border: 2px solid {OAK_GREEN_2};
+}}
+::-webkit-scrollbar-thumb:hover {{ background: {OAK_SAGE}; }}
+/* Firefox */
+* {{ scrollbar-color: {OAK_SAGE_DIM} {OAK_GREEN_2}; scrollbar-width: thin; }}
+
+/* 3. Number input +/- stepper buttons (initial capital etc.) */
+[data-testid="stNumberInput"] button {{
+    background-color: {OAK_GREEN_3} !important;
+    border: 1px solid {OAK_BORDER} !important;
+    color: {OAK_CREAM} !important;
+}}
+[data-testid="stNumberInput"] button svg,
+[data-testid="stNumberInput"] button path,
+[data-testid="stNumberInput"] [data-testid="stNumberInputStepUp"] svg,
+[data-testid="stNumberInput"] [data-testid="stNumberInputStepDown"] svg {{
+    fill: {OAK_CREAM} !important; color: {OAK_CREAM} !important;
+}}
+[data-testid="stNumberInput"] button:hover {{
+    background-color: {OAK_SAGE} !important;
+}}
+[data-testid="stNumberInput"] button:hover svg,
+[data-testid="stNumberInput"] button:hover path {{
+    fill: {OAK_GREEN_2} !important;
+}}
 </style>
 """
 
