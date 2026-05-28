@@ -91,7 +91,7 @@ a[data-testid="stPageLink-NavLink"], a[data-testid="stPageLink-NavLink"] * {{
 [data-testid="stPageLink"] {{
     background-color: {OAK_GREEN_3};
     border: 1px solid {OAK_BORDER};
-    border-radius: 3px;
+    border-radius: 10px;
 }}
 [data-testid="stPageLink"]:hover {{
     border-color: {OAK_GOLD};
@@ -103,13 +103,16 @@ a[data-testid="stPageLink-NavLink"], a[data-testid="stPageLink-NavLink"] * {{
     background: {OAK_GREEN_2};
     border: 1px solid {OAK_BORDER};
     border-left: 3px solid {OAK_SAGE};
-    border-radius: 3px;
+    border-radius: 10px;
     padding: 28px 32px;
     height: 100%;
-    transition: border-left-color 0.2s ease, transform 0.15s ease;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.20);
+    transition: border-left-color 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
 }}
 .strategy-card:hover {{
     border-left-color: {OAK_GOLD};
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.28);
 }}
 .strategy-card h3 {{
     color: {OAK_CREAM} !important;

@@ -118,22 +118,26 @@ def load_logo_base64():
 
 def style_plotly(fig, height=500):
     fig.update_layout(
-        plot_bgcolor=OAK_GREEN, paper_bgcolor=OAK_GREEN,
+        plot_bgcolor=OAK_GREEN_2, paper_bgcolor=OAK_GREEN,
         font=dict(family="'Inter', sans-serif", size=12, color=OAK_CREAM),
-        height=height, margin=dict(l=60, r=30, t=30, b=50),
+        height=height, margin=dict(l=60, r=30, t=40, b=50),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor=OAK_GREEN_2, font_color=OAK_CREAM, bordercolor=OAK_SAGE),
+        hoverlabel=dict(bgcolor=OAK_GREEN_2, font_color=OAK_CREAM, bordercolor=OAK_SAGE,
+                        font_size=12),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                    bgcolor="rgba(31,42,27,0.8)", bordercolor=OAK_BORDER, borderwidth=1,
-                    font=dict(size=11, color=OAK_CREAM)),
+                    bgcolor="rgba(31,42,27,0.0)", borderwidth=0,
+                    font=dict(size=11, color=OAK_CREAM_DIM)),
     )
-    fig.update_xaxes(showgrid=True, gridcolor=CHART_GRID, gridwidth=1,
-                     showline=True, linewidth=1, linecolor=OAK_AXIS, zeroline=False,
-                     ticks="outside", tickfont=dict(color=OAK_CREAM_DIM, size=11),
+    # Softer, more transparent gridlines; brighter axis lines for legibility
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(169,181,164,0.10)", gridwidth=1,
+                     showline=True, linewidth=1, linecolor="rgba(169,181,164,0.35)", zeroline=False,
+                     ticks="outside", tickcolor="rgba(169,181,164,0.35)",
+                     tickfont=dict(color=OAK_CREAM_DIM, size=11),
                      title_font=dict(color=OAK_CREAM, size=12))
-    fig.update_yaxes(showgrid=True, gridcolor=CHART_GRID, gridwidth=1,
-                     showline=True, linewidth=1, linecolor=OAK_AXIS, zeroline=False,
-                     ticks="outside", tickfont=dict(color=OAK_CREAM_DIM, size=11),
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(169,181,164,0.10)", gridwidth=1,
+                     showline=True, linewidth=1, linecolor="rgba(169,181,164,0.35)", zeroline=False,
+                     ticks="outside", tickcolor="rgba(169,181,164,0.35)",
+                     tickfont=dict(color=OAK_CREAM_DIM, size=11),
                      title_font=dict(color=OAK_CREAM, size=12))
     return fig
 
@@ -241,7 +245,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 [data-testid="stSidebar"] input, [data-testid="stSidebar"] [data-baseweb="select"] > div,
 [data-testid="stSidebar"] [data-baseweb="input"] > div {{
     background-color: {OAK_GREEN} !important; color: {OAK_CREAM} !important;
-    border: 1px solid {OAK_BORDER} !important; border-radius: 2px !important;
+    border: 1px solid {OAK_BORDER} !important; border-radius: 9px !important;
 }}
 [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] > div > div > div {{
     background-color: {OAK_SAGE} !important;
@@ -251,7 +255,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 }}
 
 .stButton > button {{
-    border-radius: 2px !important; font-family: 'Inter', sans-serif !important;
+    border-radius: 9px !important; font-family: 'Inter', sans-serif !important;
     font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.1em;
     font-size: 12px !important; padding: 14px 24px !important;
     transition: all 0.2s ease;
@@ -285,7 +289,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
     padding: 22px 26px;
     border: 1px solid {OAK_BORDER};
     border-left: 3px solid {OAK_SAGE};
-    border-radius: 3px;
+    border-radius: 10px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.02);
     transition: border-color 0.2s ease, transform 0.15s ease;
 }}
@@ -310,7 +314,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 
 [data-testid="stExpander"] {{
     background-color: {OAK_GREEN_2}; border: 1px solid {OAK_BORDER} !important;
-    border-radius: 2px !important; margin-bottom: 12px;
+    border-radius: 9px !important; margin-bottom: 12px;
 }}
 [data-testid="stExpander"] summary, [data-testid="stExpander"] details > summary {{
     background-color: transparent !important; color: {OAK_CREAM} !important;
@@ -320,16 +324,16 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 [data-testid="stExpander"] summary:hover {{ background-color: {OAK_GREEN_3} !important; }}
 
 [data-testid="stAlert"] {{
-    background-color: {OAK_GREEN_2} !important; border-radius: 2px !important;
+    background-color: {OAK_GREEN_2} !important; border-radius: 9px !important;
     border-left: 3px solid {OAK_SAGE} !important; color: {OAK_CREAM} !important;
 }}
 [data-testid="stAlert"] * {{ color: {OAK_CREAM} !important; }}
 
-[data-testid="stDataFrame"] {{ border: 1px solid {OAK_BORDER}; border-radius: 2px; }}
+[data-testid="stDataFrame"] {{ border: 1px solid {OAK_BORDER}; border-radius: 9px; }}
 hr {{ border-color: {OAK_BORDER} !important; margin: 32px 0 !important; }}
 .stSpinner > div {{ border-top-color: {OAK_SAGE} !important; }}
 .modebar {{ background-color: transparent !important; }}
-.modebar-btn path {{ fill: {OAK_AXIS} !important; }}
+.modebar-btn path {{ fill: {OAK_SAGE_DIM} !important; }}
 .modebar-btn:hover path {{ fill: {OAK_CREAM} !important; }}
 
 .oak-footer {{
@@ -376,6 +380,58 @@ hr {{ border-color: {OAK_BORDER} !important; margin: 32px 0 !important; }}
 }}
 .oak-metrics-table tr:last-child td {{ border-bottom: none; }}
 .oak-metrics-table td.strategy-col {{ color: {OAK_GOLD}; font-weight: 600; }}
+
+/* ---- Defensive legibility: ensure no dark-on-dark text slips through ---- */
+/* Dataframe / table cells */
+[data-testid="stDataFrame"] *, [data-testid="stTable"] * {{
+    color: {OAK_CREAM_DIM} !important;
+}}
+[data-testid="stDataFrame"] [role="columnheader"] {{
+    color: {OAK_CREAM} !important; background-color: {OAK_GREEN_3} !important;
+}}
+/* Slider min/max + current value labels */
+[data-testid="stSlider"] [data-testid="stTickBar"],
+[data-testid="stSlider"] [data-testid="stTickBarMin"],
+[data-testid="stSlider"] [data-testid="stTickBarMax"],
+[data-testid="stSlider"] div[data-baseweb] div {{
+    color: {OAK_CREAM_DIM} !important;
+}}
+[data-testid="stSlider"] [role="slider"] + div, .stSlider [data-testid="stThumbValue"] {{
+    color: {OAK_CREAM} !important;
+}}
+/* Selectbox / dropdown popover options (rendered in a portal) */
+[data-baseweb="popover"] li, [data-baseweb="menu"] li,
+ul[role="listbox"] li, [data-baseweb="select"] span {{
+    color: {OAK_CREAM} !important;
+}}
+[data-baseweb="popover"] ul, [data-baseweb="menu"] ul, ul[role="listbox"] {{
+    background-color: {OAK_GREEN_2} !important;
+}}
+[data-baseweb="popover"] li:hover, ul[role="listbox"] li:hover {{
+    background-color: {OAK_GREEN_3} !important;
+}}
+/* Number input text + radio/checkbox labels */
+[data-testid="stNumberInput"] input, [data-testid="stTextInput"] input {{
+    color: {OAK_CREAM} !important;
+}}
+.stRadio label, .stCheckbox label, [data-testid="stWidgetLabel"] {{
+    color: {OAK_CREAM} !important;
+}}
+/* Tooltips (the small "?" help bubbles) */
+[data-baseweb="tooltip"], [role="tooltip"] {{
+    background-color: {OAK_GREEN_2} !important; color: {OAK_CREAM} !important;
+    border: 1px solid {OAK_BORDER} !important;
+}}
+[data-baseweb="tooltip"] * {{ color: {OAK_CREAM} !important; }}
+/* Date input */
+[data-testid="stDateInput"] input {{ color: {OAK_CREAM} !important; }}
+/* General caption text */
+[data-testid="stCaptionContainer"], .stCaption {{ color: {OAK_SAGE_DIM} !important; }}
+
+/* Softer card shadows for depth */
+[data-testid="stMetric"] {{
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.03) !important;
+}}
 </style>
 """
 
@@ -1450,8 +1506,8 @@ if _show_results:
     # Net strategy (primary, gold, filled)
     fig.add_trace(go.Scatter(x=ts.index, y=ts["total_value_net"],
                              name="Strategy (Net of Fees)",
-                             line=dict(color=OAK_GOLD, width=3),
-                             fill="tozeroy", fillcolor="rgba(201,169,97,0.08)"))
+                             line=dict(color=OAK_GOLD, width=3, shape="spline", smoothing=0.5),
+                             fill="tozeroy", fillcolor="rgba(201,169,97,0.10)"))
     # Gross strategy (faded dotted)
     fig.add_trace(go.Scatter(x=ts.index, y=ts["total_value"],
                              name="Strategy (Gross)",
@@ -1593,7 +1649,7 @@ if _show_results:
             st.markdown(
                 f"<div style='background:{OAK_GREEN_2}; padding:16px 20px; "
                 f"border:1px solid {OAK_BORDER}; border-left:3px solid {OAK_RED}; "
-                f"border-radius:2px; margin-top:0;'>"
+                f"border-radius:9px; margin-top:0;'>"
                 f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
                 f"letter-spacing:0.12em; font-weight:600;'>Strategy Max Drawdown Episode</div>"
                 f"<div style='color:{OAK_CREAM}; font-family:Cormorant Garamond, serif; "
@@ -1934,7 +1990,7 @@ if _show_results:
         st.markdown(
             f"<div style='background:{OAK_GREEN_2}; padding:20px 24px; "
             f"border:1px solid {OAK_BORDER}; border-left:3px solid {OAK_GOLD}; "
-            f"border-radius:3px;'>"
+            f"border-radius:10px;'>"
             f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
             f"letter-spacing:0.14em; font-weight:600;'>Fee Structure</div>"
             f"<div style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:12px; line-height:1.8;'>"
