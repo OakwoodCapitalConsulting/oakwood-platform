@@ -434,33 +434,20 @@ ul[role="listbox"] li, [data-baseweb="select"] span {{
 }}
 
 /* ---- Visibility fixes for default Streamlit chrome ---- */
-/* 1. Sidebar collapse/expand arrow (both the in-sidebar control and the
-      collapsed floating control that reopens it) */
-[data-testid="stSidebarCollapseButton"] svg,
-[data-testid="collapsedControl"] svg,
-[data-testid="stSidebarCollapseButton"] path,
-[data-testid="collapsedControl"] path,
-button[kind="header"] svg {{
-    fill: {OAK_CREAM} !important; color: {OAK_CREAM} !important;
-}}
-[data-testid="stSidebarCollapseButton"], [data-testid="collapsedControl"] {{
-    color: {OAK_CREAM} !important;
-}}
-[data-testid="stSidebarCollapseButton"]:hover svg,
-[data-testid="collapsedControl"]:hover svg {{
-    fill: {OAK_GOLD} !important;
-}}
-
-/* 2. Scrollbars (main area + sidebar) — light thumb on the dark theme */
-::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+/* Sidebar collapse arrow + scrollbar are primarily handled by the dark base
+   theme + gold primaryColor in .streamlit/config.toml. The rules below are a
+   defensive fallback for the scrollbar in case the theme doesn't fully cover it. */
+::-webkit-scrollbar {{ width: 11px; height: 11px; }}
 ::-webkit-scrollbar-track {{ background: {OAK_GREEN_2}; }}
 ::-webkit-scrollbar-thumb {{
     background: {OAK_SAGE_DIM}; border-radius: 8px;
     border: 2px solid {OAK_GREEN_2};
 }}
-::-webkit-scrollbar-thumb:hover {{ background: {OAK_SAGE}; }}
+::-webkit-scrollbar-thumb:hover {{ background: {OAK_GOLD}; }}
 /* Firefox */
-* {{ scrollbar-color: {OAK_SAGE_DIM} {OAK_GREEN_2}; scrollbar-width: thin; }}
+html, body, [data-testid="stSidebar"], section[data-testid="stSidebar"] > div {{
+    scrollbar-color: {OAK_SAGE_DIM} {OAK_GREEN_2}; scrollbar-width: thin;
+}}
 
 /* 3. Number input +/- stepper buttons (initial capital etc.) */
 [data-testid="stNumberInput"] button {{

@@ -149,26 +149,15 @@ a[data-testid="stPageLink-NavLink"], a[data-testid="stPageLink-NavLink"] * {{
     color: {OAK_SAGE}; margin-top: 8px; display: block;
 }}
 
-/* ---- Visibility fixes for default Streamlit chrome ---- */
-[data-testid="stSidebarCollapseButton"] svg,
-[data-testid="collapsedControl"] svg,
-[data-testid="stSidebarCollapseButton"] path,
-[data-testid="collapsedControl"] path,
-button[kind="header"] svg {{
-    fill: {OAK_CREAM} !important; color: {OAK_CREAM} !important;
-}}
-[data-testid="stSidebarCollapseButton"]:hover svg,
-[data-testid="collapsedControl"]:hover svg {{
-    fill: {OAK_GOLD} !important;
-}}
-::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+/* ---- Visibility fixes (scrollbar fallback; arrow handled by config.toml theme) ---- */
+::-webkit-scrollbar {{ width: 11px; height: 11px; }}
 ::-webkit-scrollbar-track {{ background: {OAK_GREEN_2}; }}
 ::-webkit-scrollbar-thumb {{
     background: {OAK_SAGE_DIM}; border-radius: 8px;
     border: 2px solid {OAK_GREEN_2};
 }}
-::-webkit-scrollbar-thumb:hover {{ background: {OAK_SAGE}; }}
-* {{ scrollbar-color: {OAK_SAGE_DIM} {OAK_GREEN_2}; scrollbar-width: thin; }}
+::-webkit-scrollbar-thumb:hover {{ background: {OAK_GOLD}; }}
+html, body {{ scrollbar-color: {OAK_SAGE_DIM} {OAK_GREEN_2}; scrollbar-width: thin; }}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
