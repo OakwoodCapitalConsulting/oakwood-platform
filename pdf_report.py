@@ -401,10 +401,14 @@ def build_tearsheet(
         "Past performance and simulated past performance are not reliable indicators "
         "of future results. Actual results may differ materially.",
 
-        "The simulation does not account for transaction costs, market impact, "
-        "slippage, taxes (including Swiss withholding tax of 35% on dividends), or "
-        "liquidity constraints, unless explicitly stated. The investment universe is "
-        "applied on a current-constituent basis and may be subject to survivorship "
+        "The simulation models transaction costs (a configurable per-trade cost in "
+        "basis points) and the 35% Swiss withholding tax on dividends, which is "
+        "treated as non-reclaimable within the AMC (Actively Managed Certificate) "
+        "wrapper — only the net 65% of each gross dividend is reinvested. The same "
+        "after-tax dividend basis is applied to the SMI Total Return benchmark for a "
+        "consistent comparison. The simulation does not account for market impact, "
+        "slippage, bid-ask spreads, or liquidity constraints. The investment universe "
+        "is applied on a current-constituent basis and may be subject to survivorship "
         "bias. Performance figures are shown net of the stated management and "
         "performance fees.",
 

@@ -37,6 +37,18 @@ OAK_BTC       = "#F7931A"
 OAK_RED       = "#B85042"
 
 CHART_GRID = "#3A4A33"
+
+# ---------------------------------------------------------------------------
+# Swiss withholding tax (Verrechnungssteuer) on dividends.
+# In an AMC (Actively Managed Certificate) wrapper, the 35% Swiss withholding
+# tax on dividends is NOT reclaimable. So only the net (1 - 35%) = 65% of each
+# gross dividend is actually available for reinvestment. Applied consistently
+# to both the strategy's dividend-funded DCA and the SMI Total Return benchmark
+# so the comparison stays on the same after-tax basis.
+# ---------------------------------------------------------------------------
+WITHHOLDING_TAX = 0.35
+DIVIDEND_NET_FACTOR = 1.0 - WITHHOLDING_TAX  # 0.65
+
 CHART_BAR_COLORS = [
     OAK_SAGE, OAK_GOLD, OAK_CREAM, OAK_BTC,
     "#7A8975", "#B59A4D", "#D4D4CE", "#E08F2A",
@@ -726,7 +738,9 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     div_lookup = {}
     if not dividends_df.empty:
         for _, r in dividends_df.iterrows():
-            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = r["dividend_per_share"]
+            # Net dividend after non-reclaimable 35% Swiss withholding tax (AMC wrapper)
+            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = \
+                r["dividend_per_share"] * DIVIDEND_NET_FACTOR
 
     # Month-end dates within our index
     month_ends = set()
@@ -935,7 +949,10 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
     div_lookup = {}
     if not dividends_df.empty:
         for _, r in dividends_df.iterrows():
-            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = r["dividend_per_share"]
+            # Net dividend after non-reclaimable 35% Swiss withholding tax (AMC wrapper),
+            # applied to the SMI Total Return benchmark for a consistent comparison.
+            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = \
+                r["dividend_per_share"] * DIVIDEND_NET_FACTOR
 
     first_day = prices_clean.index[0]
 
@@ -2015,6 +2032,13 @@ if _show_results:
     # =====================================================================
     if not divs.empty:
         st.markdown("## Dividend Income by Year")
+        st.markdown(
+            f"<p style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:-8px;'>"
+            f"Net of {int(WITHHOLDING_TAX*100)}% Swiss withholding tax "
+            "(non-reclaimable in the AMC wrapper) — i.e. the amount actually "
+            "available for reinvestment into the BTC sleeve.</p>",
+            unsafe_allow_html=True
+        )
         # Compute actual cashflows received based on shares over time
         # (approximation: shares at ex-date — using ts via interpolation is overkill)
         # Use the initial share counts at start day for approximate display
@@ -2038,7 +2062,7 @@ if _show_results:
         div_yearly = divs.copy()
         div_yearly["year"] = pd.to_datetime(div_yearly["date"]).dt.year
         div_yearly["cash_chf"] = div_yearly.apply(
-            lambda r: smi_shares_init.get(r["ticker"], 0) * r["dividend_per_share"], axis=1
+            lambda r: smi_shares_init.get(r["ticker"], 0) * r["dividend_per_share"] * DIVIDEND_NET_FACTOR, axis=1
         )
         agg = div_yearly.groupby(["year", "ticker"])["cash_chf"].sum().reset_index()
         fig3 = go.Figure()
@@ -2220,6 +2244,7 @@ if _show_results:
                         ("Rebalancing Frequency", rebalance_freq),
                         ("DCA Window", f"{dca_months} months per dividend"),
                         ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
+                        ("Dividend Withholding Tax", f"{int(WITHHOLDING_TAX*100)}% (non-reclaimable, AMC)"),
                         ("Management Fee", f"{mgmt_fee_pct*100:.2f}% p.a."),
                         ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({crystallization_freq})"),
                         ("Hurdle", f"{hurdle_type}, {hwm_hurdle_pct*100:.1f}% (Year 1)"),
@@ -2248,8 +2273,9 @@ else:
 <div style='color:{OAK_CREAM_DIM}; line-height:1.7;'>
 <strong style='color:{OAK_CREAM};'>Initial allocation.</strong> Capital split at day 0
 between Equity Sleeve (SMI 20 by chosen weighting) and Bitcoin Sleeve (target % via spot purchase).<br><br>
-<strong style='color:{OAK_CREAM};'>Dividend harvesting.</strong> Each dividend collected in CHF
-and split into N monthly tranches (DCA), bought at month-end into BTC via USDCHF FX.<br><br>
+<strong style='color:{OAK_CREAM};'>Dividend harvesting.</strong> Each dividend collected in CHF,
+reduced by the 35% Swiss withholding tax (non-reclaimable in the AMC wrapper, so only the
+net 65% is available), and split into N monthly tranches (DCA), bought at month-end into BTC via USDCHF FX.<br><br>
 <strong style='color:{OAK_CREAM};'>Equity rebalancing.</strong> Quarterly return to target SMI weights —
 mirroring the SIX index review cycle.<br><br>
 <strong style='color:{OAK_CREAM};'>Risk management — Threshold rebalance.</strong>
@@ -2258,8 +2284,8 @@ Proceeds reinvested across SMI titles by current target weights.<br><br>
 <strong style='color:{OAK_CREAM};'>Result.</strong> Long Swiss equity income + structural BTC exposure
 with mechanical profit-taking on outsized crypto appreciation.<br><br>
 <strong style='color:{OAK_CREAM};'>Benchmarks.</strong> Strategy (net of fees) is compared against
-<em>SMI Total Return</em> (dividends reinvested into the same stocks, quarterly rebalanced)
-and the <em>SMI Price Index</em> (no dividend reinvestment).<br><br>
+<em>SMI Total Return</em> (dividends, net of the same 35% withholding tax, reinvested into the
+same stocks, quarterly rebalanced) and the <em>SMI Price Index</em> (no dividend reinvestment).<br><br>
 <strong style='color:{OAK_CREAM};'>Fees.</strong> Management fee accrued daily, performance fee
 charged annually on returns above a High Water Mark with a Year-1 hurdle. All risk metrics
 computed on the net-of-fees series.
