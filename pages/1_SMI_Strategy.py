@@ -1198,11 +1198,19 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
 
 
 def monthly_returns_matrix(values):
-    """Return a DataFrame of monthly returns (rows: year, cols: month)."""
+    """Return a DataFrame of monthly returns (rows: year, cols: month).
+    The first month's return is measured against the series' starting value so
+    no month (and no full-year figure) is silently dropped."""
     if values is None or values.empty:
         return pd.DataFrame()
     monthly = values.resample("ME").last()
-    mret = monthly.pct_change().dropna()
+    if len(monthly) < 1:
+        return pd.DataFrame()
+    # Prepend the starting value as an anchor so the first month gets a return
+    start = values.iloc[0]
+    anchor_idx = values.index[0] - pd.Timedelta(days=1)
+    monthly_anchored = pd.concat([pd.Series([start], index=[anchor_idx]), monthly])
+    mret = monthly_anchored.pct_change().dropna()
     if mret.empty:
         return pd.DataFrame()
     df = pd.DataFrame({"ret": mret.values}, index=mret.index)
@@ -1212,12 +1220,16 @@ def monthly_returns_matrix(values):
     pivot = pivot.reindex(columns=range(1, 13))
     pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    # YTD column
-    yearly = values.resample("YE").last()
-    yret = yearly.pct_change().dropna()
-    # Map year → yearly return
-    pivot["YTD"] = pivot.index.map(lambda y: yret[yret.index.year == y].iloc[0]
-                                    if (yret.index.year == y).any() else np.nan)
+    # Full-year column: compound the monthly returns actually present that year
+    def _fy(row):
+        vals = [v for v in row.values if pd.notna(v)]
+        if not vals:
+            return np.nan
+        prod = 1.0
+        for v in vals:
+            prod *= (1 + v)
+        return prod - 1
+    pivot["YTD"] = pivot.apply(_fy, axis=1)
     return pivot
 
 
@@ -1254,18 +1266,24 @@ def max_drawdown_info(values):
     }
 
 
-def compute_risk_metrics(values, risk_free_rate=0.01):
-    """Comprehensive risk metrics from a daily CHF value series."""
+def compute_risk_metrics(values, risk_free_rate=0.01, base_value=None):
+    """Comprehensive risk metrics from a daily CHF value series.
+    base_value: if given, total return and CAGR are measured against this
+    (e.g. the investor's initial capital) instead of the first series value,
+    so the figures match the KPI boxes exactly."""
     if values is None or values.empty or len(values) < 30:
         return {}
     returns = values.pct_change().dropna()
     if returns.empty:
         return {}
     n_days = len(returns)
-    years = n_days / 252.0
+    years = n_days / 252.0  # for annualizing volatility (trading days)
+    # CAGR must use CALENDAR time so it matches the KPI boxes exactly.
+    cal_years = (values.index[-1] - values.index[0]).days / 365.25
 
-    total_return = float(values.iloc[-1] / values.iloc[0] - 1)
-    cagr = float((values.iloc[-1] / values.iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    start_val = float(base_value) if base_value else float(values.iloc[0])
+    total_return = float(values.iloc[-1] / start_val - 1)
+    cagr = float((values.iloc[-1] / start_val) ** (1 / cal_years) - 1) if cal_years > 0 else 0.0
     vol_ann = float(returns.std() * np.sqrt(252))
 
     sharpe = (cagr - risk_free_rate) / vol_ann if vol_ann > 0 else 0.0
@@ -1595,10 +1613,11 @@ if _show_results:
     # =====================================================================
     st.markdown("## Risk Analytics")
 
-    # Compute metrics for all three series — Strategy is NET of fees
-    strat_m = compute_risk_metrics(ts["total_value_net"], risk_free_rate)
-    tr_m = compute_risk_metrics(bench["smi_tr"], risk_free_rate) if not bench.empty else {}
-    pr_m = compute_risk_metrics(bench["smi_price"], risk_free_rate) if not bench.empty else {}
+    # Compute metrics for all three series — Strategy is NET of fees.
+    # All measured against initial_capital so CAGR/Total Return match the KPI boxes.
+    strat_m = compute_risk_metrics(ts["total_value_net"], risk_free_rate, base_value=initial_capital)
+    tr_m = compute_risk_metrics(bench["smi_tr"], risk_free_rate, base_value=initial_capital) if not bench.empty else {}
+    pr_m = compute_risk_metrics(bench["smi_price"], risk_free_rate, base_value=initial_capital) if not bench.empty else {}
     bm_tr = compute_benchmark_metrics(ts["total_value_net"],
                                        bench["smi_tr"] if not bench.empty else pd.Series(dtype=float),
                                        risk_free_rate)
@@ -2254,11 +2273,17 @@ if _show_results:
                     yearly_net = ts["total_value_net"].resample("YE").last()
                     yearly_ret = yearly_net.pct_change()
                     yearly_ret.iloc[0] = yearly_net.iloc[0] / initial_capital - 1
-                    yr_labels = [str(y) for y in yearly_net.index.year]
+                    # Flag partial first/last years (backtest doesn't span the whole year)
+                    first_dt, last_dt = ts.index[0], ts.index[-1]
+                    yr_labels = []
+                    for y in yearly_net.index.year:
+                        partial = ((y == first_dt.year and (first_dt.month, first_dt.day) > (1, 7))
+                                   or (y == last_dt.year and (last_dt.month, last_dt.day) < (12, 24)))
+                        yr_labels.append(f"{y}*" if partial else str(y))
                     yr_vals = list(yearly_ret.values * 100)
                     png3 = render_bar_chart(yr_labels, yr_vals, ylabel="Annual Return (Net)",
                                             hurdle=hwm_hurdle_pct * 100)
-                    pdf_figures.append(("Yearly Performance & High Water Mark", png3))
+                    pdf_figures.append(("Yearly Net Performance", png3))
                 except Exception:
                     pass
 

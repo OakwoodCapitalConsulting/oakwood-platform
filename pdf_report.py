@@ -125,8 +125,9 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
         else:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-        leg = ax.legend(fontsize=8, loc="upper left", frameon=False,
-                        handlelength=1.6, handletextpad=0.6, columnspacing=1.2,
+        leg = ax.legend(fontsize=8, loc="lower left", frameon=False,
+                        bbox_to_anchor=(0, 1.01), handlelength=1.6,
+                        handletextpad=0.6, columnspacing=1.4,
                         ncol=len(series_dict) if len(series_dict) <= 3 else 2)
         if leg:
             for text in leg.get_texts():
@@ -179,15 +180,22 @@ def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
         ax.axhline(0, color="#8A9584", linewidth=0.8, zorder=2)
         # Add headroom so value labels don't collide with the top
         ymin, ymax = ax.get_ylim()
-        ax.set_ylim(ymin - abs(ymin)*0.12, ymax + abs(ymax)*0.15)
+        ax.set_ylim(ymin - abs(ymin)*0.14, ymax + abs(ymax)*0.18)
         if hurdle is not None:
             ax.axhline(hurdle, color=MPL_GOLD, linewidth=1.3, linestyle="--",
-                       label=f"Year-1 Hurdle {hurdle:.0f}%", zorder=2)
-            leg = ax.legend(fontsize=8, frameon=False, loc="upper right")
+                       label=f"Year-1 Performance-Fee Hurdle ({hurdle:.0f}%)", zorder=2)
+            leg = ax.legend(fontsize=8, frameon=False, loc="lower left",
+                            bbox_to_anchor=(0, 1.01))
             if leg:
                 for t in leg.get_texts():
                     t.set_color("#2A2A26")
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+        # Footnote if any partial-year labels are present
+        if any("*" in str(lbl) for lbl in x_labels):
+            ax.annotate("* Partial year — backtest does not span the full calendar year.",
+                        xy=(0, 0), xytext=(0, -34), textcoords="offset points",
+                        xycoords="axes fraction", fontsize=6.5, color="#9AA595",
+                        ha="left", va="top")
         fig.tight_layout(pad=1.0)
         bio = io.BytesIO()
         fig.savefig(bio, format="png", facecolor=PANEL, bbox_inches="tight", dpi=170)
