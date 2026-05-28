@@ -93,15 +93,32 @@ def _register_fonts():
     _FONTS_REGISTERED = True
 
 
-def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_first=False):
+def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_first=False,
+                      annotate_end=False, crisis_phases=None):
     """Render a line chart to PNG bytes using matplotlib (no browser needed).
-    series_dict: ordered dict-like list of (label, pandas Series, color, style)."""
+    series_dict: ordered dict-like list of (label, pandas Series, color, style).
+    annotate_end: if True, label the final value at the end of each line.
+    crisis_phases: optional list of (start_date, end_date, label) to shade."""
     try:
         plt.rcParams["font.family"] = "DejaVu Sans"
         PANEL = "#FBFBF8"   # matches C_PAGE_BG — chart blends into the light page
         fig, ax = plt.subplots(figsize=(9.5, 4.0), dpi=170)
         fig.patch.set_facecolor(PANEL)
         ax.set_facecolor(PANEL)
+        # Crisis-phase shading (drawn first, behind the lines)
+        if crisis_phases:
+            import pandas as _pd
+            for cp in crisis_phases:
+                try:
+                    cs, ce, clabel = cp
+                    ax.axvspan(_pd.Timestamp(cs), _pd.Timestamp(ce),
+                               color="#B85042", alpha=0.07, zorder=0)
+                    ax.annotate(clabel, xy=(_pd.Timestamp(cs), 0),
+                                xytext=(2, 6), textcoords="offset points",
+                                fontsize=6, color="#B07A6E", va="bottom", ha="left",
+                                rotation=0, zorder=1)
+                except Exception:
+                    pass
         for i, (label, s, color, style) in enumerate(series_dict):
             if s is None or len(s) == 0:
                 continue
@@ -113,6 +130,19 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
                     solid_capstyle="round")
             if fill_first and i == 0:
                 ax.fill_between(s.index, vals, alpha=0.10, color=color, linewidth=0)
+            # Endpoint value annotation (IB-style)
+            if annotate_end and len(vals) > 0:
+                end_val = vals[-1]
+                if percent:
+                    txt = f"{end_val:.1f}%"
+                elif end_val >= 1e6:
+                    txt = f"{end_val/1e6:.2f}M"
+                else:
+                    txt = f"{end_val:,.0f}"
+                ax.annotate(txt, xy=(s.index[-1], end_val),
+                            xytext=(6, 0), textcoords="offset points",
+                            fontsize=7.5, color=color, va="center", ha="left",
+                            fontweight="bold")
         ax.set_ylabel(ylabel, fontsize=8.5, color="#6B7868", labelpad=8)
         ax.tick_params(labelsize=8, colors="#6B7868", length=0)
         ax.tick_params(axis="both", labelcolor="#6B7868")
@@ -121,6 +151,9 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
         for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
         ax.spines["bottom"].set_color("#D2D5CC")
+        # Add right margin so endpoint labels aren't clipped
+        if annotate_end:
+            ax.margins(x=0.06)
         if percent:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
         else:
@@ -210,11 +243,66 @@ def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
         return None
 
 
-# ---------------------------------------------------------------------------
-# Brand palette — LIGHT CLASSIC THEME (reportlab Color objects)
-# Warm off-white page, deep green for headers/text, gold accent. Mirrors the
-# Oakwood website's clean, light institutional look. Optimised for both screen
-# and print.
+def render_scatter_chart(points, xlabel="Volatility (ann.)", ylabel="CAGR (ann.)"):
+    """Risk/return scatter: each point is (label, vol%, ret%, color, marker).
+    Shows where the strategy sits versus benchmarks on a risk/return plane."""
+    try:
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        PANEL = "#FBFBF8"
+        fig, ax = plt.subplots(figsize=(9.5, 5.2), dpi=170)
+        fig.patch.set_facecolor(PANEL)
+        ax.set_facecolor(PANEL)
+        vols = [p[1] for p in points]
+        rets = [p[2] for p in points]
+        # Axis ranges: padded window around the data (not forced to zero) so
+        # closely-clustered points are still distinguishable.
+        xlo, xhi = min(vols), max(vols)
+        ylo, yhi = min(rets), max(rets)
+        xpad = max((xhi - xlo) * 0.45, 1.5)
+        ypad = max((yhi - ylo) * 0.45, 1.5)
+        x0, x1 = max(0, xlo - xpad), xhi + xpad
+        y0, y1 = max(0, ylo - ypad), yhi + ypad
+        # Iso-Sharpe reference lines through the window
+        for sharpe in (0.5, 1.0):
+            ax.plot([x0, x1], [sharpe * x0, sharpe * x1],
+                    color="#D2D5CC", linewidth=0.7, linestyle=":", zorder=1)
+            if sharpe * x1 <= y1:
+                ax.annotate(f"Sharpe {sharpe:g}", xy=(x1, sharpe * x1),
+                            fontsize=6.5, color="#B7BEB0", va="bottom", ha="right")
+        # Alternate label placement to avoid overlap
+        for idx, (label, vol, ret, color, marker) in enumerate(points):
+            ax.scatter([vol], [ret], s=210, c=color, marker=marker,
+                       edgecolors="white", linewidths=1.3, zorder=4)
+            dy = 13 if idx % 2 == 0 else -16
+            ax.annotate(label, xy=(vol, ret), xytext=(0, dy),
+                        textcoords="offset points", fontsize=8.5,
+                        color="#2A2A26", va="center", ha="center", zorder=5,
+                        fontweight="bold")
+        ax.set_xlabel(xlabel, fontsize=8.5, color="#6B7868", labelpad=8)
+        ax.set_ylabel(ylabel, fontsize=8.5, color="#6B7868", labelpad=8)
+        ax.tick_params(labelsize=8, colors="#6B7868", length=0)
+        ax.grid(True, color="#E2E4DD", linewidth=0.6, alpha=0.9)
+        ax.set_axisbelow(True)
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+        ax.spines["left"].set_color("#D2D5CC")
+        ax.spines["bottom"].set_color("#D2D5CC")
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(y0, y1)
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+        fig.tight_layout(pad=1.0)
+        bio = io.BytesIO()
+        fig.savefig(bio, format="png", facecolor=PANEL, bbox_inches="tight", dpi=170)
+        plt.close(fig)
+        bio.seek(0)
+        return bio.getvalue()
+    except Exception:
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None
 # ---------------------------------------------------------------------------
 C_PAGE_BG = colors.HexColor("#FBFBF8")    # warm off-white — page background
 C_PANEL   = colors.HexColor("#F4F4EF")    # very light panel for cards
@@ -247,7 +335,7 @@ def _styles():
     )
     styles["h2"] = ParagraphStyle(
         "OakH2", parent=ss["Heading2"], fontName=F_SERIF,
-        fontSize=16, textColor=C_GREEN, spaceBefore=16, spaceAfter=8, leading=19,
+        fontSize=16, textColor=C_GREEN, spaceBefore=11, spaceAfter=7, leading=19,
     )
     styles["h3"] = ParagraphStyle(
         "OakH3", parent=ss["Heading3"], fontName=F_SANS_BOLD,
@@ -350,17 +438,22 @@ def _kpi_grid(kpis, styles, cols=4, accent=False):
 
 
 def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True):
-    """Generic styled table."""
-    header_cells = [Paragraph(f"<b>{h}</b>", ParagraphStyle(
-        "th", fontName=F_SANS_BOLD, fontSize=8, textColor=C_CREAM, leading=10))
-        for h in headers]
+    """Generic styled table. First column left-aligned (labels), all subsequent
+    columns right-aligned (numbers) — the professional finance convention."""
+    header_cells = []
+    for j, h in enumerate(headers):
+        align = TA_LEFT if j == 0 else TA_RIGHT
+        header_cells.append(Paragraph(f"<b>{h}</b>", ParagraphStyle(
+            f"th{j}", fontName=F_SANS_BOLD, fontSize=8, textColor=C_CREAM,
+            leading=10, alignment=align)))
     data = [header_cells]
     for r in rows:
         cells = []
         for j, val in enumerate(r):
+            align = TA_LEFT if j == 0 else TA_RIGHT
             style = ParagraphStyle(
-                "td", fontName=F_SANS if j > 0 or not highlight_first_col else F_SANS_BOLD,
-                fontSize=8, textColor=C_TEXT, leading=11)
+                f"td{j}", fontName=F_SANS if j > 0 or not highlight_first_col else F_SANS_BOLD,
+                fontSize=8, textColor=C_TEXT, leading=11, alignment=align)
             cells.append(Paragraph(str(val), style))
         data.append(cells)
 
@@ -568,21 +661,14 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
         canvas.drawCentredString(W / 2, y, ln)
         y -= 6 * mm
 
-    # Hero highlight metrics band (up to 3), centered
+    # Hero highlight metrics band (up to 3), centered.
+    # Separated by whitespace only — no divider lines (cleaner, more premium).
     if highlight_kpis:
         n = len(highlight_kpis)
         band_w = 170 * mm
         cell_w = band_w / n
         x0 = (W - band_w) / 2
         y_band = 95 * mm
-        # divider lines between cells — subtle, semi-transparent sage hairlines
-        canvas.setStrokeColor(COVER_SAGE)
-        canvas.setStrokeAlpha(0.25)
-        canvas.setLineWidth(0.5)
-        for i in range(1, n):
-            xd = x0 + i * cell_w
-            canvas.line(xd, y_band - 2 * mm, xd, y_band + 16 * mm)
-        canvas.setStrokeAlpha(1.0)
         for i, (label, value) in enumerate(highlight_kpis):
             cx = x0 + i * cell_w + cell_w / 2
             canvas.setFillColor(C_GOLD)
@@ -619,12 +705,29 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
     canvas.restoreState()
 
 
-def _header_footer(canvas, doc, strategy_name):
+def _header_footer(canvas, doc, strategy_name, logo_path=None):
     canvas.saveState()
     W, H = A4
     # Full-page light background (ReportLab doesn't fill it automatically)
     canvas.setFillColor(C_PAGE_BG)
     canvas.rect(0, 0, W, H, fill=1, stroke=0)
+
+    # Subtle centered logo watermark (very faint) on interior pages
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from reportlab.lib.utils import ImageReader
+            img = ImageReader(logo_path)
+            iw, ih = img.getSize()
+            wm_w = 120 * mm
+            wm_h = wm_w * ih / iw
+            canvas.saveState()
+            canvas.setFillAlpha(0.03)
+            canvas.drawImage(img, (W - wm_w) / 2, (H - wm_h) / 2,
+                             width=wm_w, height=wm_h,
+                             mask="auto", preserveAspectRatio=True)
+            canvas.restoreState()
+        except Exception:
+            pass
 
     # Header band — deep green, mirroring the website's header
     canvas.setFillColor(C_GREEN)
@@ -648,7 +751,11 @@ def _header_footer(canvas, doc, strategy_name):
     canvas.drawString(20 * mm, 12 * mm,
                       "For Illustrative Purposes · Not Investment Advice")
     canvas.drawCentredString(W / 2, 12 * mm, strategy_name)
-    canvas.drawRightString(W - 20 * mm, 12 * mm, f"{doc.page}")
+    total = getattr(doc, "_total_pages", None)
+    if total:
+        canvas.drawRightString(W - 20 * mm, 12 * mm, f"{doc.page:02d} / {total:02d}")
+    else:
+        canvas.drawRightString(W - 20 * mm, 12 * mm, f"{doc.page:02d}")
     canvas.setStrokeColor(C_BORDER)
     canvas.setLineWidth(0.5)
     canvas.line(20 * mm, 15 * mm, W - 20 * mm, 15 * mm)
@@ -671,6 +778,8 @@ def build_tearsheet(
     universe_rows,         # list of [name, ticker, sector] for holdings page
     monthly_returns=None,  # optional: dict {year: [12 monthly % values or None]}
     exec_summary=None,     # optional: short prose string for an executive summary
+    key_takeaways=None,    # optional: list of short bullet strings
+    scatter_png=None,      # optional: pre-rendered risk/return scatter PNG bytes
 ):
     """Build the PDF and return raw bytes."""
     styles = _styles()
@@ -711,16 +820,38 @@ def build_tearsheet(
         story.append(Paragraph(exec_summary, styles["body"]))
         story.append(Spacer(1, 8))
 
+    # Key Takeaways box — crisp bullets in a gold-accented panel
+    if key_takeaways:
+        kt_style = ParagraphStyle(
+            "kt", fontName=F_SANS, fontSize=8.5, textColor=C_TEXT, leading=13,
+            leftIndent=10, bulletIndent=0, spaceAfter=4)
+        kt_flow = [Paragraph("KEY TAKEAWAYS", ParagraphStyle(
+            "kth", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_GOLD,
+            leading=10, spaceAfter=6))]
+        for tk in key_takeaways[:4]:
+            kt_flow.append(Paragraph(f"<font color='#B8954A'>&#9642;</font>&nbsp;&nbsp;{tk}", kt_style))
+        kt_tbl = Table([[kt_flow]], colWidths=[170 * mm])
+        kt_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), C_PANEL),
+            ("LINEABOVE", (0, 0), (-1, 0), 1.5, C_GOLD),
+            ("TOPPADDING", (0, 0), (-1, -1), 11),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 11),
+            ("LEFTPADDING", (0, 0), (-1, -1), 14),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ]))
+        story.append(kt_tbl)
+        story.append(Spacer(1, 12))
+
     story.append(Paragraph("Performance Summary", styles["h2"]))
     story.append(Paragraph("Net of fees, transaction costs and 35% dividend withholding tax",
                            styles["h3"]))
     story.append(Spacer(1, 2))
     story.append(_kpi_grid(kpis_performance, styles, cols=4, accent=True))
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 9))
 
     story.append(Paragraph("Risk &amp; Risk-Adjusted Metrics", styles["h2"]))
     story.append(_kpi_grid(kpis_risk, styles, cols=4))
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 9))
 
     story.append(Paragraph("Fee Summary", styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
@@ -738,16 +869,26 @@ def build_tearsheet(
     story.append(PageBreak())
 
     # ===== Charts =====
+    # First two charts (evolution + drawdown) on one page, sized to fill it.
+    # The yearly performance chart gets its own page, larger and balanced.
     story.append(Paragraph("Portfolio Evolution &amp; Risk Charts", styles["h2"]))
     any_chart = False
-    for title, png_bytes in figures:
-        img = _png_to_image(png_bytes, width_mm=168, height_mm=71)
+    n_fig = len(figures)
+    for idx, (title, png_bytes) in enumerate(figures):
+        is_last = (idx == n_fig - 1)
+        # Last chart (yearly perf): larger, on its own page
+        if is_last and n_fig >= 3:
+            story.append(PageBreak())
+            img = _png_to_image(png_bytes, width_mm=170, height_mm=95)
+        else:
+            img = _png_to_image(png_bytes, width_mm=170, height_mm=78)
         if img is not None:
             any_chart = True
             block = KeepTogether([
                 Paragraph(title, styles["h3"]),
+                Spacer(1, 2),
                 img,
-                Spacer(1, 10),
+                Spacer(1, 14),
             ])
             story.append(block)
     if not any_chart:
@@ -756,6 +897,17 @@ def build_tearsheet(
             "unavailable in the current environment). All numerical data is "
             "provided in full in the tables on the following pages.",
             styles["body"]))
+
+    # Risk/Return positioning scatter — fills the lower half of the yearly page
+    if scatter_png:
+        sc_img = _png_to_image(scatter_png, width_mm=150, height_mm=82)
+        if sc_img is not None:
+            story.append(Spacer(1, 8))
+            story.append(KeepTogether([
+                Paragraph("Risk / Return Positioning", styles["h3"]),
+                Spacer(1, 2),
+                sc_img,
+            ]))
 
     story.append(PageBreak())
 
@@ -856,8 +1008,24 @@ def build_tearsheet(
                     highlight_kpis, logo_path)
 
     def on_later(canvas, doc_):
-        _header_footer(canvas, doc_, strategy_name)
+        _header_footer(canvas, doc_, strategy_name, logo_path=logo_path)
 
+    # Pass 1: build once to count total pages (no footer total yet)
+    try:
+        import copy
+        probe_buf = io.BytesIO()
+        probe_doc = SimpleDocTemplate(
+            probe_buf, pagesize=A4,
+            topMargin=28 * mm, bottomMargin=18 * mm,
+            leftMargin=20 * mm, rightMargin=20 * mm)
+        probe_story = copy.copy(story)
+        probe_doc.build(probe_story, onFirstPage=on_first, onLaterPages=on_later)
+        total_pages = probe_doc.page
+        doc._total_pages = total_pages
+    except Exception:
+        doc._total_pages = None
+
+    # Pass 2: real build with the total page count available to the footer
     doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
     buf.seek(0)
     return buf.getvalue()

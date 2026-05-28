@@ -2246,7 +2246,7 @@ if _show_results:
         with st.spinner("Building PDF tearsheet ..."):
             try:
                 from pdf_report import (build_tearsheet, render_line_chart,
-                                        render_bar_chart)
+                                        render_bar_chart, render_scatter_chart)
 
                 # Render charts with matplotlib (stable, no headless browser).
                 pdf_figures = []
@@ -2257,15 +2257,24 @@ if _show_results:
                 if not bench.empty:
                     _evo.append(("SMI Total Return", bench["smi_tr"], OAK_SAGE, {"lw": 1.5, "ls": "--"}))
                     _evo.append(("SMI Price Index", bench["smi_price"], "#7D8A78", {"lw": 1.2, "ls": ":"}))
-                png1 = render_line_chart(_evo, ylabel="Value (CHF)", fill_first=True)
+                png1 = render_line_chart(_evo, ylabel="Value (CHF)", fill_first=True,
+                                         annotate_end=True)
                 pdf_figures.append(("Portfolio Evolution vs. Benchmarks", png1))
 
-                # 2. Drawdown
+                # 2. Drawdown — with crisis-phase shading where they fall in range
                 dd_strat = compute_drawdown(ts["total_value_net"])
                 _dd = [("Strategy (Net)", dd_strat, OAK_GOLD, {"lw": 1.8})]
                 if not bench.empty:
                     _dd.append(("SMI Total Return", compute_drawdown(bench["smi_tr"]), OAK_SAGE, {"lw": 1.3, "ls": "--"}))
-                png2 = render_line_chart(_dd, ylabel="Drawdown", percent=True, fill_first=True)
+                _all_crises = [
+                    ("2020-02-19", "2020-04-07", "COVID-19"),
+                    ("2022-01-03", "2022-10-20", "2022 Bear"),
+                ]
+                _t0, _t1 = ts.index[0], ts.index[-1]
+                _crises = [(s, e, lbl) for (s, e, lbl) in _all_crises
+                           if pd.Timestamp(e) >= _t0 and pd.Timestamp(s) <= _t1]
+                png2 = render_line_chart(_dd, ylabel="Drawdown", percent=True,
+                                         fill_first=True, crisis_phases=_crises)
                 pdf_figures.append(("Drawdown Analysis", png2))
 
                 # 3. Yearly returns bar chart
@@ -2286,6 +2295,38 @@ if _show_results:
                     pdf_figures.append(("Yearly Net Performance", png3))
                 except Exception:
                     pass
+
+                # 4. Risk/Return scatter — Strategy vs benchmarks
+                pdf_scatter = None
+                try:
+                    sc_points = [("Strategy", strat_m.get("vol_ann", 0) * 100,
+                                  strat_m.get("cagr", 0) * 100, OAK_GOLD, "o")]
+                    if tr_m:
+                        sc_points.append(("SMI Total Return", tr_m.get("vol_ann", 0) * 100,
+                                          tr_m.get("cagr", 0) * 100, OAK_SAGE, "s"))
+                    if pr_m:
+                        sc_points.append(("SMI Price Index", pr_m.get("vol_ann", 0) * 100,
+                                          pr_m.get("cagr", 0) * 100, "#9AA595", "^"))
+                    pdf_scatter = render_scatter_chart(sc_points)
+                except Exception:
+                    pdf_scatter = None
+
+                # Key takeaways — data-driven bullet points
+                pdf_takeaways = []
+                try:
+                    _exc = excess_vs_tr * 100
+                    _rel = "outperformed" if _exc >= 0 else "trailed"
+                    pdf_takeaways.append(
+                        f"Net CAGR of {strat_net_cagr*100:.1f}% over the full backtest, "
+                        f"{_rel} the SMI Total Return benchmark by {abs(_exc):.1f}% p.a.")
+                    pdf_takeaways.append(
+                        f"Sharpe ratio of {_fmt_num(strat_m.get('sharpe'))} and maximum drawdown of "
+                        f"{_fmt_pct(strat_m.get('max_drawdown'))}, reflecting the structural Bitcoin allocation.")
+                    pdf_takeaways.append(
+                        f"Total fees of CHF {fees_total:,.0f} ({fee_drag*100:.1f}% p.a. drag), "
+                        f"net of {int(WITHHOLDING_TAX*100)}% non-reclaimable dividend withholding tax.")
+                except Exception:
+                    pdf_takeaways = None
 
                 def _row(metric, key, fmt):
                     s = strat_m.get(key)
@@ -2399,6 +2440,8 @@ if _show_results:
                     universe_rows=universe_rows,
                     monthly_returns=pdf_monthly,
                     exec_summary=pdf_exec,
+                    key_takeaways=pdf_takeaways,
+                    scatter_png=pdf_scatter,
                 )
 
                 st.download_button(
