@@ -37,6 +37,62 @@ MPL_RED   = "#B85042"
 MPL_GRID  = "#D8DCD3"
 
 
+# ---------------------------------------------------------------------------
+# Font registration — embed Crimson Pro (serif display) + Work Sans (grotesk).
+# Falls back to the built-in Times/Helvetica if the TTFs aren't found, so the
+# PDF never fails to build.
+# ---------------------------------------------------------------------------
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# Logical font names used throughout the report, mapped to either the embedded
+# families or the safe built-in fallbacks.
+F_SERIF = "Times-Roman"
+F_SERIF_BOLD = "Times-Bold"
+F_SERIF_ITALIC = "Times-Italic"
+F_SANS = "Helvetica"
+F_SANS_BOLD = "Helvetica-Bold"
+F_SANS_ITALIC = "Helvetica-Oblique"
+
+_FONTS_REGISTERED = False
+
+
+def _register_fonts():
+    global _FONTS_REGISTERED, F_SERIF, F_SERIF_BOLD, F_SERIF_ITALIC
+    global F_SANS, F_SANS_BOLD, F_SANS_ITALIC
+    if _FONTS_REGISTERED:
+        return
+    fdir = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+    mapping = [
+        ("CrimsonPro", "CrimsonPro-Regular.ttf", "CrimsonPro-Bold.ttf", "CrimsonPro-Italic.ttf"),
+        ("WorkSans", "WorkSans-Regular.ttf", "WorkSans-Bold.ttf", "WorkSans-Italic.ttf"),
+    ]
+    try:
+        ok = {}
+        for family, reg, bold, ital in mapping:
+            rp = os.path.join(fdir, reg)
+            bp = os.path.join(fdir, bold)
+            ip = os.path.join(fdir, ital)
+            if os.path.exists(rp):
+                pdfmetrics.registerFont(TTFont(family, rp))
+                if os.path.exists(bp):
+                    pdfmetrics.registerFont(TTFont(family + "-Bold", bp))
+                if os.path.exists(ip):
+                    pdfmetrics.registerFont(TTFont(family + "-Italic", ip))
+                ok[family] = True
+        if ok.get("CrimsonPro"):
+            F_SERIF = "CrimsonPro"
+            F_SERIF_BOLD = "CrimsonPro-Bold"
+            F_SERIF_ITALIC = "CrimsonPro-Italic"
+        if ok.get("WorkSans"):
+            F_SANS = "WorkSans"
+            F_SANS_BOLD = "WorkSans-Bold"
+            F_SANS_ITALIC = "WorkSans-Italic"
+    except Exception:
+        pass  # keep built-in fallbacks
+    _FONTS_REGISTERED = True
+
+
 def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_first=False):
     """Render a line chart to PNG bytes using matplotlib (no browser needed).
     series_dict: ordered dict-like list of (label, pandas Series, color, style)."""
@@ -158,55 +214,56 @@ C_WHITE   = colors.white
 
 
 def _styles():
+    _register_fonts()
     ss = getSampleStyleSheet()
     styles = {}
     styles["title"] = ParagraphStyle(
-        "OakTitle", parent=ss["Title"], fontName="Times-Roman",
+        "OakTitle", parent=ss["Title"], fontName=F_SERIF,
         fontSize=26, textColor=C_GREEN, spaceAfter=2, leading=30, alignment=TA_LEFT,
     )
     styles["subtitle"] = ParagraphStyle(
-        "OakSubtitle", parent=ss["Normal"], fontName="Helvetica",
+        "OakSubtitle", parent=ss["Normal"], fontName=F_SANS,
         fontSize=10.5, textColor=C_MUTED, spaceAfter=14, leading=15, alignment=TA_LEFT,
     )
     styles["h2"] = ParagraphStyle(
-        "OakH2", parent=ss["Heading2"], fontName="Times-Roman",
-        fontSize=15, textColor=C_GREEN, spaceBefore=16, spaceAfter=8, leading=18,
+        "OakH2", parent=ss["Heading2"], fontName=F_SERIF,
+        fontSize=16, textColor=C_GREEN, spaceBefore=16, spaceAfter=8, leading=19,
     )
     styles["h3"] = ParagraphStyle(
-        "OakH3", parent=ss["Heading3"], fontName="Helvetica-Bold",
-        fontSize=8.5, textColor=C_MUTED, spaceBefore=10, spaceAfter=4,
+        "OakH3", parent=ss["Heading3"], fontName=F_SANS_BOLD,
+        fontSize=8, textColor=C_MUTED, spaceBefore=10, spaceAfter=4,
         leading=11, alignment=TA_LEFT,
     )
     styles["body"] = ParagraphStyle(
-        "OakBody", parent=ss["Normal"], fontName="Helvetica",
+        "OakBody", parent=ss["Normal"], fontName=F_SANS,
         fontSize=9.5, textColor=C_TEXT, spaceAfter=7, leading=14, alignment=TA_JUSTIFY,
     )
     styles["small"] = ParagraphStyle(
-        "OakSmall", parent=ss["Normal"], fontName="Helvetica",
+        "OakSmall", parent=ss["Normal"], fontName=F_SANS,
         fontSize=8, textColor=C_MUTED, spaceAfter=4, leading=11,
     )
     styles["disclaimer"] = ParagraphStyle(
-        "OakDisc", parent=ss["Normal"], fontName="Helvetica",
+        "OakDisc", parent=ss["Normal"], fontName=F_SANS,
         fontSize=7.5, textColor=C_MUTED, spaceAfter=4, leading=10, alignment=TA_JUSTIFY,
     )
     styles["kpi_label"] = ParagraphStyle(
-        "OakKpiLabel", parent=ss["Normal"], fontName="Helvetica",
+        "OakKpiLabel", parent=ss["Normal"], fontName=F_SANS,
         fontSize=7, textColor=C_MUTED, leading=9, alignment=TA_CENTER,
     )
     styles["kpi_value"] = ParagraphStyle(
-        "OakKpiValue", parent=ss["Normal"], fontName="Times-Roman",
+        "OakKpiValue", parent=ss["Normal"], fontName=F_SERIF,
         fontSize=15, textColor=C_GREEN, leading=18, alignment=TA_CENTER,
     )
     styles["kpi_label_light"] = ParagraphStyle(
-        "OakKpiLabelLight", parent=ss["Normal"], fontName="Helvetica",
+        "OakKpiLabelLight", parent=ss["Normal"], fontName=F_SANS,
         fontSize=7, textColor=C_SAGE, leading=9, alignment=TA_CENTER,
     )
     styles["kpi_value_light"] = ParagraphStyle(
-        "OakKpiValueLight", parent=ss["Normal"], fontName="Times-Roman",
+        "OakKpiValueLight", parent=ss["Normal"], fontName=F_SERIF,
         fontSize=15, textColor=C_CREAM, leading=18, alignment=TA_CENTER,
     )
     styles["foot"] = ParagraphStyle(
-        "OakFoot", parent=ss["Normal"], fontName="Helvetica",
+        "OakFoot", parent=ss["Normal"], fontName=F_SANS,
         fontSize=7, textColor=C_MUTED, leading=9, alignment=TA_CENTER,
     )
     return styles
@@ -277,14 +334,14 @@ def _kpi_grid(kpis, styles, cols=4, accent=False):
 def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True):
     """Generic styled table."""
     header_cells = [Paragraph(f"<b>{h}</b>", ParagraphStyle(
-        "th", fontName="Helvetica-Bold", fontSize=8, textColor=C_CREAM, leading=10))
+        "th", fontName=F_SANS_BOLD, fontSize=8, textColor=C_CREAM, leading=10))
         for h in headers]
     data = [header_cells]
     for r in rows:
         cells = []
         for j, val in enumerate(r):
             style = ParagraphStyle(
-                "td", fontName="Helvetica" if j > 0 or not highlight_first_col else "Helvetica-Bold",
+                "td", fontName=F_SANS if j > 0 or not highlight_first_col else F_SANS_BOLD,
                 fontSize=8, textColor=C_TEXT, leading=11)
             cells.append(Paragraph(str(val), style))
         data.append(cells)
@@ -304,6 +361,128 @@ def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     return tbl
+
+
+def _monthly_returns_table(monthly_returns, styles):
+    """Year × Month grid of monthly returns with green/red colour coding —
+    the signature element of professional fund factsheets.
+    monthly_returns: dict {year(int): [12 floats-or-None]}, plus optional 'YTD'.
+    """
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    header = ["Year"] + months + ["FY"]
+    head_cells = [Paragraph(f"<b>{h}</b>", ParagraphStyle(
+        "mh", fontName=F_SANS_BOLD, fontSize=6.5, textColor=C_CREAM,
+        leading=8, alignment=TA_CENTER)) for h in header]
+    data = [head_cells]
+
+    # Colour helper: map a monthly return to a soft green/red background
+    def _bg(v):
+        if v is None:
+            return C_CREAM
+        # clamp intensity at +/-10%
+        mag = min(abs(v) / 10.0, 1.0)
+        if v >= 0:
+            # blend cream -> sage
+            r = int(0xF5 + (0x99 - 0xF5) * mag)
+            g = int(0xF5 + (0xA7 - 0xF5) * mag)
+            b = int(0xF1 + (0x96 - 0xF1) * mag)
+        else:
+            # blend cream -> red
+            r = int(0xF5 + (0xB8 - 0xF5) * mag)
+            g = int(0xF5 + (0x50 - 0xF5) * mag)
+            b = int(0xF1 + (0x42 - 0xF1) * mag)
+        return colors.Color(r / 255, g / 255, b / 255)
+
+    bg_cmds = []
+    sorted_years = sorted(monthly_returns.keys())
+    for ri, year in enumerate(sorted_years, start=1):
+        vals = monthly_returns[year]
+        row = [Paragraph(str(year), ParagraphStyle(
+            "myr", fontName=F_SANS_BOLD, fontSize=6.8, textColor=C_TEXT,
+            leading=8, alignment=TA_CENTER))]
+        fy_product = 1.0
+        has_any = False
+        for ci, v in enumerate(vals[:12], start=1):
+            if v is None:
+                row.append(Paragraph("", styles["small"]))
+            else:
+                has_any = True
+                fy_product *= (1 + v / 100.0)
+                txt = f"{v:.1f}"
+                row.append(Paragraph(txt, ParagraphStyle(
+                    "mv", fontName=F_SANS, fontSize=6.3,
+                    textColor=C_TEXT, leading=8, alignment=TA_CENTER)))
+                bg_cmds.append(("BACKGROUND", (ci, ri), (ci, ri), _bg(v)))
+        # Full-year column
+        fy = (fy_product - 1) * 100 if has_any else None
+        if fy is not None:
+            row.append(Paragraph(f"<b>{fy:.1f}</b>", ParagraphStyle(
+                "mfy", fontName=F_SANS_BOLD, fontSize=6.3,
+                textColor=C_GREEN, leading=8, alignment=TA_CENTER)))
+            bg_cmds.append(("BACKGROUND", (13, ri), (13, ri), C_CREAMD))
+        else:
+            row.append(Paragraph("", styles["small"]))
+        data.append(row)
+
+    col_widths = [12 * mm] + [11.7 * mm] * 12 + [13 * mm]
+    tbl = Table(data, colWidths=col_widths)
+    base_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), C_GREEN),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, C_GREEN),
+        ("GRID", (0, 1), (-1, -1), 0.4, C_WHITE),
+        ("BACKGROUND", (0, 1), (0, -1), C_CREAMD),
+    ]
+    tbl.setStyle(TableStyle(base_style + bg_cmds))
+    return tbl
+
+
+def _two_col_universe(rows, styles):
+    """Render the investment universe as two side-by-side compact tables so all
+    constituents fit on a single page. rows: list of [name, ticker, sector]."""
+    half = (len(rows) + 1) // 2
+    left_rows = rows[:half]
+    right_rows = rows[half:]
+
+    def _mini(sub):
+        header = [Paragraph("<b>Constituent</b>", ParagraphStyle(
+                    "uh", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_CREAM, leading=9)),
+                  Paragraph("<b>Ticker</b>", ParagraphStyle(
+                    "uh2", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_CREAM, leading=9))]
+        data = [header]
+        for r in sub:
+            name_p = Paragraph(str(r[0]), ParagraphStyle(
+                "un", fontName=F_SANS, fontSize=7.5, textColor=C_TEXT, leading=10))
+            tick_p = Paragraph(str(r[1]), ParagraphStyle(
+                "ut", fontName=F_SANS, fontSize=7.5, textColor=C_MUTED, leading=10))
+            data.append([name_p, tick_p])
+        t = Table(data, colWidths=[52 * mm, 28 * mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), C_GREEN),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_CREAM]),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.3, C_BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        return t
+
+    left_tbl = _mini(left_rows)
+    right_tbl = _mini(right_rows) if right_rows else Spacer(1, 1)
+    outer = Table([[left_tbl, right_tbl]], colWidths=[83 * mm, 83 * mm])
+    outer.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (0, 0), 4),
+    ]))
+    return outer
 
 
 def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
@@ -343,17 +522,17 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
 
     # Strategy title (centered, serif, cream)
     canvas.setFillColor(C_CREAM)
-    canvas.setFont("Times-Roman", 30)
+    canvas.setFont(F_SERIF, 32)
     canvas.drawCentredString(W / 2, H - 112 * mm, strategy_name)
 
     # Subtitle (wrapped, centered, sage) — simple word wrap
-    canvas.setFont("Helvetica", 10.5)
+    canvas.setFont(F_SANS, 10.5)
     canvas.setFillColor(C_SAGE)
     words = strategy_subtitle.split()
     lines, cur = [], ""
     for w in words:
         test = (cur + " " + w).strip()
-        if canvas.stringWidth(test, "Helvetica", 10.5) < 150 * mm:
+        if canvas.stringWidth(test, F_SANS, 10.5) < 150 * mm:
             cur = test
         else:
             lines.append(cur)
@@ -372,37 +551,39 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
         cell_w = band_w / n
         x0 = (W - band_w) / 2
         y_band = 95 * mm
-        # divider lines between cells
-        canvas.setStrokeColor(C_GREEN2)
-        canvas.setLineWidth(0.75)
+        # divider lines between cells — subtle, semi-transparent sage hairlines
+        canvas.setStrokeColor(C_SAGE)
+        canvas.setStrokeAlpha(0.25)
+        canvas.setLineWidth(0.5)
         for i in range(1, n):
             xd = x0 + i * cell_w
-            canvas.line(xd, y_band - 4 * mm, xd, y_band + 20 * mm)
+            canvas.line(xd, y_band - 2 * mm, xd, y_band + 16 * mm)
+        canvas.setStrokeAlpha(1.0)
         for i, (label, value) in enumerate(highlight_kpis):
             cx = x0 + i * cell_w + cell_w / 2
             canvas.setFillColor(C_GOLD)
-            canvas.setFont("Times-Roman", 26)
+            canvas.setFont(F_SERIF, 27)
             canvas.drawCentredString(cx, y_band + 8 * mm, str(value))
             canvas.setFillColor(C_SAGE)
-            canvas.setFont("Helvetica", 7.5)
+            canvas.setFont(F_SANS, 7.5)
             canvas.drawCentredString(cx, y_band, label.upper())
 
     # Period + generation block near the bottom
     canvas.setFillColor(C_CREAMD)
-    canvas.setFont("Helvetica", 9)
+    canvas.setFont(F_SANS, 9)
     canvas.drawCentredString(W / 2, 52 * mm, f"Backtest Period   {period_str}")
     canvas.setFillColor(C_SAGE)
-    canvas.setFont("Helvetica", 8)
+    canvas.setFont(F_SANS, 8)
     canvas.drawCentredString(W / 2, 45 * mm,
                              f"Generated {datetime.now().strftime('%d %B %Y, %H:%M')}")
 
     # Confidential footer mark
     canvas.setFillColor(C_SAGE)
-    canvas.setFont("Helvetica", 7)
+    canvas.setFont(F_SANS, 7)
     canvas.drawCentredString(W / 2, 20 * mm,
                              "STRATEGY RESEARCH PLATFORM   ·   INTERNAL · CONFIDENTIAL")
     canvas.setFillColor(C_GOLD)
-    canvas.setFont("Times-Italic", 11)
+    canvas.setFont(F_SERIF_ITALIC, 12)
     canvas.drawCentredString(W / 2, 13 * mm, "Oakwood Capital · Quantitative Research")
 
     canvas.restoreState()
@@ -414,15 +595,15 @@ def _header_footer(canvas, doc, strategy_name):
     canvas.setFillColor(C_GREEN)
     canvas.rect(0, A4[1] - 22 * mm, A4[0], 22 * mm, fill=1, stroke=0)
     canvas.setFillColor(C_CREAM)
-    canvas.setFont("Times-Roman", 14)
+    canvas.setFont(F_SERIF, 15)
     canvas.drawString(20 * mm, A4[1] - 14 * mm, "Oakwood Capital")
     canvas.setFillColor(C_SAGE)
-    canvas.setFont("Helvetica", 7)
+    canvas.setFont(F_SANS, 7)
     canvas.drawRightString(A4[0] - 20 * mm, A4[1] - 11 * mm, "STRATEGY RESEARCH PLATFORM")
     canvas.drawRightString(A4[0] - 20 * mm, A4[1] - 15 * mm, "INTERNAL · CONFIDENTIAL")
     # Footer
     canvas.setFillColor(C_MUTED)
-    canvas.setFont("Helvetica", 7)
+    canvas.setFont(F_SANS, 7)
     canvas.drawString(20 * mm, 12 * mm,
                       "For Illustrative Purposes · Not Investment Advice")
     canvas.drawCentredString(A4[0] / 2, 12 * mm, strategy_name)
@@ -447,6 +628,8 @@ def build_tearsheet(
     figures,               # list of (title, plotly_fig) tuples
     params_summary,        # list of (label, value) for the methodology page
     universe_rows,         # list of [name, ticker, sector] for holdings page
+    monthly_returns=None,  # optional: dict {year: [12 monthly % values or None]}
+    exec_summary=None,     # optional: short prose string for an executive summary
 ):
     """Build the PDF and return raw bytes."""
     styles = _styles()
@@ -482,6 +665,11 @@ def build_tearsheet(
     story.append(PageBreak())
 
     # ===== PAGE 2: KPIs / Summary =====
+    if exec_summary:
+        story.append(Paragraph("Executive Summary", styles["h2"]))
+        story.append(Paragraph(exec_summary, styles["body"]))
+        story.append(Spacer(1, 8))
+
     story.append(Paragraph("Performance Summary", styles["h2"]))
     story.append(Paragraph("Net of fees, transaction costs and 35% dividend withholding tax",
                            styles["h3"]))
@@ -495,6 +683,16 @@ def build_tearsheet(
 
     story.append(Paragraph("Fee Summary", styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
+
+    # Monthly returns heatmap — the signature factsheet element
+    if monthly_returns:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("Monthly Returns (Net, %)", styles["h2"]))
+        story.append(Paragraph(
+            "Green = positive, red = negative; intensity scales with magnitude. "
+            "FY = compounded full-year return.", styles["h3"]))
+        story.append(Spacer(1, 3))
+        story.append(_monthly_returns_table(monthly_returns, styles))
 
     story.append(PageBreak())
 
@@ -546,8 +744,7 @@ def build_tearsheet(
 
     if universe_rows:
         story.append(Paragraph("Investment Universe", styles["h2"]))
-        story.append(_data_table(["Constituent", "Ticker", "Sector"], universe_rows, styles,
-                                 col_widths=[70 * mm, 45 * mm, 55 * mm]))
+        story.append(_two_col_universe(universe_rows, styles))
         story.append(Spacer(1, 12))
 
     story.append(Paragraph("Important Disclosures", styles["h2"]))

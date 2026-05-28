@@ -2297,6 +2297,35 @@ if _show_results:
 
                 universe_rows = [[v[0], t, v[2]] for t, v in SMI_CONSTITUENTS.items()]
 
+                # Build monthly returns dict {year: [12 values in %]} for the PDF heatmap
+                pdf_monthly = {}
+                try:
+                    mtx = monthly_returns_matrix(ts["total_value_net"])
+                    month_cols = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                    for yr in mtx.index:
+                        row = []
+                        for mc in month_cols:
+                            v = mtx.loc[yr, mc] if mc in mtx.columns else np.nan
+                            row.append(None if pd.isna(v) else float(v) * 100.0)
+                        pdf_monthly[int(yr)] = row
+                except Exception:
+                    pdf_monthly = None
+
+                # Data-driven executive summary
+                _exc = excess_vs_tr * 100
+                _verb = "outperforming" if _exc >= 0 else "trailing"
+                pdf_exec = (
+                    f"The strategy combines a full Swiss Market Index replication with a structural "
+                    f"Bitcoin allocation, harvesting equity dividends (net of the 35% non-reclaimable "
+                    f"withholding tax) to fund a disciplined dollar-cost-averaging programme into "
+                    f"digital assets. Over the backtest period it delivered a {strat_net_cagr*100:.1f}% "
+                    f"net CAGR, {_verb} the SMI Total Return benchmark by {abs(_exc):.1f}% per annum, "
+                    f"with a Sharpe ratio of {_fmt_num(strat_m.get('sharpe'))} and a maximum drawdown "
+                    f"of {_fmt_pct(strat_m.get('max_drawdown'))}. A threshold-based rebalancing rule "
+                    f"caps Bitcoin concentration to control risk."
+                )
+
                 pdf_bytes = build_tearsheet(
                     strategy_name="SMI Income meets Digital Assets",
                     strategy_subtitle=(
@@ -2343,6 +2372,8 @@ if _show_results:
                         ("Risk-Free Rate", f"{risk_free_rate*100:.2f}%"),
                     ],
                     universe_rows=universe_rows,
+                    monthly_returns=pdf_monthly,
+                    exec_summary=pdf_exec,
                 )
 
                 st.download_button(
