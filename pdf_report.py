@@ -1597,13 +1597,16 @@ def build_tearsheet(
             ]))
 
     # ===== PAGE 5: Detailed Risk Metrics + Top Drawdowns =====
-    story.append(KeepTogether(
-        _section_heading("04", S("detailed_risk"), styles, lang) + [
-            _data_table(risk_table_headers, risk_table_rows, styles,
-                        col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm])
-            if risk_table_rows else Spacer(1, 1),
-            Spacer(1, 12),
-        ]))
+    # Detailed Risk + Top Drawdowns can naturally flow across pages; we only
+    # use CondPageBreak so the eyebrow+heading never lands alone at the
+    # bottom of a page.
+    story.append(CondPageBreak(60 * mm))
+    for fl in _section_heading("04", S("detailed_risk"), styles, lang):
+        story.append(fl)
+    if risk_table_rows:
+        story.append(_data_table(risk_table_headers, risk_table_rows, styles,
+                                 col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm]))
+    story.append(Spacer(1, 12))
 
     # IB-style Top 5 Drawdowns — gives the Max-Drawdown KPI real substance
     # by showing the actual peak-to-trough episodes with duration and
@@ -1617,49 +1620,50 @@ def build_tearsheet(
             Spacer(1, 12),
         ]))
 
-    # ===== PAGE 6: Perf Fee Crystallization + Methodology + Universe =====
-    # Perf fee in KeepTogether so it never splits mid-table. Methodology
-    # and Universe flow directly after — no forced PageBreak — so they
-    # fill the page elegantly when there's room.
+    # ===== PAGE 6+: Perf Fee Crystallization + Methodology + Universe =====
+    # These tables can each be 10–20+ rows; wrapping them in KeepTogether
+    # risks a LayoutError when (eyebrow + heading + table) exceeds frame
+    # height. Instead, use CondPageBreak to keep the heading anchored above
+    # the table start and let the table flow naturally across pages if needed.
+    story.append(CondPageBreak(60 * mm))
     if fee_table_rows:
-        story.append(KeepTogether(
-            _section_heading("05", S("perf_fee_crystal"), styles, lang) + [
-                _data_table(fee_table_headers, fee_table_rows, styles),
-            ]))
+        for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
+            story.append(fl)
+        story.append(_data_table(fee_table_headers, fee_table_rows, styles))
     else:
         for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
             story.append(fl)
-        story.append(Paragraph(S("no_perf_fee"),
-                               styles["body"]))
+        story.append(Paragraph(S("no_perf_fee"), styles["body"]))
 
-    # Methodology + Universe each in their own KeepTogether — they flow
-    # after Perf Fees and land on the next page if there's no room. The
-    # H2 styles already provide their own spaceBefore so no free-standing
-    # Spacer is needed (a top-of-frame Spacer would trigger a LayoutError).
     if params_summary:
-        story.append(KeepTogether([
-            Paragraph(S("methodology"), styles["h2"]),
-            _data_table([S("param_label"), S("param_value")],
-                        [[k, v] for k, v in params_summary], styles,
-                        col_widths=[85 * mm, 85 * mm]),
-        ]))
+        story.append(CondPageBreak(60 * mm))
+        story.append(Paragraph(S("methodology"), styles["h2"]))
+        story.append(_data_table([S("param_label"), S("param_value")],
+                                 [[k, v] for k, v in params_summary], styles,
+                                 col_widths=[85 * mm, 85 * mm]))
 
     if universe_rows:
-        story.append(KeepTogether(
-            _section_heading("06", S("universe"), styles, lang) + [
-                _universe_sector_table(universe_rows, lang, styles),
-        ]))
+        story.append(CondPageBreak(80 * mm))
+        for fl in _section_heading("06", S("universe"), styles, lang):
+            story.append(fl)
+        story.append(_universe_sector_table(universe_rows, lang, styles))
 
-    # Keep the entire disclosures section together on a fresh page
+    # Disclosures — must NOT be wrapped in a single KeepTogether: the
+    # eyebrow + heading + 5 long paragraphs + contact panel together can
+    # easily exceed one A4 frame. Instead we PageBreak to a fresh page and
+    # let everything flow naturally; the disclaimer paragraphs are visually
+    # cohesive even when split, and the contact block has its own panel
+    # styling that reads as a self-contained footer wherever it lands.
     story.append(PageBreak())
-    disc_block = list(_section_heading("07", S("disclosures"), styles, lang))
+    for fl in _section_heading("07", S("disclosures"), styles, lang):
+        story.append(fl)
     disclaimer_paragraphs = (DISCLAIMER_PARAGRAPHS.get(lang)
                              or DISCLAIMER_PARAGRAPHS["en"])
     for p in disclaimer_paragraphs:
-        disc_block.append(Paragraph(p, styles["disclaimer"]))
+        story.append(Paragraph(p, styles["disclaimer"]))
 
     # Contact block — a panel with a gold top rule, in the brand style
-    disc_block.append(Spacer(1, 16))
+    story.append(Spacer(1, 16))
     contact_name = Paragraph(
         "Oakwood Capital Consulting AG", ParagraphStyle(
             "cn", fontName=F_SERIF, fontSize=13, textColor=C_CREAM, leading=16))
@@ -1678,8 +1682,9 @@ def build_tearsheet(
         ("LEFTPADDING", (0, 0), (-1, -1), 16),
         ("RIGHTPADDING", (0, 0), (-1, -1), 16),
     ]))
-    disc_block.append(contact_tbl)
-    story.append(KeepTogether(disc_block))
+    # Contact panel itself is a single Table (one flowable), so KeepTogether
+    # is safe and keeps it visually intact.
+    story.append(KeepTogether([contact_tbl]))
 
     # First page = full cover art; all later pages = header/footer band.
     def on_first(canvas, doc_):
