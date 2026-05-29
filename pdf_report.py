@@ -326,6 +326,162 @@ def render_scatter_chart(points, xlabel="Volatility (ann.)", ylabel="CAGR (ann.)
         except Exception:
             pass
         return None
+
+
+# ---------------------------------------------------------------------------
+# Data-prep utilities — pure functions on pandas Series. Live in pdf_report
+# so that 1_SMI_Strategy.py can `from pdf_report import compute_period_returns,
+# identify_top_drawdowns` without duplicating the logic.
+# ---------------------------------------------------------------------------
+
+def compute_period_returns(strat, bench=None):
+    """Compute trailing returns over standard horizons (1M, 3M, 6M, YTD, 1Y,
+    3Y ann., ITD ann.) for a NAV series and an optional benchmark NAV series.
+
+    Returns a list of (label_key, strategy_pct, benchmark_pct, excess_pct)
+    tuples. label_key matches STRINGS keys ('pr_1m', 'pr_3m', ...).
+    Missing periods (e.g. no full 3Y of data yet) are silently skipped.
+    """
+    import pandas as _pd
+    import numpy as _np
+
+    if strat is None or len(strat) < 2:
+        return []
+    strat = strat.dropna()
+    if bench is not None:
+        bench = bench.dropna()
+        # Align on the union of timestamps actually shared
+        common = strat.index.intersection(bench.index)
+        strat = strat.loc[common]
+        bench = bench.loc[common]
+    asof = strat.index[-1]
+    inception = strat.index[0]
+    years_total = (asof - inception).days / 365.25
+
+    def _ret(series, lookback_days=None, ytd=False, ann_years=None):
+        """Return percent gain over the lookback window ending at asof."""
+        if series is None or series.empty:
+            return None
+        if ytd:
+            start_of_year = _pd.Timestamp(year=asof.year, month=1, day=1)
+            window = series.loc[series.index >= start_of_year]
+            if len(window) < 2:
+                return None
+            return (window.iloc[-1] / window.iloc[0] - 1) * 100.0
+        if lookback_days is not None:
+            cutoff = asof - _pd.Timedelta(days=lookback_days)
+            if series.index[0] > cutoff:
+                return None  # not enough history
+            window = series.loc[series.index >= cutoff]
+            if len(window) < 2:
+                return None
+            total = window.iloc[-1] / window.iloc[0] - 1
+            if ann_years is not None and ann_years > 0:
+                if (1 + total) <= 0:
+                    return None
+                return ((1 + total) ** (1.0 / ann_years) - 1) * 100.0
+            return total * 100.0
+        return None
+
+    # Definitions: (label_key, lookback_days, ytd, ann_years_for_annualizing)
+    periods = [
+        ("pr_1m",  30,    False, None),
+        ("pr_3m",  91,    False, None),
+        ("pr_6m",  182,   False, None),
+        ("pr_ytd", None,  True,  None),
+        ("pr_1y",  365,   False, None),
+        ("pr_3y",  365*3, False, 3.0),
+    ]
+    rows = []
+    for key, lb, ytd, ann in periods:
+        s = _ret(strat, lookback_days=lb, ytd=ytd, ann_years=ann)
+        if s is None:
+            continue
+        b = _ret(bench, lookback_days=lb, ytd=ytd, ann_years=ann) if bench is not None else None
+        excess = (s - b) if (b is not None) else None
+        rows.append((key, s, b, excess))
+    # Since inception — annualized
+    if years_total > 0.05:
+        s_itd_total = strat.iloc[-1] / strat.iloc[0] - 1
+        s_itd = ((1 + s_itd_total) ** (1.0 / years_total) - 1) * 100.0 if (1 + s_itd_total) > 0 else None
+        b_itd = None
+        if bench is not None and len(bench) >= 2:
+            b_itd_total = bench.iloc[-1] / bench.iloc[0] - 1
+            b_itd = ((1 + b_itd_total) ** (1.0 / years_total) - 1) * 100.0 if (1 + b_itd_total) > 0 else None
+        excess = (s_itd - b_itd) if (s_itd is not None and b_itd is not None) else None
+        rows.append(("pr_itd", s_itd, b_itd, excess))
+    return rows
+
+
+def identify_top_drawdowns(nav, n=5, min_depth_pct=2.0):
+    """Identify the top-N drawdown episodes by depth, with start, trough,
+    end and recovery characteristics.
+
+    A drawdown episode runs from a new running-maximum until the NAV
+    recovers back to that maximum. The final, still-open episode is
+    flagged via end=None and recovery_days=None.
+
+    Returns a list of dicts:
+        [{"start": Timestamp, "trough": Timestamp, "end": Timestamp|None,
+          "depth_pct": float (negative), "duration_days": int,
+          "recovery_days": int|None}, ...]
+    sorted by depth (deepest first), truncated to n.
+    """
+    import pandas as _pd
+
+    if nav is None or len(nav) < 3:
+        return []
+    s = nav.dropna()
+    if s.empty:
+        return []
+    peak = s.cummax()
+    dd = (s / peak - 1.0)  # values in [-1, 0]
+
+    episodes = []
+    in_dd = False
+    start_idx = None
+    trough_idx = None
+    trough_val = 0.0
+    peak_val = None
+    for i, (t, v) in enumerate(dd.items()):
+        if not in_dd:
+            if v < 0:
+                in_dd = True
+                start_idx = t
+                trough_idx = t
+                trough_val = v
+                peak_val = peak.iloc[i]
+        else:
+            if v < trough_val:
+                trough_val = v
+                trough_idx = t
+            if v >= 0 - 1e-12:  # recovered
+                episodes.append({
+                    "start": start_idx, "trough": trough_idx, "end": t,
+                    "depth_pct": trough_val * 100.0,
+                    "duration_days": (t - start_idx).days,
+                    "recovery_days": (t - trough_idx).days,
+                    "peak_value": peak_val,
+                })
+                in_dd = False
+                start_idx = trough_idx = None
+                trough_val = 0.0
+    # Final unresolved episode
+    if in_dd and start_idx is not None:
+        episodes.append({
+            "start": start_idx, "trough": trough_idx, "end": None,
+            "depth_pct": trough_val * 100.0,
+            "duration_days": (s.index[-1] - start_idx).days,
+            "recovery_days": None,
+            "peak_value": peak_val,
+        })
+
+    # Filter trivial, sort by depth (most negative first)
+    episodes = [e for e in episodes if abs(e["depth_pct"]) >= min_depth_pct]
+    episodes.sort(key=lambda e: e["depth_pct"])
+    return episodes[:n]
+
+
 # ---------------------------------------------------------------------------
 C_PAGE_BG = colors.HexColor("#FBFBF8")    # warm off-white — page background
 C_PANEL   = colors.HexColor("#F4F4EF")    # very light panel for cards
@@ -342,6 +498,95 @@ C_TEXT    = colors.HexColor("#2A2A26")    # primary dark body text
 C_MUTED   = colors.HexColor("#6B7868")    # muted dark labels
 C_RED     = colors.HexColor("#B85042")    # red for negatives
 C_WHITE   = colors.white
+
+# ---------------------------------------------------------------------------
+# Bilingual string table. All static UI text the tearsheet renders flows
+# through this dict so we can build either an EN or DE version of the same
+# PDF. German values can be filled in a follow-up — the EN keys are the
+# canonical set and act as a fallback.
+STRINGS = {
+    "en": {
+        # Header / footer
+        "platform":              "STRATEGY RESEARCH PLATFORM",
+        "confidential":          "INTERNAL · CONFIDENTIAL",
+        "illustrative":          "For Illustrative Purposes · Not Investment Advice",
+        "cover_tagline":         "Strategy Research Platform · Internal · Confidential",
+        "cover_byline":          "Oakwood Capital · Quantitative Research",
+        "cover_period":          "Backtest Period",
+        "cover_generated":       "Generated",
+        # Section titles
+        "exec_summary":          "Executive Summary",
+        "key_takeaways":         "KEY TAKEAWAYS",
+        "perf_summary":          "Performance Summary",
+        "perf_summary_sub":      "Net of fees, transaction costs and 35% dividend withholding tax",
+        "risk_metrics":          "Risk &amp; Risk-Adjusted Metrics",
+        "fee_summary":           "Fee Summary",
+        "snapshot":              "Strategy Snapshot",
+        "period_returns":        "Performance per Period",
+        "period_returns_sub":    "Cumulative net returns over standard reporting horizons",
+        "charts":                "Portfolio Evolution &amp; Risk Charts",
+        "evolution":             "Portfolio Evolution vs. Benchmarks",
+        "drawdown":              "Drawdown Analysis",
+        "yearly":                "Yearly Net Performance",
+        "scatter":               "Risk / Return Positioning",
+        "monthly_returns":       "Monthly Returns (Net, %)",
+        "monthly_returns_sub":   "Green = positive, red = negative; intensity scales with magnitude. FY = compounded full-year return.",
+        "detailed_risk":         "Detailed Risk Metrics",
+        "top_drawdowns":         "Top 5 Drawdowns",
+        "top_drawdowns_sub":     "Largest peak-to-trough declines over the backtest period",
+        "perf_fee_crystal":      "Performance Fee Crystallization Detail",
+        "methodology":           "Methodology &amp; Parameters",
+        "universe":              "Investment Universe",
+        "disclosures":           "Important Disclosures",
+        # Snapshot labels
+        "sn_inception":          "Inception",
+        "sn_currency":           "Currency",
+        "sn_benchmark":          "Benchmark",
+        "sn_style":              "Investment Style",
+        "sn_domicile":           "Domicile",
+        "sn_frequency":          "Reporting Frequency",
+        "sn_riskprofile":        "Risk Profile",
+        "sn_strategyaum":        "Strategy AUM",
+        # Period returns labels
+        "pr_period":             "Period",
+        "pr_strategy":           "Strategy (Net)",
+        "pr_benchmark":          "SMI Total Return",
+        "pr_excess":             "Excess",
+        "pr_1m":                 "1 Month",
+        "pr_3m":                 "3 Months",
+        "pr_6m":                 "6 Months",
+        "pr_ytd":                "Year-to-Date",
+        "pr_1y":                 "1 Year",
+        "pr_3y":                 "3 Years (ann.)",
+        "pr_itd":                "Since Inception (ann.)",
+        # Top drawdowns labels
+        "dd_start":              "Start",
+        "dd_trough":             "Trough",
+        "dd_end":                "End",
+        "dd_duration":           "Duration",
+        "dd_depth":              "Depth",
+        "dd_recovery":           "Recovery",
+        "dd_days":               "days",
+        "dd_ongoing":            "ongoing",
+        # Universe labels
+        "uni_constituent":       "Constituent",
+        "uni_ticker":            "Ticker",
+        "uni_sector":            "Sector",
+        "uni_weight":            "Weight",
+    },
+    # German values are intentionally left empty — Phase 2 fills them.
+    # During Phase 1, lang="de" falls back to the EN values automatically.
+    "de": {},
+}
+
+
+def _S(lang):
+    """Return a string-lookup function with EN fallback."""
+    table_l = STRINGS.get(lang, {})
+    table_en = STRINGS["en"]
+    def lookup(key):
+        return table_l.get(key) or table_en.get(key, key)
+    return lookup
 
 
 def _styles():
@@ -622,6 +867,166 @@ def _two_col_universe(rows, styles):
     return outer
 
 
+# ---------------------------------------------------------------------------
+# IB-style fact sheet elements
+# ---------------------------------------------------------------------------
+
+def _strategy_snapshot_panel(snapshot_data, lang, styles):
+    """Render a compact 3-column "Strategy Snapshot" panel — the canonical
+    IB-factsheet fact box. snapshot_data is a list of (label_key, value)
+    tuples; label_keys are STRINGS keys ('sn_inception', 'sn_currency', ...)
+    or raw label strings if no key matches.
+    """
+    S = _S(lang)
+    if not snapshot_data:
+        return Spacer(1, 1)
+
+    label_style = ParagraphStyle(
+        "snap_label", fontName=F_SANS, fontSize=7, textColor=C_SAGE,
+        leading=9, alignment=0)
+    value_style = ParagraphStyle(
+        "snap_value", fontName=F_SERIF, fontSize=10.5, textColor=C_TEXT,
+        leading=13, alignment=0)
+
+    # Build mini-cells: each card is a small two-row stack (label / value).
+    cards = []
+    for key, value in snapshot_data:
+        label = S(key) if key in STRINGS["en"] else key
+        cell = [
+            Paragraph(label.upper(), label_style),
+            Paragraph(str(value), value_style),
+        ]
+        cards.append(cell)
+
+    # Arrange 3 per row
+    rows = []
+    for i in range(0, len(cards), 3):
+        chunk = cards[i:i + 3]
+        # Pad to length 3 so all rows have the same number of cols
+        while len(chunk) < 3:
+            chunk.append([Spacer(1, 1)])
+        rows.append(chunk)
+
+    col_w = 170 / 3.0 * mm  # 3 cols on the content width
+    t = Table(rows, colWidths=[col_w] * 3)
+    style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, -1), C_PANEL),
+        ("LINEABOVE", (0, 0), (-1, 0), 1.2, C_GOLD),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]
+    # Subtle vertical dividers between the three columns
+    for c in (1, 2):
+        style_cmds.append(("LINEBEFORE", (c, 0), (c, -1), 0.4, C_BORDER))
+    t.setStyle(TableStyle(style_cmds))
+    return t
+
+
+def _period_returns_table(period_returns_data, lang, styles):
+    """Render the 'Performance per Period' table.
+    period_returns_data is a list of (label_key, strategy_pct, bench_pct,
+    excess_pct) tuples from compute_period_returns(). Any of bench/excess
+    can be None and will render as a dash.
+    """
+    S = _S(lang)
+    if not period_returns_data:
+        return Spacer(1, 1)
+
+    headers = [S("pr_period"), S("pr_strategy"), S("pr_benchmark"), S("pr_excess")]
+
+    def _fmt(x):
+        if x is None:
+            return "—"
+        sign = "+" if x >= 0 else ""
+        return f"{sign}{x:.2f}%"
+
+    rows = []
+    for key, s, b, e in period_returns_data:
+        rows.append([S(key), _fmt(s), _fmt(b), _fmt(e)])
+
+    return _data_table(headers, rows, styles,
+                       col_widths=[50 * mm, 40 * mm, 40 * mm, 40 * mm])
+
+
+def _top_drawdowns_table(drawdowns, lang, styles):
+    """Render the 'Top 5 Drawdowns' table.
+    drawdowns is a list of dicts from identify_top_drawdowns().
+    """
+    S = _S(lang)
+    if not drawdowns:
+        return Spacer(1, 1)
+
+    headers = [S("dd_start"), S("dd_trough"), S("dd_end"),
+               S("dd_duration"), S("dd_depth"), S("dd_recovery")]
+
+    def _dfmt(ts):
+        if ts is None:
+            return "—"
+        try:
+            return ts.strftime("%Y-%m-%d")
+        except Exception:
+            return str(ts)
+
+    rows = []
+    for d in drawdowns:
+        end_str = _dfmt(d.get("end")) if d.get("end") is not None else S("dd_ongoing")
+        rec_str = (f"{d['recovery_days']} {S('dd_days')}"
+                   if d.get("recovery_days") is not None else S("dd_ongoing"))
+        rows.append([
+            _dfmt(d["start"]),
+            _dfmt(d["trough"]),
+            end_str,
+            f"{d['duration_days']} {S('dd_days')}",
+            f"{d['depth_pct']:.2f}%",
+            rec_str,
+        ])
+
+    return _data_table(headers, rows, styles,
+                       col_widths=[27*mm, 27*mm, 27*mm, 27*mm, 27*mm, 35*mm])
+
+
+def _universe_sector_table(rows, lang, styles):
+    """Render the investment universe with Sector + Weight — single full-width
+    table. rows: list of [name, ticker, sector, weight_pct].
+    If rows have only 3 entries (no weight), the weight column is omitted.
+    If rows have only 2 entries (no sector either), fall back to the
+    two-column compact layout.
+    """
+    S = _S(lang)
+    if not rows:
+        return Spacer(1, 1)
+
+    # Detect schema. We render the four-col layout only if every row has a
+    # non-empty sector AND a weight is present somewhere — otherwise we keep
+    # the legacy two-col layout so old callers don't break.
+    have_sector = any(len(r) >= 3 and r[2] for r in rows)
+    have_weight = any(len(r) >= 4 and r[3] is not None for r in rows)
+
+    if not have_sector and not have_weight:
+        return _two_col_universe(rows, styles)
+
+    headers = [S("uni_constituent"), S("uni_ticker"), S("uni_sector")]
+    col_widths = [55 * mm, 30 * mm, 50 * mm]
+    if have_weight:
+        headers.append(S("uni_weight"))
+        col_widths.append(35 * mm)
+
+    body = []
+    for r in rows:
+        row = [str(r[0]) if len(r) > 0 else "",
+               str(r[1]) if len(r) > 1 else "",
+               str(r[2]) if len(r) > 2 else ""]
+        if have_weight:
+            w = r[3] if len(r) > 3 else None
+            row.append(f"{w:.2f}%" if isinstance(w, (int, float)) else (str(w) if w else "—"))
+        body.append(row)
+
+    return _data_table(headers, body, styles, col_widths=col_widths)
+
+
 def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
                 highlight_kpis, logo_path):
     """Full-bleed dark-green cover page drawn directly on the canvas.
@@ -803,8 +1208,14 @@ def build_tearsheet(
     exec_summary=None,     # optional: short prose string for an executive summary
     key_takeaways=None,    # optional: list of short bullet strings
     scatter_png=None,      # optional: pre-rendered risk/return scatter PNG bytes
+    # --- IB-style add-ons (all optional, all skip silently when None/empty) ---
+    snapshot_data=None,    # optional: list of (label_key, value) for the Strategy Snapshot box
+    period_returns=None,   # optional: list of (label_key, strat, bench, excess) from compute_period_returns()
+    top_drawdowns=None,    # optional: list of dicts from identify_top_drawdowns()
+    lang="en",             # "en" or "de" (de falls back to en strings in Phase 1)
 ):
     """Build the PDF and return raw bytes."""
+    S = _S(lang)
     styles = _styles()
     buf = io.BytesIO()
 
@@ -879,6 +1290,36 @@ def build_tearsheet(
     story.append(Paragraph("Fee Summary", styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
 
+    # IB-style Strategy Snapshot panel — 3x2 fact box, fills the lower
+    # half of P2 with the canonical "fact box" investors expect.
+    if snapshot_data:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(S("snapshot"), styles["h2"]))
+        story.append(_strategy_snapshot_panel(snapshot_data, lang, styles))
+
+    # IB-style Performance per Period table — trailing returns over standard
+    # horizons. Sits on P2 below the Snapshot, giving the page real density.
+    if period_returns:
+        story.append(Spacer(1, 10))
+        story.append(KeepTogether([
+            Paragraph(S("period_returns"), styles["h2"]),
+            Paragraph(S("period_returns_sub"), styles["h3"]),
+            Spacer(1, 2),
+            _period_returns_table(period_returns, lang, styles),
+        ]))
+
+    # Monthly Returns heatmap — kept together so it never splits, and
+    # placed thematically with Period Returns as 'Performance Detail'
+    # (rather than after the charts).
+    if monthly_returns:
+        story.append(Spacer(1, 12))
+        story.append(KeepTogether([
+            Paragraph(S("monthly_returns"), styles["h2"]),
+            Paragraph(S("monthly_returns_sub"), styles["h3"]),
+            Spacer(1, 3),
+            _monthly_returns_table(monthly_returns, styles),
+        ]))
+
     # ===== PAGE 3 + 4: Charts (Evolution+Drawdown, then Yearly+Scatter) =====
     # Charts come immediately after the headline KPIs — classic factsheet
     # flow. Each chart sits in its own KeepTogether so a partial-fit never
@@ -923,21 +1364,7 @@ def build_tearsheet(
                 sc_img,
             ]))
 
-    # ===== PAGE 5: Monthly Returns + Detailed Risk Metrics =====
-    # Detail data follows the charts. Heatmap in its own KeepTogether so it
-    # never breaks across two pages.
-    if monthly_returns:
-        story.append(PageBreak())
-        story.append(KeepTogether([
-            Paragraph("Monthly Returns (Net, %)", styles["h2"]),
-            Paragraph(
-                "Green = positive, red = negative; intensity scales with magnitude. "
-                "FY = compounded full-year return.", styles["h3"]),
-            Spacer(1, 3),
-            _monthly_returns_table(monthly_returns, styles),
-            Spacer(1, 14),
-        ]))
-
+    # ===== PAGE 5: Detailed Risk Metrics + Top Drawdowns =====
     story.append(KeepTogether([
         Paragraph("Detailed Risk Metrics", styles["h2"]),
         _data_table(risk_table_headers, risk_table_rows, styles,
@@ -945,6 +1372,18 @@ def build_tearsheet(
         if risk_table_rows else Spacer(1, 1),
         Spacer(1, 12),
     ]))
+
+    # IB-style Top 5 Drawdowns — gives the Max-Drawdown KPI real substance
+    # by showing the actual peak-to-trough episodes with duration and
+    # recovery time.
+    if top_drawdowns:
+        story.append(KeepTogether([
+            Paragraph(S("top_drawdowns"), styles["h2"]),
+            Paragraph(S("top_drawdowns_sub"), styles["h3"]),
+            Spacer(1, 2),
+            _top_drawdowns_table(top_drawdowns, lang, styles),
+            Spacer(1, 12),
+        ]))
 
     # ===== PAGE 6: Perf Fee Crystallization + Methodology + Universe =====
     # Perf fee in KeepTogether so it never splits mid-table. Methodology
@@ -974,8 +1413,8 @@ def build_tearsheet(
 
     if universe_rows:
         story.append(KeepTogether([
-            Paragraph("Investment Universe", styles["h2"]),
-            _two_col_universe(universe_rows, styles),
+            Paragraph(S("universe"), styles["h2"]),
+            _universe_sector_table(universe_rows, lang, styles),
         ]))
 
     # Keep the entire disclosures section together on a fresh page

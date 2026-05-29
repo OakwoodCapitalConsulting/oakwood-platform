@@ -2246,7 +2246,8 @@ if _show_results:
         with st.spinner("Building PDF tearsheet ..."):
             try:
                 from pdf_report import (build_tearsheet, render_line_chart,
-                                        render_bar_chart, render_scatter_chart)
+                                        render_bar_chart, render_scatter_chart,
+                                        compute_period_returns, identify_top_drawdowns)
 
                 # Render charts with matplotlib (stable, no headless browser).
                 pdf_figures = []
@@ -2361,7 +2362,7 @@ if _show_results:
                                 f"CHF {r['perf_fee']:,.0f}",
                             ])
 
-                universe_rows = [[v[0], t, v[2]] for t, v in SMI_CONSTITUENTS.items()]
+                universe_rows = [[v[0], t, v[2], v[1]] for t, v in SMI_CONSTITUENTS.items()]
 
                 # Build monthly returns dict {year: [12 values in %]} for the PDF heatmap
                 pdf_monthly = {}
@@ -2391,6 +2392,43 @@ if _show_results:
                     f"of {_fmt_pct(strat_m.get('max_drawdown'))}. A threshold-based rebalancing rule "
                     f"caps Bitcoin concentration to control risk."
                 )
+
+                # ---------- IB-style fact-sheet add-ons ----------
+                # Strategy Snapshot — the canonical IB fact box
+                snapshot_data = [
+                    ("sn_inception",  ts.index[0].strftime("%d %b %Y")),
+                    ("sn_currency",   "CHF"),
+                    ("sn_benchmark",  "SMI Total Return"),
+                    ("sn_style",      "Multi-Asset (Swiss Equity + BTC)"),
+                    ("sn_domicile",   "Switzerland"),
+                    ("sn_frequency",  "Daily"),
+                ]
+
+                # Performance per Period (1M / 3M / 6M / YTD / 1Y / 3Y / ITD)
+                _bench_series = bench["smi_tr"] if not bench.empty else None
+                pdf_period_returns = compute_period_returns(
+                    ts["total_value_net"], _bench_series
+                )
+
+                # Top 5 Drawdowns
+                pdf_top_drawdowns = identify_top_drawdowns(
+                    ts["total_value_net"], n=5, min_depth_pct=2.0
+                )
+
+                # DE->EN translation for two methodology values that arrive in
+                # German from the UI selectboxes — keeps the PDF fully English
+                # without touching the Streamlit UI labels.
+                _PARAM_DE_EN = {
+                    "Marktkapitalisierung (Approx. + 18% Cap)": "Market cap (approx., 18% cap)",
+                    "Equal Weight (5 % je Titel)":              "Equal weight (5% per holding)",
+                    "Quartalsweise":                            "Quarterly",
+                    "Halbjährlich":                             "Semi-annual",
+                    "Jährlich":                                 "Annual",
+                    "Keine":                                    "None",
+                }
+                _weighting_method_en  = _PARAM_DE_EN.get(weighting_method, weighting_method)
+                _rebalance_freq_en    = _PARAM_DE_EN.get(rebalance_freq,   rebalance_freq)
+                _crystallization_en   = _PARAM_DE_EN.get(crystallization_freq, crystallization_freq)
 
                 pdf_bytes = build_tearsheet(
                     strategy_name="SMI Income meets Digital Assets",
@@ -2427,13 +2465,13 @@ if _show_results:
                         ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Equity / {initial_btc_pct*100:.0f}% BTC"),
                         ("BTC Upper Threshold", f"{upper_threshold*100:.0f}%"),
                         ("BTC Target after Rebalance", f"{target_btc_pct*100:.0f}%"),
-                        ("Equity Weighting", weighting_method),
-                        ("Rebalancing Frequency", rebalance_freq),
+                        ("Equity Weighting", _weighting_method_en),
+                        ("Rebalancing Frequency", _rebalance_freq_en),
                         ("DCA Window", f"{dca_months} months per dividend"),
                         ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
                         ("Dividend Withholding Tax", f"{int(WITHHOLDING_TAX*100)}% (non-reclaimable, AMC)"),
                         ("Management Fee", f"{mgmt_fee_pct*100:.2f}% p.a."),
-                        ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({crystallization_freq})"),
+                        ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({_crystallization_en})"),
                         ("Hurdle", f"{hurdle_type}, {hwm_hurdle_pct*100:.1f}% (Year 1)"),
                         ("Risk-Free Rate", f"{risk_free_rate*100:.2f}%"),
                     ],
@@ -2442,6 +2480,9 @@ if _show_results:
                     exec_summary=pdf_exec,
                     key_takeaways=pdf_takeaways,
                     scatter_png=pdf_scatter,
+                    snapshot_data=snapshot_data,
+                    period_returns=pdf_period_returns,
+                    top_drawdowns=pdf_top_drawdowns,
                 )
 
                 st.download_button(
