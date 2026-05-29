@@ -2245,7 +2245,8 @@ if _show_results:
     if st.button("Generate PDF Tearsheet", use_container_width=False):
         with st.spinner("Building PDF tearsheet ..."):
             try:
-                from pdf_report import (build_tearsheet, render_line_chart,
+                from pdf_report import (build_tearsheet, build_bilingual_tearsheet,
+                                        render_line_chart,
                                         render_bar_chart, render_scatter_chart,
                                         compute_period_returns, identify_top_drawdowns)
 
@@ -2312,22 +2313,34 @@ if _show_results:
                 except Exception:
                     pdf_scatter = None
 
-                # Key takeaways — data-driven bullet points
-                pdf_takeaways = []
+                # Key takeaways — data-driven bullet points (bilingual)
+                pdf_takeaways_en = []
+                pdf_takeaways_de = []
                 try:
                     _exc = excess_vs_tr * 100
-                    _rel = "outperformed" if _exc >= 0 else "trailed"
-                    pdf_takeaways.append(
+                    _rel_en = "outperformed" if _exc >= 0 else "trailed"
+                    _rel_de = "übertraf" if _exc >= 0 else "lag unter"
+                    pdf_takeaways_en.append(
                         f"Net CAGR of {strat_net_cagr*100:.1f}% over the full backtest, "
-                        f"{_rel} the SMI Total Return benchmark by {abs(_exc):.1f}% p.a.")
-                    pdf_takeaways.append(
+                        f"{_rel_en} the SMI Total Return benchmark by {abs(_exc):.1f}% p.a.")
+                    pdf_takeaways_de.append(
+                        f"Netto-CAGR von {strat_net_cagr*100:.1f}% über den gesamten Backtest, "
+                        f"{_rel_de} dem SMI Total Return Benchmark um {abs(_exc):.1f}% p.a.")
+                    pdf_takeaways_en.append(
                         f"Sharpe ratio of {_fmt_num(strat_m.get('sharpe'))} and maximum drawdown of "
                         f"{_fmt_pct(strat_m.get('max_drawdown'))}, reflecting the structural Bitcoin allocation.")
-                    pdf_takeaways.append(
+                    pdf_takeaways_de.append(
+                        f"Sharpe Ratio von {_fmt_num(strat_m.get('sharpe'))} und maximaler Drawdown von "
+                        f"{_fmt_pct(strat_m.get('max_drawdown'))} — Ausdruck der strukturellen Bitcoin-Allokation.")
+                    pdf_takeaways_en.append(
                         f"Total fees of CHF {fees_total:,.0f} ({fee_drag*100:.1f}% p.a. drag), "
                         f"net of {int(WITHHOLDING_TAX*100)}% non-reclaimable dividend withholding tax.")
+                    pdf_takeaways_de.append(
+                        f"Gesamtgebühren von CHF {fees_total:,.0f} ({fee_drag*100:.1f}% p.a. Drag), "
+                        f"nach Abzug der {int(WITHHOLDING_TAX*100)}% nicht rückforderbaren Dividenden-Quellensteuer.")
                 except Exception:
-                    pdf_takeaways = None
+                    pdf_takeaways_en = None
+                    pdf_takeaways_de = None
 
                 def _row(metric, key, fmt):
                     s = strat_m.get(key)
@@ -2379,18 +2392,34 @@ if _show_results:
                 except Exception:
                     pdf_monthly = None
 
-                # Data-driven executive summary
+                # Data-driven executive summary (bilingual)
                 _exc = excess_vs_tr * 100
-                _verb = "outperforming" if _exc >= 0 else "trailing"
-                pdf_exec = (
+                _verb_en = "outperforming" if _exc >= 0 else "trailing"
+                if _exc >= 0:
+                    _perf_de = f"und übertraf den SMI Total Return Benchmark um {abs(_exc):.1f}% pro Jahr"
+                else:
+                    _perf_de = f"und lag damit {abs(_exc):.1f}% pro Jahr unter dem SMI Total Return Benchmark"
+
+                pdf_exec_en = (
                     f"The strategy combines a full Swiss Market Index replication with a structural "
                     f"Bitcoin allocation, harvesting equity dividends (net of the 35% non-reclaimable "
                     f"withholding tax) to fund a disciplined dollar-cost-averaging programme into "
                     f"digital assets. Over the backtest period it delivered a {strat_net_cagr*100:.1f}% "
-                    f"net CAGR, {_verb} the SMI Total Return benchmark by {abs(_exc):.1f}% per annum, "
+                    f"net CAGR, {_verb_en} the SMI Total Return benchmark by {abs(_exc):.1f}% per annum, "
                     f"with a Sharpe ratio of {_fmt_num(strat_m.get('sharpe'))} and a maximum drawdown "
                     f"of {_fmt_pct(strat_m.get('max_drawdown'))}. A threshold-based rebalancing rule "
                     f"caps Bitcoin concentration to control risk."
+                )
+                pdf_exec_de = (
+                    f"Die Strategie kombiniert eine vollständige SMI-Replikation mit einer strukturellen "
+                    f"Bitcoin-Allokation und nutzt Aktiendividenden (nach Abzug der 35% nicht "
+                    f"rückforderbaren Quellensteuer) zur Finanzierung eines disziplinierten "
+                    f"Dollar-Cost-Averaging-Programms in digitale Vermögenswerte. Im Backtest-Zeitraum "
+                    f"erzielte sie einen Netto-CAGR von {strat_net_cagr*100:.1f}% {_perf_de} — bei "
+                    f"einem Sharpe Ratio von {_fmt_num(strat_m.get('sharpe'))} und einem maximalen "
+                    f"Drawdown von {_fmt_pct(strat_m.get('max_drawdown'))}. Eine "
+                    f"schwellenwertbasierte Rebalancing-Regel begrenzt die Bitcoin-Konzentration zur "
+                    f"Risikokontrolle."
                 )
 
                 # ---------- IB-style fact-sheet add-ons ----------
@@ -2430,9 +2459,13 @@ if _show_results:
                 _rebalance_freq_en    = _PARAM_DE_EN.get(rebalance_freq,   rebalance_freq)
                 _crystallization_en   = _PARAM_DE_EN.get(crystallization_freq, crystallization_freq)
 
-                pdf_bytes = build_tearsheet(
+                pdf_bytes = build_bilingual_tearsheet(
                     strategy_name="SMI Income meets Digital Assets",
-                    strategy_subtitle=(
+                    strategy_subtitle_de=(
+                        "Disziplinierte SMI-Replikation mit struktureller BTC-Allokation, "
+                        "dividendenfinanzierter DCA und schwellenwertbasiertem Risikomanagement."
+                    ),
+                    strategy_subtitle_en=(
                         "Disciplined SMI replication with structural BTC allocation, "
                         "dividend-funded DCA and threshold-based risk management."
                     ),
@@ -2477,8 +2510,10 @@ if _show_results:
                     ],
                     universe_rows=universe_rows,
                     monthly_returns=pdf_monthly,
-                    exec_summary=pdf_exec,
-                    key_takeaways=pdf_takeaways,
+                    exec_summary_de=pdf_exec_de,
+                    exec_summary_en=pdf_exec_en,
+                    key_takeaways_de=pdf_takeaways_de,
+                    key_takeaways_en=pdf_takeaways_en,
                     scatter_png=pdf_scatter,
                     snapshot_data=snapshot_data,
                     period_returns=pdf_period_returns,

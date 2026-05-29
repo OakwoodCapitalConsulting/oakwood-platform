@@ -573,10 +573,162 @@ STRINGS = {
         "uni_ticker":            "Ticker",
         "uni_sector":            "Sector",
         "uni_weight":            "Weight",
+        # Methodology table headers + perf-fee fallback
+        "param_label":           "Parameter",
+        "param_value":           "Value",
+        "no_perf_fee":           "No performance fees were crystallized in this period.",
     },
     # German values are intentionally left empty — Phase 2 fills them.
     # During Phase 1, lang="de" falls back to the EN values automatically.
-    "de": {},
+    "de": {
+        # Header / footer
+        "platform":              "STRATEGIE-RESEARCH PLATTFORM",
+        "confidential":          "INTERN · VERTRAULICH",
+        "illustrative":          "Zu illustrativen Zwecken · Keine Anlageberatung",
+        "cover_tagline":         "Strategie-Research Plattform · Intern · Vertraulich",
+        "cover_byline":          "Oakwood Capital · Quantitatives Research",
+        "cover_period":          "Backtest-Zeitraum",
+        "cover_generated":       "Erstellt",
+        # Section titles
+        "exec_summary":          "Zusammenfassung",
+        "key_takeaways":         "KERNAUSSAGEN",
+        "perf_summary":          "Performance-Übersicht",
+        "perf_summary_sub":      "Nach Gebühren, Transaktionskosten und 35% Dividenden-Quellensteuer",
+        "risk_metrics":          "Risiko und risikoadjustierte Kennzahlen",
+        "fee_summary":           "Gebührenübersicht",
+        "snapshot":              "Strategie-Eckdaten",
+        "period_returns":        "Performance nach Zeitraum",
+        "period_returns_sub":    "Kumulierte Nettorenditen über Standard-Reporting-Zeiträume",
+        "charts":                "Portfolioentwicklung &amp; Risikoanalyse",
+        "evolution":             "Portfolioentwicklung vs. Benchmarks",
+        "drawdown":              "Drawdown-Analyse",
+        "yearly":                "Jährliche Netto-Performance",
+        "scatter":               "Risiko-Rendite-Positionierung",
+        "monthly_returns":       "Monatsrenditen (Netto, %)",
+        "monthly_returns_sub":   "Grün = positiv, rot = negativ; Intensität skaliert mit Magnitude. GJ = kumulierte Jahresrendite.",
+        "detailed_risk":         "Detaillierte Risikokennzahlen",
+        "top_drawdowns":         "Top 5 Drawdowns",
+        "top_drawdowns_sub":     "Grösste Peak-to-Trough-Verluste im Backtest-Zeitraum",
+        "perf_fee_crystal":      "Performance-Fee-Kristallisationsdetails",
+        "methodology":           "Methodik &amp; Parameter",
+        "universe":              "Anlageuniversum",
+        "disclosures":           "Wichtige Hinweise",
+        # Snapshot labels
+        "sn_inception":          "Auflagedatum",
+        "sn_currency":           "Währung",
+        "sn_benchmark":          "Benchmark",
+        "sn_style":              "Anlagestil",
+        "sn_domicile":           "Domizil",
+        "sn_frequency":          "Reporting-Frequenz",
+        "sn_riskprofile":        "Risikoprofil",
+        "sn_strategyaum":        "Strategie-Volumen",
+        # Period returns labels
+        "pr_period":             "Zeitraum",
+        "pr_strategy":           "Strategie (Netto)",
+        "pr_benchmark":          "SMI Total Return",
+        "pr_excess":             "Excess",
+        "pr_1m":                 "1 Monat",
+        "pr_3m":                 "3 Monate",
+        "pr_6m":                 "6 Monate",
+        "pr_ytd":                "Lfd. Jahr",
+        "pr_1y":                 "1 Jahr",
+        "pr_3y":                 "3 Jahre (ann.)",
+        "pr_itd":                "Seit Auflage (ann.)",
+        # Top drawdowns labels
+        "dd_start":              "Beginn",
+        "dd_trough":             "Tiefpunkt",
+        "dd_end":                "Ende",
+        "dd_duration":           "Dauer",
+        "dd_depth":              "Tiefe",
+        "dd_recovery":           "Erholung",
+        "dd_days":               "Tage",
+        "dd_ongoing":            "laufend",
+        # Universe labels
+        "uni_constituent":       "Titel",
+        "uni_ticker":            "Ticker",
+        "uni_sector":            "Sektor",
+        "uni_weight":            "Gewicht",
+        # Methodology table headers + perf-fee fallback
+        "param_label":           "Parameter",
+        "param_value":           "Wert",
+        "no_perf_fee":           "In diesem Zeitraum wurden keine Performance-Gebühren kristallisiert.",
+    },
+}
+
+
+# Long-form disclaimer text — kept separate from STRINGS so the dict stays
+# tidy. Each language is a list of paragraphs.
+DISCLAIMER_PARAGRAPHS = {
+    "en": [
+        "This document has been prepared by Oakwood Capital for illustrative and "
+        "informational purposes only. It does not constitute investment advice, a "
+        "recommendation, an offer, or a solicitation to buy or sell any security "
+        "or financial instrument, nor a basis for any investment decision.",
+
+        "All figures shown are derived from a historical backtest using publicly "
+        "available market data. Backtested performance is hypothetical, does not "
+        "represent actual trading, and is subject to the benefit of hindsight. "
+        "Past performance and simulated past performance are not reliable indicators "
+        "of future results. Actual results may differ materially.",
+
+        "The simulation models transaction costs (a configurable per-trade cost in "
+        "basis points) and the 35% Swiss withholding tax on dividends, which is "
+        "treated as non-reclaimable within the AMC (Actively Managed Certificate) "
+        "wrapper — only the net 65% of each gross dividend is reinvested. The same "
+        "after-tax dividend basis is applied to the SMI Total Return benchmark for "
+        "a consistent comparison. The simulation does not account for market impact, "
+        "slippage, bid-ask spreads, or liquidity constraints. The investment universe "
+        "is applied on a current-constituent basis and may be subject to survivorship "
+        "bias. Performance figures are shown net of the stated management and "
+        "performance fees.",
+
+        "Digital assets such as Bitcoin are highly volatile and may result in the "
+        "total loss of capital. Any allocation to digital assets carries substantial "
+        "risk and may not be suitable for all investors.",
+
+        "Market data is sourced from third-party providers believed to be reliable "
+        "but is not guaranteed as to accuracy or completeness. This material is "
+        "strictly confidential and intended solely for the recipient. It may not be "
+        "reproduced or distributed, in whole or in part, without the prior written "
+        "consent of Oakwood Capital.",
+    ],
+    "de": [
+        "Dieses Dokument wurde von Oakwood Capital ausschliesslich zu illustrativen "
+        "und informativen Zwecken erstellt. Es stellt weder eine Anlageberatung, eine "
+        "Empfehlung, ein Angebot noch eine Aufforderung zum Kauf oder Verkauf eines "
+        "Wertpapiers oder Finanzinstruments dar, noch eine Grundlage für eine "
+        "Anlageentscheidung.",
+
+        "Alle dargestellten Zahlen basieren auf einem historischen Backtest unter "
+        "Verwendung öffentlich verfügbarer Marktdaten. Die backtestete Performance "
+        "ist hypothetisch, stellt keinen tatsächlichen Handel dar und unterliegt dem "
+        "Vorteil der Rückschau. Vergangene und simulierte vergangene Wertentwicklungen "
+        "sind keine verlässlichen Indikatoren für zukünftige Ergebnisse. Tatsächliche "
+        "Resultate können erheblich abweichen.",
+
+        "Die Simulation modelliert Transaktionskosten (eine konfigurierbare Gebühr pro "
+        "Trade in Basispunkten) sowie die 35% Schweizer Verrechnungssteuer auf "
+        "Dividenden, die innerhalb des AMC-Mantels (Actively Managed Certificate) als "
+        "nicht rückforderbar behandelt wird — nur die Netto-65% jeder Bruttodividende "
+        "werden reinvestiert. Dieselbe Nach-Steuer-Dividendenbasis wird für einen "
+        "konsistenten Vergleich auf den SMI Total Return Benchmark angewendet. Die "
+        "Simulation berücksichtigt keine Marktauswirkungen, Slippage, Geld-Brief-"
+        "Spannen oder Liquiditätsbeschränkungen. Das Anlageuniversum wird auf Basis "
+        "der aktuellen Indexmitglieder angewendet und kann einem Survivorship Bias "
+        "unterliegen. Die Performance-Zahlen werden nach Abzug der angegebenen "
+        "Management- und Performance-Gebühren ausgewiesen.",
+
+        "Digitale Vermögenswerte wie Bitcoin sind hochvolatil und können zum "
+        "Totalverlust des eingesetzten Kapitals führen. Jede Allokation in digitale "
+        "Vermögenswerte beinhaltet erhebliche Risiken und ist möglicherweise nicht "
+        "für alle Anleger geeignet.",
+
+        "Marktdaten stammen von Drittanbietern, die als verlässlich gelten, deren "
+        "Genauigkeit oder Vollständigkeit jedoch nicht garantiert ist. Dieses "
+        "Material ist streng vertraulich und ausschliesslich für den Empfänger "
+        "bestimmt. Es darf weder ganz noch teilweise ohne vorherige schriftliche "
+        "Zustimmung von Oakwood Capital reproduziert oder verbreitet werden.",
+    ],
 }
 
 
@@ -1028,9 +1180,10 @@ def _universe_sector_table(rows, lang, styles):
 
 
 def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
-                highlight_kpis, logo_path):
+                highlight_kpis, logo_path, lang="en"):
     """Full-bleed dark-green cover page drawn directly on the canvas.
     highlight_kpis: list of up to 3 (label, value) tuples for the hero band."""
+    S = _S(lang)
     canvas.saveState()
     W, H = A4
     # Cover stays deep green (dark cover + light interior = classic factsheet).
@@ -1109,11 +1262,11 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
     # Period + generation block near the bottom
     canvas.setFillColor(C_CREAMD)
     canvas.setFont(F_SANS, 9)
-    canvas.drawCentredString(W / 2, 52 * mm, f"Backtest Period   {period_str}")
+    canvas.drawCentredString(W / 2, 52 * mm, f"{S('cover_period')}   {period_str}")
     canvas.setFillColor(COVER_SAGE)
     canvas.setFont(F_SANS, 8)
     canvas.drawCentredString(W / 2, 45 * mm,
-                             f"Generated {datetime.now().strftime('%d %B %Y, %H:%M')}")
+                             f"{S('cover_generated')} {datetime.now().strftime('%d %B %Y, %H:%M')}")
 
     # Contact + confidential footer mark
     canvas.setFillColor(COVER_SAGE)
@@ -1124,16 +1277,16 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
                              "+41 79 250 72 31  ·  info@oakwood-capital.ch  ·  www.oakwood-capital.ch")
     canvas.setFillColor(colors.HexColor("#7C8978"))
     canvas.setFont(F_SANS, 7)
-    canvas.drawCentredString(W / 2, 15 * mm,
-                             "STRATEGY RESEARCH PLATFORM   ·   INTERNAL · CONFIDENTIAL")
+    canvas.drawCentredString(W / 2, 15 * mm, S("cover_tagline").upper())
     canvas.setFillColor(C_GOLD)
     canvas.setFont(F_SERIF_ITALIC, 12)
-    canvas.drawCentredString(W / 2, 9 * mm, "Oakwood Capital · Quantitative Research")
+    canvas.drawCentredString(W / 2, 9 * mm, S("cover_byline"))
 
     canvas.restoreState()
 
 
-def _header_footer(canvas, doc, strategy_name, logo_path=None):
+def _header_footer(canvas, doc, strategy_name, logo_path=None, lang="en"):
+    S = _S(lang)
     canvas.saveState()
     W, H = A4
     # Full-page light background (ReportLab doesn't fill it automatically)
@@ -1170,14 +1323,13 @@ def _header_footer(canvas, doc, strategy_name, logo_path=None):
     canvas.drawString(20 * mm, H - 14 * mm, "Oakwood Capital")
     canvas.setFillColor(C_SAGE_DIM)
     canvas.setFont(F_SANS, 7)
-    canvas.drawRightString(W - 20 * mm, H - 11 * mm, "STRATEGY RESEARCH PLATFORM")
-    canvas.drawRightString(W - 20 * mm, H - 15 * mm, "INTERNAL · CONFIDENTIAL")
+    canvas.drawRightString(W - 20 * mm, H - 11 * mm, S("platform"))
+    canvas.drawRightString(W - 20 * mm, H - 15 * mm, S("confidential"))
 
     # Footer
     canvas.setFillColor(C_MUTED)
     canvas.setFont(F_SANS, 7)
-    canvas.drawString(20 * mm, 12 * mm,
-                      "For Illustrative Purposes · Not Investment Advice")
+    canvas.drawString(20 * mm, 12 * mm, S("illustrative"))
     canvas.drawCentredString(W / 2, 12 * mm, strategy_name)
     total = getattr(doc, "_total_pages", None)
     if total:
@@ -1250,7 +1402,7 @@ def build_tearsheet(
 
     # ===== PAGE 2: KPIs / Summary =====
     if exec_summary:
-        story.append(Paragraph("Executive Summary", styles["h2"]))
+        story.append(Paragraph(S("exec_summary"), styles["h2"]))
         story.append(Paragraph(exec_summary, styles["body"]))
         story.append(Spacer(1, 8))
 
@@ -1259,7 +1411,7 @@ def build_tearsheet(
         kt_style = ParagraphStyle(
             "kt", fontName=F_SANS, fontSize=8.5, textColor=C_TEXT, leading=13,
             leftIndent=10, bulletIndent=0, spaceAfter=4)
-        kt_flow = [Paragraph("KEY TAKEAWAYS", ParagraphStyle(
+        kt_flow = [Paragraph(S("key_takeaways"), ParagraphStyle(
             "kth", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_GOLD,
             leading=10, spaceAfter=6))]
         for tk in key_takeaways[:4]:
@@ -1276,18 +1428,17 @@ def build_tearsheet(
         story.append(kt_tbl)
         story.append(Spacer(1, 12))
 
-    story.append(Paragraph("Performance Summary", styles["h2"]))
-    story.append(Paragraph("Net of fees, transaction costs and 35% dividend withholding tax",
-                           styles["h3"]))
+    story.append(Paragraph(S("perf_summary"), styles["h2"]))
+    story.append(Paragraph(S("perf_summary_sub"), styles["h3"]))
     story.append(Spacer(1, 2))
     story.append(_kpi_grid(kpis_performance, styles, cols=4, accent=True))
     story.append(Spacer(1, 9))
 
-    story.append(Paragraph("Risk &amp; Risk-Adjusted Metrics", styles["h2"]))
+    story.append(Paragraph(S("risk_metrics"), styles["h2"]))
     story.append(_kpi_grid(kpis_risk, styles, cols=4))
     story.append(Spacer(1, 9))
 
-    story.append(Paragraph("Fee Summary", styles["h2"]))
+    story.append(Paragraph(S("fee_summary"), styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
 
     # IB-style Strategy Snapshot panel — 3x2 fact box, fills the lower
@@ -1325,7 +1476,7 @@ def build_tearsheet(
     # flow. Each chart sits in its own KeepTogether so a partial-fit never
     # splits an image across pages.
     story.append(PageBreak())
-    story.append(Paragraph("Portfolio Evolution &amp; Risk Charts", styles["h2"]))
+    story.append(Paragraph(S("charts"), styles["h2"]))
     any_chart = False
     n_fig = len(figures)
     for idx, (title, png_bytes) in enumerate(figures):
@@ -1359,14 +1510,14 @@ def build_tearsheet(
         if sc_img is not None:
             story.append(Spacer(1, 6))
             story.append(KeepTogether([
-                Paragraph("Risk / Return Positioning", styles["h3"]),
+                Paragraph(S("scatter"), styles["h3"]),
                 Spacer(1, 2),
                 sc_img,
             ]))
 
     # ===== PAGE 5: Detailed Risk Metrics + Top Drawdowns =====
     story.append(KeepTogether([
-        Paragraph("Detailed Risk Metrics", styles["h2"]),
+        Paragraph(S("detailed_risk"), styles["h2"]),
         _data_table(risk_table_headers, risk_table_rows, styles,
                     col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm])
         if risk_table_rows else Spacer(1, 1),
@@ -1391,12 +1542,12 @@ def build_tearsheet(
     # fill the page elegantly when there's room.
     if fee_table_rows:
         story.append(KeepTogether([
-            Paragraph("Performance Fee Crystallization Detail", styles["h2"]),
+            Paragraph(S("perf_fee_crystal"), styles["h2"]),
             _data_table(fee_table_headers, fee_table_rows, styles),
         ]))
     else:
-        story.append(Paragraph("Performance Fee Crystallization Detail", styles["h2"]))
-        story.append(Paragraph("No performance fees were crystallized in this period.",
+        story.append(Paragraph(S("perf_fee_crystal"), styles["h2"]))
+        story.append(Paragraph(S("no_perf_fee"),
                                styles["body"]))
 
     # Methodology + Universe each in their own KeepTogether — they flow
@@ -1405,8 +1556,8 @@ def build_tearsheet(
     # Spacer is needed (a top-of-frame Spacer would trigger a LayoutError).
     if params_summary:
         story.append(KeepTogether([
-            Paragraph("Methodology &amp; Parameters", styles["h2"]),
-            _data_table(["Parameter", "Value"],
+            Paragraph(S("methodology"), styles["h2"]),
+            _data_table([S("param_label"), S("param_value")],
                         [[k, v] for k, v in params_summary], styles,
                         col_widths=[85 * mm, 85 * mm]),
         ]))
@@ -1419,40 +1570,9 @@ def build_tearsheet(
 
     # Keep the entire disclosures section together on a fresh page
     story.append(PageBreak())
-    disc_block = [Paragraph("Important Disclosures", styles["h2"])]
-    disclaimer_paragraphs = [
-        "This document has been prepared by Oakwood Capital for illustrative and "
-        "informational purposes only. It does not constitute investment advice, a "
-        "recommendation, an offer, or a solicitation to buy or sell any security or "
-        "financial instrument, nor a basis for any investment decision.",
-
-        "All figures shown are derived from a historical backtest using publicly "
-        "available market data. Backtested performance is hypothetical, does not "
-        "represent actual trading, and is subject to the benefit of hindsight. "
-        "Past performance and simulated past performance are not reliable indicators "
-        "of future results. Actual results may differ materially.",
-
-        "The simulation models transaction costs (a configurable per-trade cost in "
-        "basis points) and the 35% Swiss withholding tax on dividends, which is "
-        "treated as non-reclaimable within the AMC (Actively Managed Certificate) "
-        "wrapper — only the net 65% of each gross dividend is reinvested. The same "
-        "after-tax dividend basis is applied to the SMI Total Return benchmark for a "
-        "consistent comparison. The simulation does not account for market impact, "
-        "slippage, bid-ask spreads, or liquidity constraints. The investment universe "
-        "is applied on a current-constituent basis and may be subject to survivorship "
-        "bias. Performance figures are shown net of the stated management and "
-        "performance fees.",
-
-        "Digital assets such as Bitcoin are highly volatile and may result in the "
-        "total loss of capital. Any allocation to digital assets carries substantial "
-        "risk and may not be suitable for all investors.",
-
-        "Market data is sourced from third-party providers believed to be reliable "
-        "but is not guaranteed as to accuracy or completeness. This material is "
-        "strictly confidential and intended solely for the recipient. It may not be "
-        "reproduced or distributed, in whole or in part, without the prior written "
-        "consent of Oakwood Capital.",
-    ]
+    disc_block = [Paragraph(S("disclosures"), styles["h2"])]
+    disclaimer_paragraphs = (DISCLAIMER_PARAGRAPHS.get(lang)
+                             or DISCLAIMER_PARAGRAPHS["en"])
     for p in disclaimer_paragraphs:
         disc_block.append(Paragraph(p, styles["disclaimer"]))
 
@@ -1482,10 +1602,10 @@ def build_tearsheet(
     # First page = full cover art; all later pages = header/footer band.
     def on_first(canvas, doc_):
         _draw_cover(canvas, doc_, strategy_name, strategy_subtitle, period_str,
-                    highlight_kpis, logo_path)
+                    highlight_kpis, logo_path, lang=lang)
 
     def on_later(canvas, doc_):
-        _header_footer(canvas, doc_, strategy_name, logo_path=logo_path)
+        _header_footer(canvas, doc_, strategy_name, logo_path=logo_path, lang=lang)
 
     # Pass 1: build once to count total pages (no footer total yet)
     try:
@@ -1506,3 +1626,92 @@ def build_tearsheet(
     doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
     buf.seek(0)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Bilingual wrapper — builds DE and EN versions sequentially, concatenated
+# into a single PDF via pypdf.
+# ---------------------------------------------------------------------------
+
+def build_bilingual_tearsheet(
+    strategy_name,
+    strategy_subtitle_de,
+    strategy_subtitle_en,
+    period_str,
+    kpis_performance,
+    kpis_risk,
+    fee_summary,
+    risk_table_headers,
+    risk_table_rows,
+    fee_table_headers,
+    fee_table_rows,
+    figures,
+    params_summary,
+    universe_rows,
+    monthly_returns=None,
+    exec_summary_de=None,
+    exec_summary_en=None,
+    key_takeaways_de=None,
+    key_takeaways_en=None,
+    scatter_png=None,
+    snapshot_data=None,
+    period_returns=None,
+    top_drawdowns=None,
+):
+    """Build a single PDF with both DE and EN versions concatenated.
+
+    Sprach-spezifische Parameter (subtitle, exec_summary, key_takeaways)
+    werden pro Sprache übergeben; alle anderen Parameter sind sprach-neutral
+    und werden durchgereicht. Section-Titles, Labels und Disclaimer kommen
+    aus dem STRINGS-Dict und werden automatisch je Sprache gerendert.
+
+    Reihenfolge im finalen PDF:
+      Seiten 1-9: Deutsche Version (Cover + Inhalt)
+      Seiten 10-18: Englische Version (Cover + Inhalt)
+    """
+    from pypdf import PdfReader, PdfWriter
+
+    common_kwargs = dict(
+        strategy_name=strategy_name,
+        period_str=period_str,
+        kpis_performance=kpis_performance,
+        kpis_risk=kpis_risk,
+        fee_summary=fee_summary,
+        risk_table_headers=risk_table_headers,
+        risk_table_rows=risk_table_rows,
+        fee_table_headers=fee_table_headers,
+        fee_table_rows=fee_table_rows,
+        figures=figures,
+        params_summary=params_summary,
+        universe_rows=universe_rows,
+        monthly_returns=monthly_returns,
+        scatter_png=scatter_png,
+        snapshot_data=snapshot_data,
+        period_returns=period_returns,
+        top_drawdowns=top_drawdowns,
+    )
+
+    de_pdf = build_tearsheet(
+        strategy_subtitle=strategy_subtitle_de,
+        exec_summary=exec_summary_de,
+        key_takeaways=key_takeaways_de,
+        lang="de",
+        **common_kwargs,
+    )
+    en_pdf = build_tearsheet(
+        strategy_subtitle=strategy_subtitle_en,
+        exec_summary=exec_summary_en,
+        key_takeaways=key_takeaways_en,
+        lang="en",
+        **common_kwargs,
+    )
+
+    writer = PdfWriter()
+    for src in (de_pdf, en_pdf):
+        reader = PdfReader(io.BytesIO(src))
+        for page in reader.pages:
+            writer.add_page(page)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
