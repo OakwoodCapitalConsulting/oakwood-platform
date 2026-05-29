@@ -497,6 +497,8 @@ C_BORDER  = colors.HexColor("#DCDDD6")    # subtle borders on light
 C_TEXT    = colors.HexColor("#2A2A26")    # primary dark body text
 C_MUTED   = colors.HexColor("#6B7868")    # muted dark labels
 C_RED     = colors.HexColor("#B85042")    # red for negatives
+C_GREEN_POS = colors.HexColor("#5F7C4F")  # muted positive green (for + values)
+C_TABLE_ALT = colors.HexColor("#EFEFE7")  # warmer table row stripe (vs C_PAGE_BG)
 C_WHITE   = colors.white
 
 # ---------------------------------------------------------------------------
@@ -577,6 +579,16 @@ STRINGS = {
         "param_label":           "Parameter",
         "param_value":           "Value",
         "no_perf_fee":           "No performance fees were crystallized in this period.",
+        # Cover italic tagline (between hero KPIs and date block)
+        "cover_strapline":       "Where Swiss discipline meets digital innovation.",
+        # Editorial section eyebrows — small-caps numbered chapter markers
+        "eyebrow_01":            "OVERVIEW",
+        "eyebrow_02":            "PERFORMANCE",
+        "eyebrow_03":            "EVOLUTION",
+        "eyebrow_04":            "RISK",
+        "eyebrow_05":            "FEES",
+        "eyebrow_06":            "UNIVERSE",
+        "eyebrow_07":            "DISCLOSURES",
     },
     # German values are intentionally left empty — Phase 2 fills them.
     # During Phase 1, lang="de" falls back to the EN values automatically.
@@ -652,6 +664,16 @@ STRINGS = {
         "param_label":           "Parameter",
         "param_value":           "Wert",
         "no_perf_fee":           "In diesem Zeitraum wurden keine Performance-Gebühren kristallisiert.",
+        # Cover italic tagline (between hero KPIs and date block)
+        "cover_strapline":       "Wo Schweizer Disziplin auf digitale Innovation trifft.",
+        # Editorial section eyebrows — small-caps numbered chapter markers
+        "eyebrow_01":            "ÜBERSICHT",
+        "eyebrow_02":            "PERFORMANCE",
+        "eyebrow_03":            "ENTWICKLUNG",
+        "eyebrow_04":            "RISIKO",
+        "eyebrow_05":            "GEBÜHREN",
+        "eyebrow_06":            "UNIVERSUM",
+        "eyebrow_07":            "HINWEISE",
     },
 }
 
@@ -850,16 +872,44 @@ def _kpi_grid(kpis, styles, cols=4, accent=False):
             ("LEFTPADDING", (0, 0), (-1, -1), 12),
             ("RIGHTPADDING", (0, 0), (-1, -1), 12),
             ("BACKGROUND", (0, 0), (-1, -1), C_PANEL),
-            ("LINEABOVE", (0, 0), (-1, 0), 1.5, C_SAGE),
+            ("LINEABOVE", (0, 0), (-1, 0), 1.2, C_GOLD),
             ("LINEAFTER", (0, 0), (-2, -1), 0.5, C_BORDER),
         ]
     tbl.setStyle(TableStyle(style))
     return tbl
 
 
+def _section_heading(eyebrow_num, title, styles, lang):
+    """Editorial section opener: small-caps numbered eyebrow above the H2.
+    eyebrow_num: '01' through '07' — looked up in STRINGS as eyebrow_NN.
+    title: the regular H2 string (pre-translated).
+    Returns a list of flowables (caller can wrap in KeepTogether if needed).
+    """
+    S = _S(lang)
+    eyebrow_text = S(f"eyebrow_{eyebrow_num}")
+    # Tracked small-caps via hair-spaces between glyphs
+    spaced_label = "&#8202;".join(eyebrow_text)
+    eyebrow_html = (
+        f"<font color='#B8954A'><b>{eyebrow_num}</b></font>"
+        f"&nbsp;&nbsp;<font color='#9AA595'>·</font>&nbsp;&nbsp;"
+        f"<font color='#7C8978'><b>{spaced_label}</b></font>"
+    )
+    eyebrow_style = ParagraphStyle(
+        f"eyebrow_{eyebrow_num}", fontName=F_SANS_BOLD, fontSize=7,
+        textColor=C_SAGE, leading=10, spaceBefore=14, spaceAfter=2)
+    h2_style = ParagraphStyle(
+        "h2_after_eyebrow", parent=styles["h2"], spaceBefore=0, spaceAfter=8)
+    return [
+        Paragraph(eyebrow_html, eyebrow_style),
+        Paragraph(title, h2_style),
+    ]
+
+
 def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True):
     """Generic styled table. First column left-aligned (labels), all subsequent
-    columns right-aligned (numbers) — the professional finance convention."""
+    columns right-aligned (numbers) — the professional finance convention.
+    Cells may be plain strings/numbers or pre-built Paragraph instances
+    (the latter enables per-cell colour coding, e.g. excess return tinting)."""
     header_cells = []
     for j, h in enumerate(headers):
         align = TA_LEFT if j == 0 else TA_RIGHT
@@ -870,6 +920,9 @@ def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True
     for r in rows:
         cells = []
         for j, val in enumerate(r):
+            if isinstance(val, Paragraph):
+                cells.append(val)
+                continue
             align = TA_LEFT if j == 0 else TA_RIGHT
             style = ParagraphStyle(
                 f"td{j}", fontName=F_SANS if j > 0 or not highlight_first_col else F_SANS_BOLD,
@@ -888,7 +941,7 @@ def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ("LEFTPADDING", (0, 0), (-1, -1), 9),
         ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PANEL, C_PAGE_BG]),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PAGE_BG, C_TABLE_ALT]),
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, C_BORDER),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
@@ -1082,6 +1135,7 @@ def _period_returns_table(period_returns_data, lang, styles):
     period_returns_data is a list of (label_key, strategy_pct, bench_pct,
     excess_pct) tuples from compute_period_returns(). Any of bench/excess
     can be None and will render as a dash.
+    Excess column is colour-coded (green for positive, red for negative).
     """
     S = _S(lang)
     if not period_returns_data:
@@ -1095,9 +1149,19 @@ def _period_returns_table(period_returns_data, lang, styles):
         sign = "+" if x >= 0 else ""
         return f"{sign}{x:.2f}%"
 
+    def _excess_para(x):
+        if x is None:
+            return "—"
+        sign = "+" if x >= 0 else ""
+        text = f"{sign}{x:.2f}%"
+        color = C_GREEN_POS if x >= 0 else C_RED
+        return Paragraph(text, ParagraphStyle(
+            "exc", fontName=F_SANS_BOLD, fontSize=8, textColor=color,
+            leading=11, alignment=TA_RIGHT))
+
     rows = []
     for key, s, b, e in period_returns_data:
-        rows.append([S(key), _fmt(s), _fmt(b), _fmt(e)])
+        rows.append([S(key), _fmt(s), _fmt(b), _excess_para(e)])
 
     return _data_table(headers, rows, styles,
                        col_widths=[50 * mm, 40 * mm, 40 * mm, 40 * mm])
@@ -1259,6 +1323,21 @@ def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
             canvas.setFont(F_SANS, 7.5)
             canvas.drawCentredString(cx, y_band, label.upper())
 
+    # Italic tagline + gold ornament — fills the empty zone between hero KPIs
+    # (95mm) and the date block (52mm). Editorial flourish.
+    canvas.setFillColor(C_CREAMD)
+    canvas.setFont(F_SERIF_ITALIC, 12)
+    canvas.drawCentredString(W / 2, 78 * mm, S("cover_strapline"))
+    # Gold ornament: thin line · diamond · thin line, centered
+    canvas.setStrokeColor(C_GOLD)
+    canvas.setLineWidth(0.6)
+    orn_y = 70 * mm
+    canvas.line(W / 2 - 22 * mm, orn_y, W / 2 - 4 * mm, orn_y)
+    canvas.line(W / 2 + 4 * mm, orn_y, W / 2 + 22 * mm, orn_y)
+    canvas.setFillColor(C_GOLD)
+    canvas.setFont(F_SANS, 8)
+    canvas.drawCentredString(W / 2, orn_y - 1.5, "◆")
+
     # Period + generation block near the bottom
     canvas.setFillColor(C_CREAMD)
     canvas.setFont(F_SANS, 9)
@@ -1402,7 +1481,8 @@ def build_tearsheet(
 
     # ===== PAGE 2: KPIs / Summary =====
     if exec_summary:
-        story.append(Paragraph(S("exec_summary"), styles["h2"]))
+        for fl in _section_heading("01", S("exec_summary"), styles, lang):
+            story.append(fl)
         story.append(Paragraph(exec_summary, styles["body"]))
         story.append(Spacer(1, 8))
 
@@ -1452,12 +1532,12 @@ def build_tearsheet(
     # horizons. Sits on P2 below the Snapshot, giving the page real density.
     if period_returns:
         story.append(Spacer(1, 10))
-        story.append(KeepTogether([
-            Paragraph(S("period_returns"), styles["h2"]),
-            Paragraph(S("period_returns_sub"), styles["h3"]),
-            Spacer(1, 2),
-            _period_returns_table(period_returns, lang, styles),
-        ]))
+        story.append(KeepTogether(
+            _section_heading("02", S("period_returns"), styles, lang) + [
+                Paragraph(S("period_returns_sub"), styles["h3"]),
+                Spacer(1, 2),
+                _period_returns_table(period_returns, lang, styles),
+            ]))
 
     # Monthly Returns heatmap — kept together so it never splits, and
     # placed thematically with Period Returns as 'Performance Detail'
@@ -1476,7 +1556,8 @@ def build_tearsheet(
     # flow. Each chart sits in its own KeepTogether so a partial-fit never
     # splits an image across pages.
     story.append(PageBreak())
-    story.append(Paragraph(S("charts"), styles["h2"]))
+    for fl in _section_heading("03", S("charts"), styles, lang):
+        story.append(fl)
     any_chart = False
     n_fig = len(figures)
     for idx, (title, png_bytes) in enumerate(figures):
@@ -1516,13 +1597,13 @@ def build_tearsheet(
             ]))
 
     # ===== PAGE 5: Detailed Risk Metrics + Top Drawdowns =====
-    story.append(KeepTogether([
-        Paragraph(S("detailed_risk"), styles["h2"]),
-        _data_table(risk_table_headers, risk_table_rows, styles,
-                    col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm])
-        if risk_table_rows else Spacer(1, 1),
-        Spacer(1, 12),
-    ]))
+    story.append(KeepTogether(
+        _section_heading("04", S("detailed_risk"), styles, lang) + [
+            _data_table(risk_table_headers, risk_table_rows, styles,
+                        col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm])
+            if risk_table_rows else Spacer(1, 1),
+            Spacer(1, 12),
+        ]))
 
     # IB-style Top 5 Drawdowns — gives the Max-Drawdown KPI real substance
     # by showing the actual peak-to-trough episodes with duration and
@@ -1541,12 +1622,13 @@ def build_tearsheet(
     # and Universe flow directly after — no forced PageBreak — so they
     # fill the page elegantly when there's room.
     if fee_table_rows:
-        story.append(KeepTogether([
-            Paragraph(S("perf_fee_crystal"), styles["h2"]),
-            _data_table(fee_table_headers, fee_table_rows, styles),
-        ]))
+        story.append(KeepTogether(
+            _section_heading("05", S("perf_fee_crystal"), styles, lang) + [
+                _data_table(fee_table_headers, fee_table_rows, styles),
+            ]))
     else:
-        story.append(Paragraph(S("perf_fee_crystal"), styles["h2"]))
+        for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
+            story.append(fl)
         story.append(Paragraph(S("no_perf_fee"),
                                styles["body"]))
 
@@ -1563,14 +1645,14 @@ def build_tearsheet(
         ]))
 
     if universe_rows:
-        story.append(KeepTogether([
-            Paragraph(S("universe"), styles["h2"]),
-            _universe_sector_table(universe_rows, lang, styles),
+        story.append(KeepTogether(
+            _section_heading("06", S("universe"), styles, lang) + [
+                _universe_sector_table(universe_rows, lang, styles),
         ]))
 
     # Keep the entire disclosures section together on a fresh page
     story.append(PageBreak())
-    disc_block = [Paragraph(S("disclosures"), styles["h2"])]
+    disc_block = list(_section_heading("07", S("disclosures"), styles, lang))
     disclaimer_paragraphs = (DISCLAIMER_PARAGRAPHS.get(lang)
                              or DISCLAIMER_PARAGRAPHS["en"])
     for p in disclaimer_paragraphs:
@@ -1669,7 +1751,19 @@ def build_bilingual_tearsheet(
       Seiten 1-9: Deutsche Version (Cover + Inhalt)
       Seiten 10-18: Englische Version (Cover + Inhalt)
     """
-    from pypdf import PdfReader, PdfWriter
+    # Tolerant PDF-merge import: prefer modern pypdf, fall back to the
+    # legacy PyPDF2 fork (still common on hosted Python environments).
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        try:
+            from PyPDF2 import PdfReader, PdfWriter  # PyPDF2 ≥ 3.0
+        except ImportError:
+            raise ImportError(
+                "build_bilingual_tearsheet needs either 'pypdf' (preferred) "
+                "or 'PyPDF2' installed to merge the two language versions. "
+                "Add 'pypdf' to requirements.txt."
+            )
 
     common_kwargs = dict(
         strategy_name=strategy_name,

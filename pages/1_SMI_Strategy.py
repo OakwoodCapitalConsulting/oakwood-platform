@@ -2428,7 +2428,7 @@ if _show_results:
                     ("sn_inception",  ts.index[0].strftime("%d %b %Y")),
                     ("sn_currency",   "CHF"),
                     ("sn_benchmark",  "SMI Total Return"),
-                    ("sn_style",      "Multi-Asset (Swiss Equity + BTC)"),
+                    ("sn_style",      "Multi-Asset (Equity + BTC)"),
                     ("sn_domicile",   "Switzerland"),
                     ("sn_frequency",  "Daily"),
                 ]
