@@ -24,7 +24,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    Image, PageBreak, HRFlowable, KeepTogether,
+    Image, PageBreak, CondPageBreak, HRFlowable, KeepTogether,
 )
 
 # Matplotlib palette matching Oakwood CI
@@ -139,8 +139,15 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
                     txt = f"{end_val/1e6:.2f}M"
                 else:
                     txt = f"{end_val:,.0f}"
+                # Stagger labels vertically so series with very close end values
+                # (e.g. Strategy vs Benchmark) don't overprint each other.
+                _n = len(series_dict)
+                if _n > 1:
+                    _y_off = (i - (_n - 1) / 2.0) * 9
+                else:
+                    _y_off = 0
                 ax.annotate(txt, xy=(s.index[-1], end_val),
-                            xytext=(6, 0), textcoords="offset points",
+                            xytext=(6, _y_off), textcoords="offset points",
                             fontsize=7.5, color=color, va="center", ha="left",
                             fontweight="bold")
         ax.set_ylabel(ylabel, fontsize=8.5, color="#6B7868", labelpad=8)
@@ -262,13 +269,29 @@ def render_scatter_chart(points, xlabel="Volatility (ann.)", ylabel="CAGR (ann.)
         ypad = max((yhi - ylo) * 0.45, 1.5)
         x0, x1 = max(0, xlo - xpad), xhi + xpad
         y0, y1 = max(0, ylo - ypad), yhi + ypad
-        # Iso-Sharpe reference lines through the window
-        for sharpe in (0.5, 1.0):
+        # Iso-Sharpe reference lines through the window — only draw those
+        # whose endpoint actually fits inside the view, and anchor the label
+        # just inside the right edge so it never gets clipped.
+        for sharpe in (0.5, 0.75, 1.0):
+            y_at_x1 = sharpe * x1
+            if y_at_x1 < y0 or sharpe * x0 > y1:
+                continue
             ax.plot([x0, x1], [sharpe * x0, sharpe * x1],
                     color="#D2D5CC", linewidth=0.7, linestyle=":", zorder=1)
-            if sharpe * x1 <= y1:
-                ax.annotate(f"Sharpe {sharpe:g}", xy=(x1, sharpe * x1),
-                            fontsize=6.5, color="#B7BEB0", va="bottom", ha="right")
+            # Place the label where the line intersects either the right edge
+            # or the top edge — whichever is reached first inside the plot.
+            if y_at_x1 <= y1:
+                lx, ly = x1, y_at_x1
+                ha, va = "right", "bottom"
+                offset = (-4, 2)
+            else:
+                lx, ly = (y1 / sharpe), y1
+                ha, va = "left", "top"
+                offset = (4, -2)
+            ax.annotate(f"Sharpe {sharpe:g}", xy=(lx, ly),
+                        xytext=offset, textcoords="offset points",
+                        fontsize=6.5, color="#9AA595", va=va, ha=ha,
+                        zorder=2)
         # Alternate label placement to avoid overlap
         for idx, (label, vol, ret, color, marker) in enumerate(points):
             ax.scatter([vol], [ret], s=210, c=color, marker=marker,
@@ -721,7 +744,7 @@ def _header_footer(canvas, doc, strategy_name, logo_path=None):
             wm_w = 120 * mm
             wm_h = wm_w * ih / iw
             canvas.saveState()
-            canvas.setFillAlpha(0.03)
+            canvas.setFillAlpha(0.022)
             canvas.drawImage(img, (W - wm_w) / 2, (H - wm_h) / 2,
                              width=wm_w, height=wm_h,
                              mask="auto", preserveAspectRatio=True)
@@ -856,39 +879,30 @@ def build_tearsheet(
     story.append(Paragraph("Fee Summary", styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
 
-    # Monthly returns heatmap — the signature factsheet element
-    if monthly_returns:
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Monthly Returns (Net, %)", styles["h2"]))
-        story.append(Paragraph(
-            "Green = positive, red = negative; intensity scales with magnitude. "
-            "FY = compounded full-year return.", styles["h3"]))
-        story.append(Spacer(1, 3))
-        story.append(_monthly_returns_table(monthly_returns, styles))
-
+    # ===== PAGE 3 + 4: Charts (Evolution+Drawdown, then Yearly+Scatter) =====
+    # Charts come immediately after the headline KPIs — classic factsheet
+    # flow. Each chart sits in its own KeepTogether so a partial-fit never
+    # splits an image across pages.
     story.append(PageBreak())
-
-    # ===== Charts =====
-    # First two charts (evolution + drawdown) on one page, sized to fill it.
-    # The yearly performance chart gets its own page, larger and balanced.
     story.append(Paragraph("Portfolio Evolution &amp; Risk Charts", styles["h2"]))
     any_chart = False
     n_fig = len(figures)
     for idx, (title, png_bytes) in enumerate(figures):
         is_last = (idx == n_fig - 1)
-        # Last chart (yearly perf): larger, on its own page
         if is_last and n_fig >= 3:
+            # Yearly perf opens a fresh page paired with the scatter
             story.append(PageBreak())
-            img = _png_to_image(png_bytes, width_mm=170, height_mm=95)
+            img = _png_to_image(png_bytes, width_mm=170, height_mm=100)
         else:
-            img = _png_to_image(png_bytes, width_mm=170, height_mm=78)
+            # Evolution + drawdown share one page — height tuned so both fit
+            img = _png_to_image(png_bytes, width_mm=170, height_mm=95)
         if img is not None:
             any_chart = True
             block = KeepTogether([
                 Paragraph(title, styles["h3"]),
                 Spacer(1, 2),
                 img,
-                Spacer(1, 14),
+                Spacer(1, 12),
             ])
             story.append(block)
     if not any_chart:
@@ -898,47 +912,71 @@ def build_tearsheet(
             "provided in full in the tables on the following pages.",
             styles["body"]))
 
-    # Risk/Return positioning scatter — fills the lower half of the yearly page
+    # Risk/Return positioning scatter — sits below the yearly chart on page 4
     if scatter_png:
-        sc_img = _png_to_image(scatter_png, width_mm=150, height_mm=82)
+        sc_img = _png_to_image(scatter_png, width_mm=160, height_mm=90)
         if sc_img is not None:
-            story.append(Spacer(1, 8))
+            story.append(Spacer(1, 6))
             story.append(KeepTogether([
                 Paragraph("Risk / Return Positioning", styles["h3"]),
                 Spacer(1, 2),
                 sc_img,
             ]))
 
-    story.append(PageBreak())
+    # ===== PAGE 5: Monthly Returns + Detailed Risk Metrics =====
+    # Detail data follows the charts. Heatmap in its own KeepTogether so it
+    # never breaks across two pages.
+    if monthly_returns:
+        story.append(PageBreak())
+        story.append(KeepTogether([
+            Paragraph("Monthly Returns (Net, %)", styles["h2"]),
+            Paragraph(
+                "Green = positive, red = negative; intensity scales with magnitude. "
+                "FY = compounded full-year return.", styles["h3"]),
+            Spacer(1, 3),
+            _monthly_returns_table(monthly_returns, styles),
+            Spacer(1, 14),
+        ]))
 
-    # ===== PAGE 3: Detailed tables =====
-    story.append(Paragraph("Detailed Risk Metrics", styles["h2"]))
-    if risk_table_rows:
-        story.append(_data_table(risk_table_headers, risk_table_rows, styles,
-                                 col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm]))
-    story.append(Spacer(1, 14))
+    story.append(KeepTogether([
+        Paragraph("Detailed Risk Metrics", styles["h2"]),
+        _data_table(risk_table_headers, risk_table_rows, styles,
+                    col_widths=[55 * mm, 40 * mm, 40 * mm, 35 * mm])
+        if risk_table_rows else Spacer(1, 1),
+        Spacer(1, 12),
+    ]))
 
-    story.append(Paragraph("Performance Fee Crystallization Detail", styles["h2"]))
+    # ===== PAGE 6: Perf Fee Crystallization + Methodology + Universe =====
+    # Perf fee in KeepTogether so it never splits mid-table. Methodology
+    # and Universe flow directly after — no forced PageBreak — so they
+    # fill the page elegantly when there's room.
     if fee_table_rows:
-        story.append(_data_table(fee_table_headers, fee_table_rows, styles))
+        story.append(KeepTogether([
+            Paragraph("Performance Fee Crystallization Detail", styles["h2"]),
+            _data_table(fee_table_headers, fee_table_rows, styles),
+        ]))
     else:
+        story.append(Paragraph("Performance Fee Crystallization Detail", styles["h2"]))
         story.append(Paragraph("No performance fees were crystallized in this period.",
                                styles["body"]))
 
-    story.append(PageBreak())
-
-    # ===== PAGE 4: Methodology, Holdings, Disclaimer =====
-    story.append(Paragraph("Methodology &amp; Parameters", styles["h2"]))
+    # Methodology + Universe each in their own KeepTogether — they flow
+    # after Perf Fees and land on the next page if there's no room. The
+    # H2 styles already provide their own spaceBefore so no free-standing
+    # Spacer is needed (a top-of-frame Spacer would trigger a LayoutError).
     if params_summary:
-        prows = [[k, v] for k, v in params_summary]
-        story.append(_data_table(["Parameter", "Value"], prows, styles,
-                                 col_widths=[85 * mm, 85 * mm]))
-    story.append(Spacer(1, 12))
+        story.append(KeepTogether([
+            Paragraph("Methodology &amp; Parameters", styles["h2"]),
+            _data_table(["Parameter", "Value"],
+                        [[k, v] for k, v in params_summary], styles,
+                        col_widths=[85 * mm, 85 * mm]),
+        ]))
 
     if universe_rows:
-        story.append(Paragraph("Investment Universe", styles["h2"]))
-        story.append(_two_col_universe(universe_rows, styles))
-        story.append(Spacer(1, 12))
+        story.append(KeepTogether([
+            Paragraph("Investment Universe", styles["h2"]),
+            _two_col_universe(universe_rows, styles),
+        ]))
 
     # Keep the entire disclosures section together on a fresh page
     story.append(PageBreak())
