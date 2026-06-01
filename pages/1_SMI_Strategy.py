@@ -1144,6 +1144,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
     net.iloc[0] = float(initial_capital)
     hwm = float(initial_capital)            # plain high water mark (post-fee highs)
     total_mgmt = 0.0
+    period_mgmt = 0.0   # management fee accrued within the current crystallization period
     total_perf = 0.0
     fee_events = []
 
@@ -1157,6 +1158,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         mgmt_today = nv * daily_mgmt
         nv -= mgmt_today
         total_mgmt += mgmt_today
+        period_mgmt += mgmt_today
 
         is_last = (i == len(gross_values) - 1)
         if is_last:
@@ -1195,6 +1197,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                 fee_events.append({
                     "date": d, "period": period_label, "year": d.year,
                     "nav_before_perf": nv, "hwm_before": hwm, "excess": excess,
+                    "mgmt_fee": period_mgmt,
                     "perf_fee": perf_today, "nav_after_perf": nv_after,
                 })
                 hwm = max(hwm, nv_after)
@@ -1203,9 +1206,12 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                 fee_events.append({
                     "date": d, "period": period_label, "year": d.year,
                     "nav_before_perf": nv, "hwm_before": hwm,
-                    "excess": nv - hwm, "perf_fee": 0.0, "nav_after_perf": nv,
+                    "excess": nv - hwm, "mgmt_fee": period_mgmt,
+                    "perf_fee": 0.0, "nav_after_perf": nv,
                 })
                 hwm = max(hwm, nv)
+
+            period_mgmt = 0.0   # reset bucket for next period
 
         net.iloc[i] = nv
 
@@ -2090,25 +2096,34 @@ if _show_results:
         )
     with fee_col_b:
         if not fee_events_df.empty:
-            # Build annual fee event table
+            # Build per-period fee ledger (mgmt + perf), not just perf-fee events
             fed = fee_events_df.copy()
             fed["date"] = pd.to_datetime(fed["date"]).dt.strftime("%Y-%m-%d")
+            if "mgmt_fee" not in fed.columns:
+                fed["mgmt_fee"] = 0.0
+            fed["period_cost"] = fed["mgmt_fee"].fillna(0) + fed["perf_fee"].fillna(0)
             fed_disp = fed.rename(columns={
                 "date": "Period-End", "period": "Period", "year": "Year",
-                "nav_before_perf": "NAV before Perf Fee",
+                "nav_before_perf": "NAV before Fees",
                 "hwm_before": "HWM",
                 "excess": "Excess over HWM",
-                "perf_fee": "Perf Fee Charged",
-                "nav_after_perf": "NAV after Perf Fee",
+                "mgmt_fee": "Mgmt Fee",
+                "perf_fee": "Perf Fee",
+                "period_cost": "Total Cost",
+                "nav_after_perf": "NAV after Fees",
             })
-            for col in ["NAV before Perf Fee", "HWM", "Excess over HWM",
-                        "Perf Fee Charged", "NAV after Perf Fee"]:
+            for col in ["NAV before Fees", "HWM", "Excess over HWM",
+                        "Mgmt Fee", "Perf Fee", "Total Cost", "NAV after Fees"]:
                 fed_disp[col] = fed_disp[col].apply(lambda x: f"CHF {x:,.0f}")
-            # Show Period column, drop Year and date
-            display_cols = ["Period", "NAV before Perf Fee", "HWM",
-                           "Excess over HWM", "Perf Fee Charged", "NAV after Perf Fee"]
+            display_cols = ["Period", "NAV before Fees", "HWM", "Excess over HWM",
+                            "Mgmt Fee", "Perf Fee", "Total Cost", "NAV after Fees"]
             st.dataframe(fed_disp[display_cols],
                          use_container_width=True, hide_index=True, height=320)
+            st.caption(
+                "Per-period cost ledger. Mgmt fee accrues daily and is shown summed "
+                "per crystallization period; perf fee crystallizes at period end on "
+                "gains above the HWM. Transaction costs and the dividend withholding "
+                "tax are already reflected in the NAV (see panel at left).")
 
     # =====================================================================
     # BTC Weight Over Time
@@ -2402,13 +2417,14 @@ if _show_results:
                 fee_rows = []
                 if not fee_events_df.empty:
                     for _, r in fee_events_df.iterrows():
-                        if r["perf_fee"] > 0:
-                            fee_rows.append([
-                                r.get("period", str(r.get("year", ""))),
-                                f"CHF {r['nav_before_perf']:,.0f}",
-                                f"CHF {r['hwm_before']:,.0f}",
-                                f"CHF {r['perf_fee']:,.0f}",
-                            ])
+                        _mgmt = float(r.get("mgmt_fee", 0.0) or 0.0)
+                        _perf = float(r.get("perf_fee", 0.0) or 0.0)
+                        fee_rows.append([
+                            r.get("period", str(r.get("year", ""))),
+                            f"CHF {_mgmt:,.0f}",
+                            f"CHF {_perf:,.0f}",
+                            f"CHF {_mgmt + _perf:,.0f}",
+                        ])
 
                 universe_rows = [[v[0], t, v[2], v[1]] for t, v in SMI_CONSTITUENTS.items()]
 
@@ -2525,7 +2541,7 @@ if _show_results:
                     ],
                     risk_table_headers=["Metric", "Strategy (Net)", "SMI Total Return", "SMI Price Index"],
                     risk_table_rows=risk_rows,
-                    fee_table_headers=["Period", "NAV before Perf Fee", "HWM", "Perf Fee Charged"],
+                    fee_table_headers=["Period", "Mgmt Fee", "Perf Fee", "Total Cost"],
                     fee_table_rows=fee_rows,
                     figures=pdf_figures,
                     params_summary=[

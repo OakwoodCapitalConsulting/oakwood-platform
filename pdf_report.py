@@ -536,7 +536,7 @@ STRINGS = {
         "detailed_risk":         "Detailed Risk Metrics",
         "top_drawdowns":         "Top 5 Drawdowns",
         "top_drawdowns_sub":     "Largest peak-to-trough declines over the backtest period",
-        "perf_fee_crystal":      "Performance Fee Crystallization Detail",
+        "perf_fee_crystal":      "Cost Breakdown per Period",
         "methodology":           "Methodology &amp; Parameters",
         "universe":              "Investment Universe",
         "disclosures":           "Important Disclosures",
@@ -578,7 +578,7 @@ STRINGS = {
         # Methodology table headers + perf-fee fallback
         "param_label":           "Parameter",
         "param_value":           "Value",
-        "no_perf_fee":           "No performance fees were crystallized in this period.",
+        "no_perf_fee":           "No fee-crystallization periods fell within this backtest window.",
         # Cover italic tagline (between hero KPIs and date block)
         "cover_strapline":       "Where Swiss discipline meets digital innovation.",
         # Editorial section eyebrows — small-caps numbered chapter markers
@@ -621,7 +621,7 @@ STRINGS = {
         "detailed_risk":         "Detaillierte Risikokennzahlen",
         "top_drawdowns":         "Top 5 Drawdowns",
         "top_drawdowns_sub":     "Grösste Peak-to-Trough-Verluste im Backtest-Zeitraum",
-        "perf_fee_crystal":      "Performance-Fee-Kristallisationsdetails",
+        "perf_fee_crystal":      "Kostenaufstellung je Periode",
         "methodology":           "Methodik &amp; Parameter",
         "universe":              "Anlageuniversum",
         "disclosures":           "Wichtige Hinweise",
@@ -663,7 +663,7 @@ STRINGS = {
         # Methodology table headers + perf-fee fallback
         "param_label":           "Parameter",
         "param_value":           "Wert",
-        "no_perf_fee":           "In diesem Zeitraum wurden keine Performance-Gebühren kristallisiert.",
+        "no_perf_fee":           "Im Backtest-Zeitraum lagen keine Gebühren-Kristallisationsperioden.",
         # Cover italic tagline (between hero KPIs and date block)
         "cover_strapline":       "Wo Schweizer Disziplin auf digitale Innovation trifft.",
         # Editorial section eyebrows — small-caps numbered chapter markers
