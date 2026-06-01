@@ -857,6 +857,10 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     smi_shares = {t: 0.0 for t in available}
     transactions = []
+    # Per-event log of the actual net dividend cash harvested on the *live*
+    # (evolving) share counts — this is the real cash that funds the BTC DCA,
+    # as opposed to a frozen initial-share approximation.
+    dividend_cashflows = []
 
     if btc_price_0 is None or fx_0 is None or fx_0 == 0 or btc_price_0 == 0 or initial_btc_pct == 0:
         # No initial BTC possible — full to SMI
@@ -908,6 +912,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
             if key in div_lookup:
                 cash = smi_shares[t] * div_lookup[key]
                 if cash > 0:
+                    dividend_cashflows.append(
+                        {"date": d, "ticker": t, "cash_chf": cash})
                     pending_dca.append({"remaining": dca_months,
                                         "monthly_chf": cash / dca_months,
                                         "ticker": t})
@@ -1016,6 +1022,11 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     txs = pd.DataFrame(transactions) if transactions else pd.DataFrame()
     evts = pd.DataFrame(threshold_events) if threshold_events else pd.DataFrame()
     ts.attrs["total_tx_costs"] = total_tx_costs
+    ts.attrs["dividend_cashflows"] = (
+        pd.DataFrame(dividend_cashflows)
+        if dividend_cashflows
+        else pd.DataFrame(columns=["date", "ticker", "cash_chf"])
+    )
     return ts, txs, evts
 
 
@@ -2139,58 +2150,59 @@ if _show_results:
     st.plotly_chart(fig2, use_container_width=True)
 
     # =====================================================================
-    # Dividends by Year
+    # Dividends by Year — actual harvested cashflow from the simulation,
+    # computed on the live (evolving) share counts rather than a frozen
+    # initial-share approximation. Net of the non-reclaimable 35% withholding
+    # tax; this is the exact cash that funded the BTC DCA.
     # =====================================================================
-    if not divs.empty:
+    div_cf = ts.attrs.get("dividend_cashflows")
+    if div_cf is not None and not div_cf.empty:
         st.markdown("## Dividend Income by Year")
         st.markdown(
             f"<p style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:-8px;'>"
             f"Net of {int(WITHHOLDING_TAX*100)}% Swiss withholding tax "
             "(non-reclaimable in the AMC wrapper) — i.e. the amount actually "
-            "available for reinvestment into the BTC sleeve.</p>",
+            "available for reinvestment into the BTC sleeve. Reflects the real "
+            "holdings over time, including portfolio growth and rebalances.</p>",
             unsafe_allow_html=True
         )
-        # Compute actual cashflows received based on shares over time
-        # (approximation: shares at ex-date — using ts via interpolation is overkill)
-        # Use the initial share counts at start day for approximate display
-        # Actually we want to use the actual shares from simulation - need to track
-        # For simplicity, compute from prices_clean shares at start (approximation)
-        smi_shares_init = {}
-        prices_local = prices[[t for t in weights if t in prices.columns]].dropna(how="all")
-        first_day = prices_local.index[0]
-        if weighting_method.startswith("Equal"):
-            w_dict = {t: 5.0 for t in weights}
-        else:
-            w_dict = {t: min(weights[t], 18.0) for t in weights}
-        w_norm = pd.Series(w_dict) / sum(w_dict.values())
-        # Use only tickers that are listed on day 0 for the initial-share approximation
-        active_t0 = [t for t in prices_local.columns
-                     if pd.notna(prices_local.loc[first_day, t])]
-        if active_t0:
-            w_norm_active = w_norm[active_t0] / w_norm[active_t0].sum()
-            for t in active_t0:
-                smi_shares_init[t] = (initial_capital * (1 - initial_btc_pct) * w_norm_active[t]) / prices_local.loc[first_day, t]
-        div_yearly = divs.copy()
-        div_yearly["year"] = pd.to_datetime(div_yearly["date"]).dt.year
-        div_yearly["cash_chf"] = div_yearly.apply(
-            lambda r: smi_shares_init.get(r["ticker"], 0) * r["dividend_per_share"] * DIVIDEND_NET_FACTOR, axis=1
-        )
-        agg = div_yearly.groupby(["year", "ticker"])["cash_chf"].sum().reset_index()
+        div_cf = div_cf.copy()
+        div_cf["year"] = pd.to_datetime(div_cf["date"]).dt.year
+        agg = div_cf.groupby(["year", "ticker"])["cash_chf"].sum().reset_index()
+        year_totals = agg.groupby("year")["cash_chf"].sum()
+
         fig3 = go.Figure()
         tickers_sorted = sorted(agg["ticker"].unique(),
-                                key=lambda t: -agg[agg["ticker"]==t]["cash_chf"].sum())
+                                key=lambda t: -agg[agg["ticker"] == t]["cash_chf"].sum())
         for i, t in enumerate(tickers_sorted):
             sub = agg[agg["ticker"] == t]
             name = SMI_CONSTITUENTS.get(t, (t,))[0]
-            fig3.add_trace(go.Bar(x=sub["year"], y=sub["cash_chf"], name=name,
+            fig3.add_trace(go.Bar(
+                x=sub["year"], y=sub["cash_chf"], name=name,
                 marker=dict(color=CHART_BAR_COLORS[i % len(CHART_BAR_COLORS)],
-                            line=dict(color=OAK_GREEN_2, width=0.5))))
+                            line=dict(color=OAK_GREEN_2, width=0.5)),
+                hovertemplate="%{fullData.name}: CHF %{y:,.0f}<extra></extra>"))
         fig3.update_layout(barmode="stack")
-        fig3 = style_plotly(fig3, height=420)
+        fig3 = style_plotly(fig3, height=440)
         fig3.update_xaxes(title_text="Year", dtick=1)
-        fig3.update_yaxes(title_text="Dividends (CHF, approx.)", tickformat=",.0f")
+        fig3.update_yaxes(title_text="Dividends (CHF, net)", tickformat=",.0f")
+
+        # Per-year total above each stacked bar
+        for yr, tot in year_totals.items():
+            fig3.add_annotation(
+                x=int(yr), y=float(tot), text=f"CHF {tot:,.0f}",
+                showarrow=False, yshift=11, xanchor="center", yanchor="bottom",
+                font=dict(family="'Inter', sans-serif", size=11, color=OAK_CREAM))
+        # Headroom so the topmost total label isn't clipped
+        _ymax = float(year_totals.max()) if len(year_totals) else 0.0
+        if _ymax > 0:
+            fig3.update_yaxes(range=[0, _ymax * 1.13])
+
         st.plotly_chart(fig3, use_container_width=True)
-        st.caption("Approximation based on initial share counts. Actual reinvested dividends in simulation differ due to weight drift and rebalances.")
+        st.caption(
+            "Actual dividend cashflow harvested in the simulation, on the holdings "
+            "as they evolved (initial allocation, threshold reallocations and "
+            "quarterly rebalances) — the cash that funded the BTC DCA.")
 
     # =====================================================================
     # Detail tables
