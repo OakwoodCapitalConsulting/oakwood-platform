@@ -797,6 +797,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     """
     tx_cost = tx_cost_bps / 10000.0  # bps -> fraction
     total_tx_costs = 0.0  # accumulator in CHF
+    total_wht = 0.0       # gross dividend withheld at source (35%, non-reclaimable)
     available = [t for t in weights if t in prices.columns]
     if not available:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -914,6 +915,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                 if cash > 0:
                     dividend_cashflows.append(
                         {"date": d, "ticker": t, "cash_chf": cash})
+                    # cash is already net (×0.65); back out the 35% withheld
+                    total_wht += cash * (WITHHOLDING_TAX / DIVIDEND_NET_FACTOR)
                     pending_dca.append({"remaining": dca_months,
                                         "monthly_chf": cash / dca_months,
                                         "ticker": t})
@@ -1022,6 +1025,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     txs = pd.DataFrame(transactions) if transactions else pd.DataFrame()
     evts = pd.DataFrame(threshold_events) if threshold_events else pd.DataFrame()
     ts.attrs["total_tx_costs"] = total_tx_costs
+    ts.attrs["total_wht"] = total_wht
     ts.attrs["dividend_cashflows"] = (
         pd.DataFrame(dividend_cashflows)
         if dividend_cashflows
@@ -1531,6 +1535,7 @@ if _show_results:
 
     # ---- KPI Row 3: Fee breakdown ----
     total_tx_costs = float(ts.attrs.get("total_tx_costs", 0.0))
+    total_wht = float(ts.attrs.get("total_wht", 0.0))
     fees_total = total_mgmt_fees + total_perf_fees + total_tx_costs
     fees_total_pct_initial = (fees_total / initial_capital) * 100
     n_perf_periods = int(fee_events_df["perf_fee"].gt(0).sum()) if not fee_events_df.empty else 0
@@ -2060,16 +2065,26 @@ if _show_results:
             f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
             f"letter-spacing:0.14em; font-weight:600;'>Fee Structure</div>"
             f"<div style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:12px; line-height:1.8;'>"
-            f"<strong style='color:{OAK_CREAM};'>Management Fee:</strong> {mgmt_fee_pct*100:.2f}% p.a.<br>"
+            f"<strong style='color:{OAK_CREAM};'>Management Fee:</strong> {mgmt_fee_pct*100:.2f}% p.a. "
+            f"· CHF {total_mgmt_fees:,.0f}<br>"
             f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Accrued daily (1/252 per trading day)</span><br><br>"
-            f"<strong style='color:{OAK_CREAM};'>Performance Fee:</strong> {perf_fee_pct*100:.0f}%<br>"
+            f"<strong style='color:{OAK_CREAM};'>Performance Fee:</strong> {perf_fee_pct*100:.0f}% "
+            f"· CHF {total_perf_fees:,.0f}<br>"
             f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Crystallized {crystallization_freq.lower()} on gains above HWM</span><br><br>"
-            f"<strong style='color:{OAK_CREAM};'>HWM Hurdle:</strong> {hwm_hurdle_pct*100:.1f}% (Year 1)<br>"
+            f"<strong style='color:{OAK_CREAM};'>HWM Hurdle:</strong> {hwm_hurdle_pct*100:.1f}% (Year 1) · {hurdle_type}<br>"
             f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Initial HWM = Initial × (1 + Hurdle)</span><br><br>"
+            f"<strong style='color:{OAK_CREAM};'>Transaction Costs:</strong> {tx_cost_bps:.0f} bps/trade "
+            f"· CHF {total_tx_costs:,.0f}<br>"
+            f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Already reflected in gross NAV</span><br><br>"
             f"<strong style='color:{OAK_CREAM};'>Total Fees Paid:</strong> CHF {fees_total:,.0f}<br>"
             f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>"
-            f"{fees_total_pct_initial:.2f}% of initial capital over {years:.1f} years"
-            f"</span>"
+            f"= Mgmt + Perf + TX · {fees_total_pct_initial:.2f}% of initial capital over {years:.1f} years"
+            f"</span><br><br>"
+            f"<div style='border-top:1px solid {OAK_BORDER}; margin:4px 0 12px;'></div>"
+            f"<strong style='color:{OAK_CREAM};'>Dividend Withholding Tax:</strong> "
+            f"{int(WITHHOLDING_TAX*100)}% · CHF {total_wht:,.0f}<br>"
+            f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Non-reclaimable (AMC) · a tax drag, "
+            f"not a fee — applied equally to the SMI TR benchmark</span>"
             f"</div></div>",
             unsafe_allow_html=True
         )
