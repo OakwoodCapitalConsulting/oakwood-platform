@@ -2187,12 +2187,20 @@ if _show_results:
         fig3.update_xaxes(title_text="Year", dtick=1)
         fig3.update_yaxes(title_text="Dividends (CHF, net)", tickformat=",.0f")
 
-        # Per-year total above each stacked bar
+        # Per-year total above each stacked bar. Compact CHF formatting
+        # (e.g. "CHF 326k" / "CHF 1.20M") so adjacent labels don't collide.
+        def _compact_chf(v):
+            if v >= 1e6:
+                return f"CHF {v / 1e6:.2f}M"
+            if v >= 1e3:
+                return f"CHF {v / 1e3:.0f}k"
+            return f"CHF {v:,.0f}"
+
         for yr, tot in year_totals.items():
             fig3.add_annotation(
-                x=int(yr), y=float(tot), text=f"CHF {tot:,.0f}",
-                showarrow=False, yshift=11, xanchor="center", yanchor="bottom",
-                font=dict(family="'Inter', sans-serif", size=11, color=OAK_CREAM))
+                x=int(yr), y=float(tot), text=_compact_chf(tot),
+                showarrow=False, yshift=10, xanchor="center", yanchor="bottom",
+                font=dict(family="'Inter', sans-serif", size=10, color=OAK_CREAM))
         # Headroom so the topmost total label isn't clipped
         _ymax = float(year_totals.max()) if len(year_totals) else 0.0
         if _ymax > 0:
