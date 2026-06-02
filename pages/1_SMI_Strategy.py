@@ -2298,7 +2298,8 @@ if _show_results:
                 from pdf_report import (build_tearsheet, build_bilingual_tearsheet,
                                         render_line_chart,
                                         render_bar_chart, render_scatter_chart,
-                                        compute_period_returns, identify_top_drawdowns)
+                                        compute_period_returns, identify_top_drawdowns,
+                                        get_font_status)
 
                 # Render charts with matplotlib (stable, no headless browser).
                 pdf_figures = []
@@ -2578,6 +2579,26 @@ if _show_results:
                     mime="application/pdf",
                 )
                 st.success("PDF generated. Click the download button above.")
+
+                # Surface whether the embedded brand fonts loaded, or whether
+                # the report silently fell back to Times/Helvetica (e.g. when
+                # assets/fonts was not committed to the repo).
+                _fs = get_font_status()
+                if _fs["crimson_pro"] and _fs["work_sans"]:
+                    st.caption("✓ Brand fonts embedded: Crimson Pro + Work Sans.")
+                else:
+                    missing = []
+                    if not _fs["crimson_pro"]:
+                        missing.append("Crimson Pro")
+                    if not _fs["work_sans"]:
+                        missing.append("Work Sans")
+                    st.warning(
+                        "⚠ PDF is using the Times/Helvetica fallback — "
+                        f"{', '.join(missing)} not found. "
+                        f"Expected TTFs in `{_fs['fonts_dir']}` "
+                        f"(directory {'exists' if _fs['dir_exists'] else 'is missing'}). "
+                        "Commit the `assets/fonts/` folder to the repo to embed the brand fonts."
+                    )
             except Exception as e:
                 st.error(f"PDF generation failed: {e}")
 

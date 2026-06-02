@@ -56,6 +56,17 @@ F_SANS_ITALIC = "Helvetica-Oblique"
 
 _FONTS_REGISTERED = False
 
+# Populated by _register_fonts(); lets callers verify whether the embedded
+# TTFs actually loaded or the built-in Times/Helvetica fallback is in use.
+FONT_STATUS = {
+    "crimson_pro": False,
+    "work_sans": False,
+    "serif": "Times-Roman",
+    "sans": "Helvetica",
+    "fonts_dir": None,
+    "dir_exists": False,
+}
+
 
 def _register_fonts():
     global _FONTS_REGISTERED, F_SERIF, F_SERIF_BOLD, F_SERIF_ITALIC
@@ -63,6 +74,8 @@ def _register_fonts():
     if _FONTS_REGISTERED:
         return
     fdir = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+    FONT_STATUS["fonts_dir"] = fdir
+    FONT_STATUS["dir_exists"] = os.path.isdir(fdir)
     mapping = [
         ("CrimsonPro", "CrimsonPro-Regular.ttf", "CrimsonPro-Bold.ttf", "CrimsonPro-Italic.ttf"),
         ("WorkSans", "WorkSans-Regular.ttf", "WorkSans-Bold.ttf", "WorkSans-Italic.ttf"),
@@ -75,10 +88,22 @@ def _register_fonts():
             ip = os.path.join(fdir, ital)
             if os.path.exists(rp):
                 pdfmetrics.registerFont(TTFont(family, rp))
-                if os.path.exists(bp):
+                has_bold = os.path.exists(bp)
+                has_ital = os.path.exists(ip)
+                if has_bold:
                     pdfmetrics.registerFont(TTFont(family + "-Bold", bp))
-                if os.path.exists(ip):
+                if has_ital:
                     pdfmetrics.registerFont(TTFont(family + "-Italic", ip))
+                # Map the family so inline <b>/<i> markup resolves to the real
+                # cuts instead of synthesised bold/italic (falls back to the
+                # regular weight for any variant whose TTF is missing).
+                pdfmetrics.registerFontFamily(
+                    family,
+                    normal=family,
+                    bold=(family + "-Bold") if has_bold else family,
+                    italic=(family + "-Italic") if has_ital else family,
+                    boldItalic=(family + "-Bold") if has_bold else family,
+                )
                 ok[family] = True
         if ok.get("CrimsonPro"):
             F_SERIF = "CrimsonPro"
@@ -88,9 +113,24 @@ def _register_fonts():
             F_SANS = "WorkSans"
             F_SANS_BOLD = "WorkSans-Bold"
             F_SANS_ITALIC = "WorkSans-Italic"
+        FONT_STATUS["crimson_pro"] = bool(ok.get("CrimsonPro"))
+        FONT_STATUS["work_sans"] = bool(ok.get("WorkSans"))
     except Exception:
         pass  # keep built-in fallbacks
+    FONT_STATUS["serif"] = F_SERIF
+    FONT_STATUS["sans"] = F_SANS
     _FONTS_REGISTERED = True
+
+
+def get_font_status():
+    """Ensure fonts are registered, then return a copy of the status dict.
+
+    Callers (e.g. the Streamlit page) can use this to confirm whether the
+    embedded Crimson Pro / Work Sans TTFs loaded, or whether the report is
+    silently rendering in the Times/Helvetica fallback.
+    """
+    _register_fonts()
+    return dict(FONT_STATUS)
 
 
 def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_first=False,
@@ -1411,10 +1451,13 @@ def _header_footer(canvas, doc, strategy_name, logo_path=None, lang="en"):
     canvas.drawString(20 * mm, 12 * mm, S("illustrative"))
     canvas.drawCentredString(W / 2, 12 * mm, strategy_name)
     total = getattr(doc, "_total_pages", None)
+    lang_tag = lang.upper()  # 'DE' / 'EN' — disambiguates the two merged editions
     if total:
-        canvas.drawRightString(W - 20 * mm, 12 * mm, f"{doc.page:02d} / {total:02d}")
+        canvas.drawRightString(W - 20 * mm, 12 * mm,
+                               f"{lang_tag}\u2002·\u2002{doc.page:02d} / {total:02d}")
     else:
-        canvas.drawRightString(W - 20 * mm, 12 * mm, f"{doc.page:02d}")
+        canvas.drawRightString(W - 20 * mm, 12 * mm,
+                               f"{lang_tag}\u2002·\u2002{doc.page:02d}")
     canvas.setStrokeColor(C_BORDER)
     canvas.setLineWidth(0.5)
     canvas.line(20 * mm, 15 * mm, W - 20 * mm, 15 * mm)
@@ -1523,8 +1566,14 @@ def build_tearsheet(
 
     # IB-style Strategy Snapshot panel — 3x2 fact box, fills the lower
     # half of P2 with the canonical "fact box" investors expect.
+    # Anchor the heading above the panel with a CondPageBreak that reserves
+    # enough height for heading + the 3x2 grid, so the second row never
+    # orphans onto the next page. We deliberately do NOT use KeepTogether
+    # here: when the block is pushed low on the page it can raise a
+    # LayoutError (same reason the long tables below use CondPageBreak).
     if snapshot_data:
         story.append(Spacer(1, 10))
+        story.append(CondPageBreak(46 * mm))
         story.append(Paragraph(S("snapshot"), styles["h2"]))
         story.append(_strategy_snapshot_panel(snapshot_data, lang, styles))
 
