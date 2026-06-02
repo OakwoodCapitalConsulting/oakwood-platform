@@ -579,6 +579,7 @@ STRINGS = {
         "perf_fee_crystal":      "Cost Breakdown per Period",
         "methodology":           "Methodology &amp; Parameters",
         "universe":              "Investment Universe",
+        "universe_sub":          "Two sleeves: a structural Bitcoin allocation and an SMI equity replication using fixed target weights (a current-constituent approximation, not the index's historical composition). BTC weight is shown at portfolio level (target / cap); SMI weights are within the equity sleeve. See Methodology and Disclosures.",
         "disclosures":           "Important Disclosures",
         # Snapshot labels
         "sn_inception":          "Inception",
@@ -664,6 +665,7 @@ STRINGS = {
         "perf_fee_crystal":      "Kostenaufstellung je Periode",
         "methodology":           "Methodik &amp; Parameter",
         "universe":              "Anlageuniversum",
+        "universe_sub":          "Zwei Sleeves: eine strukturelle Bitcoin-Allokation und eine SMI-Replikation mit festen Zielgewichten (Näherung auf Basis der aktuellen Mitglieder, nicht der historischen Index-Zusammensetzung). Das BTC-Gewicht ist auf Portfolio-Ebene angegeben (Ziel / Obergrenze); die SMI-Gewichte beziehen sich auf den Equity-Teil. Siehe Methodik und Hinweise.",
         "disclosures":           "Wichtige Hinweise",
         # Snapshot labels
         "sn_inception":          "Auflagedatum",
@@ -740,8 +742,15 @@ DISCLAIMER_PARAGRAPHS = {
         "after-tax dividend basis is applied to the SMI Total Return benchmark for "
         "a consistent comparison. The simulation does not account for market impact, "
         "slippage, bid-ask spreads, or liquidity constraints. The investment universe "
-        "is applied on a current-constituent basis and may be subject to survivorship "
-        "bias. Performance figures are shown net of the stated management and "
+        "is applied on a current-constituent basis with fixed target weights held "
+        "constant across the entire backtest; it does not reflect the index's "
+        "historical membership or weight changes, and is therefore subject to "
+        "survivorship and look-ahead bias. The SMI Total Return benchmark shown is a "
+        "rule-based replication built on the same fixed-weight basis (rebalanced "
+        "quarterly, dividends net of withholding tax) rather than the official SMI "
+        "index series; the reported excess return therefore isolates the effect of "
+        "the Bitcoin sleeve and fees, not the tracking error versus the live index. "
+        "Performance figures are shown net of the stated management and "
         "performance fees.",
 
         "Digital assets such as Bitcoin are highly volatile and may result in the "
@@ -776,9 +785,16 @@ DISCLAIMER_PARAGRAPHS = {
         "konsistenten Vergleich auf den SMI Total Return Benchmark angewendet. Die "
         "Simulation berücksichtigt keine Marktauswirkungen, Slippage, Geld-Brief-"
         "Spannen oder Liquiditätsbeschränkungen. Das Anlageuniversum wird auf Basis "
-        "der aktuellen Indexmitglieder angewendet und kann einem Survivorship Bias "
-        "unterliegen. Die Performance-Zahlen werden nach Abzug der angegebenen "
-        "Management- und Performance-Gebühren ausgewiesen.",
+        "der aktuellen Indexmitglieder mit über den gesamten Backtest fest "
+        "gehaltenen Zielgewichten angewendet; es bildet die historischen "
+        "Mitgliedschafts- und Gewichtsänderungen des Index nicht nach und unterliegt "
+        "daher einem Survivorship- und Look-ahead-Bias. Der ausgewiesene SMI Total "
+        "Return Benchmark ist eine regelbasierte Nachbildung auf derselben "
+        "Festgewichts-Basis (quartalsweises Rebalancing, Dividenden nach Quellensteuer) "
+        "und nicht die offizielle SMI-Indexreihe; die ausgewiesene Mehrrendite "
+        "isoliert somit den Effekt der Bitcoin-Allokation und der Gebühren, nicht den "
+        "Tracking Error gegenüber dem realen Index. Die Performance-Zahlen werden nach "
+        "Abzug der angegebenen Management- und Performance-Gebühren ausgewiesen.",
 
         "Digitale Vermögenswerte wie Bitcoin sind hochvolatil und können zum "
         "Totalverlust des eingesetzten Kapitals führen. Jede Allokation in digitale "
@@ -1454,10 +1470,10 @@ def _header_footer(canvas, doc, strategy_name, logo_path=None, lang="en"):
     lang_tag = lang.upper()  # 'DE' / 'EN' — disambiguates the two merged editions
     if total:
         canvas.drawRightString(W - 20 * mm, 12 * mm,
-                               f"{lang_tag}\u2002·\u2002{doc.page:02d} / {total:02d}")
+                               f"{lang_tag} · {doc.page:02d} / {total:02d}")
     else:
         canvas.drawRightString(W - 20 * mm, 12 * mm,
-                               f"{lang_tag}\u2002·\u2002{doc.page:02d}")
+                               f"{lang_tag} · {doc.page:02d}")
     canvas.setStrokeColor(C_BORDER)
     canvas.setLineWidth(0.5)
     canvas.line(20 * mm, 15 * mm, W - 20 * mm, 15 * mm)
@@ -1549,7 +1565,7 @@ def build_tearsheet(
             ("RIGHTPADDING", (0, 0), (-1, -1), 14),
         ]))
         story.append(kt_tbl)
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 9))
 
     story.append(Paragraph(S("perf_summary"), styles["h2"]))
     story.append(Paragraph(S("perf_summary_sub"), styles["h3"]))
@@ -1564,41 +1580,41 @@ def build_tearsheet(
     story.append(Paragraph(S("fee_summary"), styles["h2"]))
     story.append(_kpi_grid(fee_summary, styles, cols=4))
 
-    # IB-style Strategy Snapshot panel — 3x2 fact box, fills the lower
-    # half of P2 with the canonical "fact box" investors expect.
-    # Anchor the heading above the panel with a CondPageBreak that reserves
-    # enough height for heading + the 3x2 grid, so the second row never
-    # orphans onto the next page. We deliberately do NOT use KeepTogether
-    # here: when the block is pushed low on the page it can raise a
-    # LayoutError (same reason the long tables below use CondPageBreak).
+    # IB-style Strategy Snapshot panel — 3x2 fact box. Rather than fight the
+    # page-2 boundary (the German edition runs slightly longer and can't hold
+    # the panel without splitting or cramming to the frame edge), we let the
+    # snapshot consistently lead page 3 in BOTH languages: page 2 becomes a
+    # clean executive-summary page (overview + headline KPIs), page 3 the
+    # performance-detail page (snapshot + period returns + monthly heatmap).
+    # Landing at the top of a fresh page means the panel always has full
+    # height available, so it can never split or orphan a row.
     if snapshot_data:
-        story.append(Spacer(1, 10))
-        story.append(CondPageBreak(46 * mm))
+        story.append(PageBreak())
         story.append(Paragraph(S("snapshot"), styles["h2"]))
         story.append(_strategy_snapshot_panel(snapshot_data, lang, styles))
 
     # IB-style Performance per Period table — trailing returns over standard
-    # horizons. Sits on P2 below the Snapshot, giving the page real density.
+    # horizons. Anchored with CondPageBreak (not KeepTogether): when the
+    # snapshot sits low on page 2, a KeepTogether here can hit the frame
+    # boundary and raise a spurious LayoutError. CondPageBreak reserves room
+    # for the heading + a few rows and otherwise breaks cleanly.
     if period_returns:
         story.append(Spacer(1, 10))
-        story.append(KeepTogether(
-            _section_heading("02", S("period_returns"), styles, lang) + [
-                Paragraph(S("period_returns_sub"), styles["h3"]),
-                Spacer(1, 2),
-                _period_returns_table(period_returns, lang, styles),
-            ]))
+        story.append(CondPageBreak(40 * mm))
+        for fl in _section_heading("02", S("period_returns"), styles, lang):
+            story.append(fl)
+        story.append(Paragraph(S("period_returns_sub"), styles["h3"]))
+        story.append(Spacer(1, 2))
+        story.append(_period_returns_table(period_returns, lang, styles))
 
-    # Monthly Returns heatmap — kept together so it never splits, and
-    # placed thematically with Period Returns as 'Performance Detail'
-    # (rather than after the charts).
+    # Monthly Returns heatmap — same CondPageBreak anchoring rationale.
     if monthly_returns:
         story.append(Spacer(1, 12))
-        story.append(KeepTogether([
-            Paragraph(S("monthly_returns"), styles["h2"]),
-            Paragraph(S("monthly_returns_sub"), styles["h3"]),
-            Spacer(1, 3),
-            _monthly_returns_table(monthly_returns, styles),
-        ]))
+        story.append(CondPageBreak(55 * mm))
+        story.append(Paragraph(S("monthly_returns"), styles["h2"]))
+        story.append(Paragraph(S("monthly_returns_sub"), styles["h3"]))
+        story.append(Spacer(1, 3))
+        story.append(_monthly_returns_table(monthly_returns, styles))
 
     # ===== PAGE 3 + 4: Charts (Evolution+Drawdown, then Yearly+Scatter) =====
     # Charts come immediately after the headline KPIs — classic factsheet
@@ -1692,9 +1708,11 @@ def build_tearsheet(
                                  col_widths=[85 * mm, 85 * mm]))
 
     if universe_rows:
-        story.append(CondPageBreak(80 * mm))
+        story.append(PageBreak())
         for fl in _section_heading("06", S("universe"), styles, lang):
             story.append(fl)
+        story.append(Paragraph(S("universe_sub"), styles["h3"]))
+        story.append(Spacer(1, 3))
         story.append(_universe_sector_table(universe_rows, lang, styles))
 
     # Disclosures — must NOT be wrapped in a single KeepTogether: the

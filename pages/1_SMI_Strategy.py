@@ -2427,7 +2427,15 @@ if _show_results:
                             f"CHF {_mgmt + _perf:,.0f}",
                         ])
 
-                universe_rows = [[v[0], t, v[2], v[1]] for t, v in SMI_CONSTITUENTS.items()]
+                # Investment universe: the digital-asset sleeve (Bitcoin) first,
+                # then the SMI equity replication. BTC weight is portfolio-level
+                # (target + cap); SMI weights are within the equity sleeve.
+                btc_weight_label = (
+                    f"{target_btc_pct*100:.0f}% \u00b7 cap {upper_threshold*100:.0f}%")
+                universe_rows = (
+                    [["Bitcoin", "BTC", "Digital Assets", btc_weight_label]]
+                    + [[v[0], t, v[2], v[1]] for t, v in SMI_CONSTITUENTS.items()]
+                )
 
                 # Build monthly returns dict {year: [12 values in %]} for the PDF heatmap
                 pdf_monthly = {}
