@@ -563,6 +563,7 @@ STRINGS = {
         "perf_summary_sub":      "Net of fees, transaction costs and 35% dividend withholding tax",
         "risk_metrics":          "Risk &amp; Risk-Adjusted Metrics",
         "fee_summary":           "Fee Summary",
+        "fee_summary_side":      "Total Fees",
         "snapshot":              "Strategy Snapshot",
         "period_returns":        "Performance per Period",
         "period_returns_sub":    "Cumulative net returns over standard reporting horizons",
@@ -649,6 +650,7 @@ STRINGS = {
         "perf_summary_sub":      "Nach Gebühren, Transaktionskosten und 35% Dividenden-Quellensteuer",
         "risk_metrics":          "Risiko und risikoadjustierte Kennzahlen",
         "fee_summary":           "Gebührenübersicht",
+        "fee_summary_side":      "Gesamtgebühren",
         "snapshot":              "Strategie-Eckdaten",
         "period_returns":        "Performance nach Zeitraum",
         "period_returns_sub":    "Kumulierte Nettorenditen über Standard-Reporting-Zeiträume",
@@ -961,6 +963,64 @@ def _section_heading(eyebrow_num, title, styles, lang):
     ]
 
 
+def _compact_fee_table(headers, rows, styles, col_widths):
+    """Tighter variant of _data_table for the per-period cost ledger so the
+    full quarterly history fits in a narrow left column on one page."""
+    header_cells = []
+    for j, h in enumerate(headers):
+        align = TA_LEFT if j == 0 else TA_RIGHT
+        header_cells.append(Paragraph(f"<b>{h}</b>", ParagraphStyle(
+            f"fth{j}", fontName=F_SANS_BOLD, fontSize=6.5, textColor=C_CREAM,
+            leading=8, alignment=align)))
+    data = [header_cells]
+    for r in rows:
+        cells = []
+        for j, val in enumerate(r):
+            align = TA_LEFT if j == 0 else TA_RIGHT
+            style = ParagraphStyle(
+                f"ftd{j}", fontName=F_SANS_BOLD if j == 0 else F_SANS,
+                fontSize=6.5, textColor=C_TEXT, leading=8.5, alignment=align)
+            cells.append(Paragraph(str(val), style))
+        data.append(cells)
+    tbl = Table(data, colWidths=col_widths, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), C_PANEL_2),
+        ("LINEABOVE", (0, 0), (-1, 0), 1, C_GOLD),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PAGE_BG, C_TABLE_ALT]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.3, C_BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return tbl
+
+
+def _kpi_stack(kpis, styles):
+    """Vertical stack of KPI cards (label over value), one per row — used as a
+    sidebar beside the cost ledger. Mirrors the on-page fee-summary styling."""
+    cells = []
+    for label, value in kpis:
+        cells.append([[
+            Paragraph(label.upper(), styles["kpi_label"]),
+            Spacer(1, 3),
+            Paragraph(str(value), styles["kpi_value"]),
+        ]])
+    tbl = Table(cells, colWidths=[60 * mm])
+    tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 11),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("BACKGROUND", (0, 0), (-1, -1), C_PANEL),
+        ("LINEABOVE", (0, 0), (-1, 0), 1.2, C_GOLD),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, C_BORDER),
+    ]))
+    return tbl
+
+
 def _data_table(headers, rows, styles, col_widths=None, highlight_first_col=True):
     """Generic styled table. First column left-aligned (labels), all subsequent
     columns right-aligned (numbers) — the professional finance convention.
@@ -1084,34 +1144,59 @@ def _monthly_returns_table(monthly_returns, styles):
     return tbl
 
 
-def _two_col_universe(rows, styles):
-    """Render the investment universe as two side-by-side compact tables so all
-    constituents fit on a single page. rows: list of [name, ticker, sector]."""
+def _two_col_universe(rows, styles, lang="en", have_weight=False):
+    """Render the investment universe as two side-by-side tables so a long
+    universe fits on a single page. rows: list of [name, ticker, sector?, weight?].
+    Shows sector and (optionally) weight when present; falls back to
+    name+ticker only when those columns are absent."""
+    S = _S(lang)
     half = (len(rows) + 1) // 2
     left_rows = rows[:half]
     right_rows = rows[half:]
+    have_sector = any(len(r) >= 3 and r[2] for r in rows)
+
+    def _hdr(txt, align=TA_LEFT):
+        return Paragraph(f"<b>{txt}</b>", ParagraphStyle(
+            "uh", fontName=F_SANS_BOLD, fontSize=7, textColor=C_CREAM,
+            leading=9, alignment=align))
 
     def _mini(sub):
-        header = [Paragraph("<b>Constituent</b>", ParagraphStyle(
-                    "uh", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_CREAM, leading=9)),
-                  Paragraph("<b>Ticker</b>", ParagraphStyle(
-                    "uh2", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_CREAM, leading=9))]
-        data = [header]
+        # Column layout within each half: Constituent · Ticker · Sector · Weight
+        cols = [_hdr(S("uni_constituent")), _hdr(S("uni_ticker"), TA_RIGHT)]
+        widths = [29 * mm, 17 * mm]
+        if have_sector:
+            cols.append(_hdr(S("uni_sector"), TA_RIGHT)); widths.append(23 * mm)
+        if have_weight:
+            cols.append(_hdr(S("uni_weight"), TA_RIGHT)); widths.append(19 * mm)
+        data = [cols]
         for r in sub:
-            name_p = Paragraph(str(r[0]), ParagraphStyle(
-                "un", fontName=F_SANS, fontSize=7.5, textColor=C_TEXT, leading=10))
-            tick_p = Paragraph(str(r[1]), ParagraphStyle(
-                "ut", fontName=F_SANS, fontSize=7.5, textColor=C_MUTED, leading=10))
-            data.append([name_p, tick_p])
-        t = Table(data, colWidths=[52 * mm, 28 * mm])
+            cells = [
+                Paragraph(str(r[0]), ParagraphStyle(
+                    "un", fontName=F_SANS_BOLD, fontSize=7, textColor=C_TEXT, leading=9.5)),
+                Paragraph(str(r[1]) if len(r) > 1 else "", ParagraphStyle(
+                    "ut", fontName=F_SANS, fontSize=7, textColor=C_MUTED,
+                    leading=9.5, alignment=TA_RIGHT)),
+            ]
+            if have_sector:
+                cells.append(Paragraph(str(r[2]) if len(r) > 2 and r[2] else "", ParagraphStyle(
+                    "us", fontName=F_SANS, fontSize=7, textColor=C_TEXT,
+                    leading=9.5, alignment=TA_RIGHT)))
+            if have_weight:
+                w = r[3] if len(r) > 3 else None
+                wtxt = f"{w:.2f}%" if isinstance(w, (int, float)) else (str(w) if w else "—")
+                cells.append(Paragraph(wtxt, ParagraphStyle(
+                    "uw", fontName=F_SANS, fontSize=7, textColor=C_TEXT,
+                    leading=9.5, alignment=TA_RIGHT)))
+            data.append(cells)
+        t = Table(data, colWidths=widths, repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), C_PANEL_2),
             ("LINEABOVE", (0, 0), (-1, 0), 1, C_GOLD),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 7),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PANEL, C_PAGE_BG]),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PAGE_BG, C_TABLE_ALT]),
             ("LINEBELOW", (0, 0), (-1, -1), 0.3, C_BORDER),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
@@ -1119,11 +1204,11 @@ def _two_col_universe(rows, styles):
 
     left_tbl = _mini(left_rows)
     right_tbl = _mini(right_rows) if right_rows else Spacer(1, 1)
-    outer = Table([[left_tbl, right_tbl]], colWidths=[83 * mm, 83 * mm])
+    outer = Table([[left_tbl, right_tbl]], colWidths=[88 * mm, 88 * mm])
     outer.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (0, 0), 4),
+        ("RIGHTPADDING", (0, 0), (0, 0), 6),
     ]))
     return outer
 
@@ -1278,7 +1363,7 @@ def _universe_sector_table(rows, lang, styles):
     have_weight = any(len(r) >= 4 and r[3] is not None for r in rows)
 
     if not have_sector and not have_weight:
-        return _two_col_universe(rows, styles)
+        return _two_col_universe(rows, styles, lang)
 
     headers = [S("uni_constituent"), S("uni_ticker"), S("uni_sector")]
     col_widths = [55 * mm, 30 * mm, 50 * mm]
@@ -1296,7 +1381,38 @@ def _universe_sector_table(rows, lang, styles):
             row.append(f"{w:.2f}%" if isinstance(w, (int, float)) else (str(w) if w else "—"))
         body.append(row)
 
-    return _data_table(headers, body, styles, col_widths=col_widths)
+    # Compact full-width single-column table — tighter row padding than the
+    # generic _data_table so a long universe (e.g. BTC + 20 SMI = 21 rows)
+    # stays on one page without splitting.
+    header_cells = []
+    for j, h in enumerate(headers):
+        align = TA_LEFT if j == 0 else TA_RIGHT
+        header_cells.append(Paragraph(f"<b>{h}</b>", ParagraphStyle(
+            f"uth{j}", fontName=F_SANS_BOLD, fontSize=7.5, textColor=C_CREAM,
+            leading=9, alignment=align)))
+    data = [header_cells]
+    for r in body:
+        cells = []
+        for j, val in enumerate(r):
+            align = TA_LEFT if j == 0 else TA_RIGHT
+            cells.append(Paragraph(str(val), ParagraphStyle(
+                f"utd{j}", fontName=F_SANS_BOLD if j == 0 else F_SANS,
+                fontSize=8, textColor=C_TEXT if j != 1 else C_MUTED,
+                leading=10, alignment=align)))
+        data.append(cells)
+    tbl = Table(data, colWidths=col_widths, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), C_PANEL_2),
+        ("LINEABOVE", (0, 0), (-1, 0), 1, C_GOLD),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_PAGE_BG, C_TABLE_ALT]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, C_BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return tbl
 
 
 def _draw_cover(canvas, doc, strategy_name, strategy_subtitle, period_str,
@@ -1690,11 +1806,31 @@ def build_tearsheet(
     # risks a LayoutError when (eyebrow + heading + table) exceeds frame
     # height. Instead, use CondPageBreak to keep the heading anchored above
     # the table start and let the table flow naturally across pages if needed.
-    story.append(CondPageBreak(60 * mm))
+    # The side-by-side fee layout (ledger + KPI sidebar) is a nested table and
+    # therefore atomic — it cannot split across pages. With a full quarterly
+    # history the compact ledger reaches ~480pt; combined with the heading it
+    # still fits within one frame (~700pt), so we force a fresh page with
+    # PageBreak (not CondPageBreak, which would reserve too little and let the
+    # block overflow when it lands mid-page).
+    story.append(PageBreak())
     if fee_table_rows:
         for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
             story.append(fl)
-        story.append(_data_table(fee_table_headers, fee_table_rows, styles))
+        # Left: compact per-period cost ledger. Right: fee-summary KPI cards
+        # (same figures as the page-2 fee summary) as a sidebar total.
+        ledger = _compact_fee_table(
+            fee_table_headers, fee_table_rows, styles,
+            col_widths=[20 * mm, 24 * mm, 24 * mm, 24 * mm])
+        sidebar = _kpi_stack(fee_summary, styles) if fee_summary else Spacer(1, 1)
+        side_col = [Paragraph(S("fee_summary_side"), styles["h3"]),
+                    Spacer(1, 3), sidebar]
+        layout = Table([[ledger, side_col]], colWidths=[96 * mm, 74 * mm])
+        layout.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), 10),
+        ]))
+        story.append(layout)
     else:
         for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
             story.append(fl)
