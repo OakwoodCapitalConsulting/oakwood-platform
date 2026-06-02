@@ -1837,7 +1837,7 @@ def build_tearsheet(
         story.append(Paragraph(S("no_perf_fee"), styles["body"]))
 
     if params_summary:
-        story.append(CondPageBreak(60 * mm))
+        story.append(PageBreak())
         story.append(Paragraph(S("methodology"), styles["h2"]))
         story.append(_data_table([S("param_label"), S("param_value")],
                                  [[k, v] for k, v in params_summary], styles,
