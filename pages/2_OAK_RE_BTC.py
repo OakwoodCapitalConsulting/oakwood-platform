@@ -443,36 +443,36 @@ def interpolate_quarterly_to_daily(qseries, daily_index):
 # Engine — parametric residential RE + BTC (DCA from net rents, threshold)
 # ===========================================================================
 def run_re_btc(prop_index_daily, btc_chf, params):
-    """Daily simulation.
+    """Daily simulation — unlevered residential property + BTC + CHF cash,
+    with band-based rebalancing of the net rental income.
 
     params (dict):
       initial_capital      total CHF at t0
       initial_btc_pct      fraction of capital in BTC at t0
-      upper_threshold      BTC sell-down trigger (fraction of NAV)
-      target_btc_pct       BTC target after sell-down
-      ltv                  mortgage loan-to-value on the property at t0
-      mortgage_rate        annual interest rate on the mortgage
-      amort_rate           annual amortization, as fraction of INITIAL mortgage
-      gross_yield          gross rental yield p.a. on CURRENT property value
-      vacancy              vacancy / loss-of-rent rate (fraction of gross rent)
-      opex_pct             operating costs (fraction of gross rent)
+      net_yield            net rental yield p.a. on CURRENT property value
+                           (pre-computed externally: vacancy, operating costs
+                           and any financing are already netted out)
+      lower_threshold      BTC weight below which the boosted rate applies
+      upper_threshold      BTC weight cap
+      base_invest_rate     share of accumulated net rent invested into BTC
+      boost_invest_rate    share invested while BTC weight < lower_threshold
+      rent_to_btc_freq     "M" (monthly) or "Q" (quarterly) — DCA dates
+      btc_to_cash_freq     "M" or "Q" — sell-rule check dates
+      sell_on_upper        bool — sell BTC down to the upper threshold into
+                           CHF cash on check dates when the weight exceeds it
       tx_cost_bps          transaction cost on BTC trades (bps)
 
-    Mechanics:
-      * Property is held as UNITS of the SNB index: value = units * index.
-      * Month-end: net cash flow = gross rent*(1-vacancy) - opex - interest
-        - amortization. Positive cash (incl. carried balance) buys BTC (DCA).
-        Negative cash flow is carried as a (interest-free) cash deficit.
-      * Daily: if BTC share of NAV > upper_threshold -> sell down to target;
-        proceeds first repay the mortgage, any remainder buys property units.
+    Zone rule applied on each DCA date (pre-trade BTC weight w):
+        w < lower_threshold   ->  boost_invest_rate
+        w > upper_threshold   ->  0%  (rent stays in cash)
+        otherwise             ->  base_invest_rate
+    Non-invested rent and all sale proceeds accumulate as CHF cash (0%
+    interest), which is never re-invested — a one-way volatility buffer.
 
-    Returns DataFrame indexed daily with columns:
-      total_value, re_value (property - mortgage), btc_value, cash,
-      property_value, mortgage, net_cf_monthly (on month-end rows),
-      btc_buys, btc_sells
+    Returns a daily DataFrame with columns: total_value, re_value, btc_value,
+    cash, property_value, net_cf_monthly (month-end rows), btc_buys, btc_sells.
     """
-    idx = btc_chf.index.intersection(prop_index_daily.index)
-    idx = idx.sort_values()
+    idx = btc_chf.index.intersection(prop_index_daily.index).sort_values()
     if len(idx) < 30:
         return pd.DataFrame()
     btc = btc_chf.reindex(idx).ffill()
@@ -481,30 +481,23 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     cap = float(params["initial_capital"])
     tx = float(params.get("tx_cost_bps", 0.0)) / 10000.0
 
-    # --- t0 setup -----------------------------------------------------------
     btc_chf0 = cap * float(params["initial_btc_pct"])
     btc_units = (btc_chf0 * (1 - tx)) / btc.iloc[0] if btc_chf0 > 0 else 0.0
+    prop_units = (cap - btc_chf0) / pidx.iloc[0]
 
-    re_equity0 = cap - btc_chf0
-    ltv = float(params.get("ltv", 0.0))
-    prop_value0 = re_equity0 / (1.0 - ltv) if ltv < 1.0 else re_equity0
-    mortgage = prop_value0 * ltv
-    mortgage0 = mortgage
-    prop_units = prop_value0 / pidx.iloc[0]
+    cash = 0.0        # one-way buffer: rent remainders + sale proceeds
+    rent_pool = 0.0   # rent accumulated since the last DCA date
 
-    cash = 0.0
-
-    g_yield = float(params["gross_yield"])
-    vac = float(params["vacancy"])
-    opex = float(params["opex_pct"])
-    m_rate = float(params["mortgage_rate"])
-    a_rate = float(params.get("amort_rate", 0.0))
-    upper = float(params["upper_threshold"])
-    target = float(params["target_btc_pct"])
+    ny = float(params["net_yield"])
+    lo = float(params["lower_threshold"])
+    up = float(params["upper_threshold"])
+    base_r = float(params["base_invest_rate"])
+    boost_r = float(params["boost_invest_rate"])
+    f_dca = params.get("rent_to_btc_freq", "M")
+    f_sell = params.get("btc_to_cash_freq", "Q")
+    sell_on = bool(params.get("sell_on_upper", True))
 
     rows = []
-    month_marker = idx[0].to_period("M")
-
     for i, d in enumerate(idx):
         p_val = prop_units * pidx.loc[d]
         b_val = btc_units * btc.loc[d]
@@ -512,95 +505,70 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         buys = 0.0
         sells = 0.0
 
-        # ---- month-end: rental cash flow + DCA into BTC --------------------
-        is_month_end = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
-        if is_month_end:
-            gross_rent = g_yield / 12.0 * p_val
-            eff_rent = gross_rent * (1.0 - vac)
-            cost = gross_rent * opex
-            interest = m_rate / 12.0 * mortgage
-            amort = min(a_rate / 12.0 * mortgage0, mortgage)
-            net_cf = eff_rent - cost - interest - amort
-            mortgage -= amort
-            cash += net_cf
-            if cash > 0:
-                spend = cash
-                btc_units += (spend * (1 - tx)) / btc.loc[d]
-                buys = spend
-                cash = 0.0
+        is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
+        is_qe = is_me and d.month in (3, 6, 9, 12)
+
+        # ---- month-end: net rent accrues into the rent pool ----------------
+        if is_me:
+            net_cf = ny / 12.0 * p_val
+            rent_pool += net_cf
+
+        # ---- DCA date: allocate accumulated rent per the zone rule ---------
+        if (is_me and f_dca == "M") or (is_qe and f_dca == "Q"):
+            nav = p_val + b_val + cash + rent_pool
+            w = b_val / nav if nav > 0 else 0.0
+            rate = boost_r if w < lo else (0.0 if w > up else base_r)
+            invest = rate * rent_pool
+            if invest > 0:
+                btc_units += (invest * (1 - tx)) / btc.loc[d]
+                buys = invest
+            cash += rent_pool - invest
+            rent_pool = 0.0
             b_val = btc_units * btc.loc[d]
 
-        # ---- daily threshold check on BTC share -----------------------------
-        nav = p_val - mortgage + b_val + cash
-        if nav > 0 and b_val / nav > upper:
-            target_btc_chf = nav * target
-            sell_chf = b_val - target_btc_chf
-            btc_units -= sell_chf / btc.loc[d]
-            proceeds = sell_chf * (1 - tx)
-            sells = sell_chf
-            repay = min(proceeds, mortgage)
-            mortgage -= repay
-            proceeds -= repay
-            if proceeds > 0:  # unlevered remainder -> additional property
-                prop_units += proceeds / pidx.loc[d]
-            p_val = prop_units * pidx.loc[d]
-            b_val = btc_units * btc.loc[d]
-            nav = p_val - mortgage + b_val + cash
+        # ---- sell-rule date: trim BTC back to the upper threshold ----------
+        if sell_on and ((is_me and f_sell == "M") or (is_qe and f_sell == "Q")):
+            nav = p_val + b_val + cash + rent_pool
+            if nav > 0 and b_val / nav > up:
+                sell_chf = b_val - up * nav
+                btc_units -= sell_chf / btc.loc[d]
+                cash += sell_chf * (1 - tx)
+                sells = sell_chf
+                b_val = btc_units * btc.loc[d]
 
         rows.append({
             "date": d,
-            "total_value": nav,
-            "re_value": p_val - mortgage,
+            "total_value": p_val + b_val + cash + rent_pool,
+            "re_value": p_val,
             "btc_value": b_val,
-            "cash": cash,
+            "cash": cash + rent_pool,
             "property_value": p_val,
-            "mortgage": mortgage,
             "net_cf_monthly": net_cf,
             "btc_buys": buys,
             "btc_sells": sells,
         })
 
-    out = pd.DataFrame(rows).set_index("date")
-    return out
+    return pd.DataFrame(rows).set_index("date")
 
 
 def run_re_only(prop_index_daily, ref_index, params):
-    """Benchmark: identical parametric property model WITHOUT BTC — net rental
-    cash flows are reinvested into additional property units (after interest
-    and amortization), same leverage. Isolates the BTC contribution."""
-    p = dict(params)
+    """Benchmark: identical unlevered property model WITHOUT BTC — the full
+    net rental income is reinvested into additional property units each
+    month. Isolates the contribution of the BTC/cash rebalancing sleeve."""
     idx = ref_index.intersection(prop_index_daily.index).sort_values()
     pidx = prop_index_daily.reindex(idx).ffill()
-
-    cap = float(p["initial_capital"])
-    ltv = float(p.get("ltv", 0.0))
-    prop_value0 = cap / (1.0 - ltv) if ltv < 1.0 else cap
-    mortgage = prop_value0 * ltv
-    mortgage0 = mortgage
-    prop_units = prop_value0 / pidx.iloc[0]
-    cash = 0.0
-
-    g_yield, vac, opex = float(p["gross_yield"]), float(p["vacancy"]), float(p["opex_pct"])
-    m_rate, a_rate = float(p["mortgage_rate"]), float(p.get("amort_rate", 0.0))
-
+    cap = float(params["initial_capital"])
+    ny = float(params["net_yield"])
+    prop_units = cap / pidx.iloc[0]
     vals = []
     for i, d in enumerate(idx):
         p_val = prop_units * pidx.loc[d]
-        is_month_end = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
-        if is_month_end:
-            gross_rent = g_yield / 12.0 * p_val
-            net_cf = gross_rent * (1.0 - vac) - gross_rent * opex \
-                - m_rate / 12.0 * mortgage - min(a_rate / 12.0 * mortgage0, mortgage)
-            mortgage -= min(a_rate / 12.0 * mortgage0, mortgage)
-            cash += net_cf
-            if cash > 0:
-                prop_units += cash / pidx.loc[d]
-                cash = 0.0
+        is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
+        if is_me:
+            prop_units += (ny / 12.0 * p_val) / pidx.loc[d]
             p_val = prop_units * pidx.loc[d]
-        vals.append(p_val - mortgage + cash)
+        vals.append(p_val)
     return pd.Series(vals, index=idx)
-
-
 # ===========================================================================
 # UI
 # ===========================================================================
@@ -611,24 +579,35 @@ st.caption("Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation — "
            "Details unter Methodik & Hinweise.")
 
 with st.sidebar:
-    st.markdown("### Kapital & BTC-Sleeve")
+    st.markdown("### Portfolio-Setup")
     initial_capital = st.number_input("Startkapital (CHF)", 100_000, 100_000_000,
                                       1_000_000, step=100_000)
     initial_btc_pct = st.slider("Initial BTC Allokation (%)", 0, 50, 15, 1) / 100.0
-    upper_threshold = st.slider("Upper Threshold — Sell-Down Trigger (%)", 15, 75, 25, 1) / 100.0
-    target_btc_pct = st.slider("Target nach Sell-Down (%)", 0, 50, 15, 1) / 100.0
-    if target_btc_pct >= upper_threshold:
-        st.error("Target muss kleiner als Upper Threshold sein.")
+    net_yield = st.slider("Nettomietrendite (% p.a.)", 0.5, 6.0, 3.0, 0.1,
+                          help="Extern vorberechnet — nach Leerstand, "
+                               "Bewirtschaftung, Unterhalt und Finanzierung. "
+                               "Bezieht sich auf den aktuellen "
+                               "Liegenschaftswert.") / 100.0
 
-    st.markdown("### Wohnimmobilien — Netto-Rendite-Parametrik")
-    gross_yield = st.slider("Bruttomietrendite (% p.a.)", 2.0, 7.0, 4.5, 0.1) / 100.0
-    vacancy = st.slider("Leerstand / Mietausfall (%)", 0.0, 10.0, 4.0, 0.5) / 100.0
-    opex_pct = st.slider("Bewirtschaftung & Unterhalt (% der Sollmiete)", 5.0, 40.0, 20.0, 1.0) / 100.0
-
-    st.markdown("### Finanzierung")
-    ltv = st.slider("Hypothek LTV (%)", 0, 80, 60, 5) / 100.0
-    mortgage_rate = st.slider("Hypothekarzins (% p.a.)", 0.5, 5.0, 1.8, 0.1) / 100.0
-    amort_rate = st.slider("Amortisation (% der Anfangshypothek p.a.)", 0.0, 3.0, 0.0, 0.25) / 100.0
+    st.markdown("### Rebalancing-Regeln (Nettomieteinnahmen)")
+    lower_threshold = st.slider("Lower BTC Threshold (%)", 0, 40, 10, 1) / 100.0
+    upper_threshold = st.slider("Upper BTC Threshold (%)", 5, 75, 25, 1) / 100.0
+    base_invest_rate = st.slider("Basis-Investitionsrate der Nettomiete (%)",
+                                 0, 100, 50, 5) / 100.0
+    boost_invest_rate = st.slider("Investitionsrate unter Lower Threshold (%)",
+                                  0, 100, 100, 5) / 100.0
+    rent_to_btc_freq = st.selectbox("Miete → BTC Allokation",
+                                    ["monatlich", "quartalsweise"], index=0)
+    btc_to_cash_freq = st.selectbox("BTC → Cash Allokation",
+                                    ["monatlich", "quartalsweise"], index=1)
+    sell_on_upper = st.checkbox(
+        "Sell BTC to CHF cash on rebalancing dates whenever BTC weight is "
+        "above the upper threshold.", value=True,
+        help="Verkaufserlöse bleiben als CHF-Cash liegen und werden nicht "
+             "reinvestiert — der wachsende Cash-Bestand dämpft die "
+             "Volatilität.")
+    if lower_threshold >= upper_threshold:
+        st.error("Lower Threshold muss kleiner als Upper Threshold sein.")
 
     st.markdown("### Kosten & Gebühren (AMC)")
     tx_cost_bps = st.slider("Transaktionskosten BTC (bps)", 0, 50, 10, 1)
@@ -674,7 +653,7 @@ st.caption(f"Serie: {series_label} · {snb_q.index[0]:%Y-%m} bis {snb_q.index[-1
            f"({len(snb_q)} Quartale, linear auf Tagesbasis interpoliert)")
 
 run = st.button("Backtest starten", type="primary",
-                disabled=(target_btc_pct >= upper_threshold))
+                disabled=(lower_threshold >= upper_threshold))
 if not run:
     st.stop()
 
@@ -699,9 +678,12 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
     prop_daily = interpolate_quarterly_to_daily(snb_q, btc_chf.index)
 
     params = dict(initial_capital=initial_capital, initial_btc_pct=initial_btc_pct,
-                  upper_threshold=upper_threshold, target_btc_pct=target_btc_pct,
-                  ltv=ltv, mortgage_rate=mortgage_rate, amort_rate=amort_rate,
-                  gross_yield=gross_yield, vacancy=vacancy, opex_pct=opex_pct,
+                  net_yield=net_yield,
+                  lower_threshold=lower_threshold, upper_threshold=upper_threshold,
+                  base_invest_rate=base_invest_rate, boost_invest_rate=boost_invest_rate,
+                  rent_to_btc_freq=("M" if rent_to_btc_freq == "monatlich" else "Q"),
+                  btc_to_cash_freq=("M" if btc_to_cash_freq == "monatlich" else "Q"),
+                  sell_on_upper=sell_on_upper,
                   tx_cost_bps=tx_cost_bps)
 
     ts = run_re_btc(prop_daily, btc_chf, params)
@@ -726,16 +708,14 @@ years = max((net.index[-1] - net.index[0]).days / 365.25, 1e-9)
 net_cagr = (net.iloc[-1] / initial_capital) ** (1 / years) - 1
 re_cagr = (bench_re.iloc[-1] / initial_capital) ** (1 / years) - 1
 m = compute_risk_metrics(net, base_value=initial_capital)
-ann_cf = ts["net_cf_monthly"].dropna()
-net_equity_yield = (ann_cf.tail(12).sum() / ts["re_value"].iloc[-1]
-                    if len(ann_cf) >= 12 and ts["re_value"].iloc[-1] > 0 else np.nan)
+w_btc = ts["btc_value"].iloc[-1] / ts["total_value"].iloc[-1]
+w_cash = ts["cash"].iloc[-1] / ts["total_value"].iloc[-1]
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Strategie (Netto)", f"CHF {net.iloc[-1]:,.0f}", f"{net_cagr*100:.2f}% CAGR")
 c2.metric("RE only (Benchmark)", f"CHF {bench_re.iloc[-1]:,.0f}", f"{re_cagr*100:.2f}% CAGR")
 c3.metric("Max Drawdown (Netto)", f"{m['max_drawdown']*100:.2f}%")
-c4.metric("Netto-Rendite auf EK (letzte 12M)",
-          f"{net_equity_yield*100:.2f}%" if pd.notna(net_equity_yield) else "n/a")
+c4.metric("BTC / Cash Gewicht aktuell", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%")
 
 st.line_chart(pd.DataFrame({
     "OAK RE/BTC (Netto)": net,
@@ -744,16 +724,14 @@ st.line_chart(pd.DataFrame({
 }))
 
 st.area_chart(pd.DataFrame({
-    "RE-Eigenkapital": ts["re_value"],
+    "Wohnimmobilien": ts["re_value"],
     "BTC": ts["btc_value"],
+    "CHF Cash": ts["cash"],
 }))
 
 with st.expander("Monatliche Netto-Cashflows (Mieterträge → BTC-DCA)"):
     cf = ts["net_cf_monthly"].dropna()
     st.bar_chart(cf)
-    if (cf < 0).any():
-        st.warning(f"{int((cf < 0).sum())} Monate mit negativem Netto-Cashflow "
-                   "(Zins+Kosten > Mieten) — werden als Cash-Defizit vorgetragen.")
 
 with st.expander("Gebühren-Aufstellung je Periode"):
     if fee_events is not None and not fee_events.empty:
@@ -814,53 +792,59 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                                  f"CHF {ev.get('mgmt_fee', 0) + ev.get('perf_fee', 0):,.0f}"])
 
         period_str = f"{net.index[0]:%Y-%m-%d} to {net.index[-1]:%Y-%m-%d}"
+        freq_de = {"M": "monatlich", "Q": "quartalsweise"}
+        sell_de = ("oberhalb wird auf Rebalancing-Terminen auf die "
+                   "Obergrenze zurückgeführt; die Erlöse verbleiben als "
+                   "Cash-Puffer" if sell_on_upper else
+                   "oberhalb wird die Mietallokation ausgesetzt")
+        sell_en = ("above it, positions are trimmed back to the cap on "
+                   "rebalancing dates, with proceeds held as a cash buffer"
+                   if sell_on_upper else
+                   "above it, rent allocation is suspended")
         exec_de = (f"Die Strategie kombiniert ein Schweizer Wohnimmobilien-Portfolio "
-                   f"mit einer strukturellen Bitcoin-Allokation. Die Wertentwicklung "
-                   f"der Liegenschaften folgt dem Wohnimmobilienpreisindex der "
-                   f"Schweizerischen Nationalbank; die Nettoerträge auf das "
-                   f"Eigenkapital — Mieteinnahmen nach Leerstand, Bewirtschaftung, "
-                   f"Hypothekarzins und Amortisation bei {ltv*100:.0f}% Belehnung — "
-                   f"finanzieren ein diszipliniertes monatliches "
-                   f"Dollar-Cost-Averaging-Programm in Bitcoin. Eine "
-                   f"schwellenwertbasierte Rebalancing-Regel begrenzt die "
-                   f"Bitcoin-Quote auf {upper_threshold*100:.0f}%. Im "
-                   f"Simulationszeitraum erzielte die Strategie einen Netto-CAGR von "
-                   f"{net_cagr*100:.1f}%, gegenüber {re_cagr*100:.1f}% für das "
+                   f"mit einer strukturellen Bitcoin-Allokation und einem "
+                   f"CHF-Cash-Puffer. Die Wertentwicklung der Liegenschaften folgt "
+                   f"dem Wohnimmobilienpreisindex der Schweizerischen Nationalbank; "
+                   f"die Nettomietrendite von {net_yield*100:.1f}% p.a. — extern "
+                   f"vorberechnet, nach Leerstand, Bewirtschaftung und Finanzierung "
+                   f"— wird nach festen Bandregeln alloziert: unterhalb einer "
+                   f"BTC-Quote von {lower_threshold*100:.0f}% fliessen "
+                   f"{boost_invest_rate*100:.0f}% der Nettomiete in Bitcoin, "
+                   f"innerhalb des Bandes {base_invest_rate*100:.0f}%, oberhalb von "
+                   f"{upper_threshold*100:.0f}% wird nicht investiert — {sell_de}. "
+                   f"Im Simulationszeitraum erzielte die Strategie einen Netto-CAGR "
+                   f"von {net_cagr*100:.1f}%, gegenüber {re_cagr*100:.1f}% für das "
                    f"identische Immobilienmodell ohne Bitcoin. Der Immobilienteil "
-                   f"beruht auf einem geglätteten Bewertungsindex und eigenen "
-                   f"Ertragsannahmen — die Ergebnisse sind als parametrische "
-                   f"Simulation zu verstehen, nicht als marktdatenbasierter "
-                   f"Backtest.")
+                   f"beruht auf einem geglätteten Bewertungsindex — die Ergebnisse "
+                   f"sind als parametrische Simulation zu verstehen, nicht als "
+                   f"marktdatenbasierter Backtest.")
         exec_en = (f"The strategy combines a Swiss residential property portfolio "
-                   f"with a structural Bitcoin allocation. Property values track the "
-                   f"Swiss National Bank's residential property price index, while "
-                   f"the net yield on equity — rental income after vacancy, "
-                   f"operating costs, mortgage interest and amortization at "
-                   f"{ltv*100:.0f}% loan-to-value — funds a disciplined monthly "
-                   f"dollar-cost-averaging programme into Bitcoin. A threshold-based "
-                   f"rebalancing rule caps the Bitcoin share at "
-                   f"{upper_threshold*100:.0f}%. Over the simulation period the "
-                   f"strategy delivered a net CAGR of {net_cagr*100:.1f}%, versus "
-                   f"{re_cagr*100:.1f}% for the identical property model without "
-                   f"Bitcoin. As the property sleeve rests on a smoothed valuation "
-                   f"index and our own income assumptions, results should be read as "
-                   f"a parametric simulation rather than a market-data backtest.")
-
+                   f"with a structural Bitcoin allocation and a CHF cash buffer. "
+                   f"Property values track the Swiss National Bank's residential "
+                   f"property price index, while the net rental yield of "
+                   f"{net_yield*100:.1f}% p.a. — pre-computed externally, after "
+                   f"vacancy, operating costs and financing — is allocated by fixed "
+                   f"band rules: below a Bitcoin weight of "
+                   f"{lower_threshold*100:.0f}%, {boost_invest_rate*100:.0f}% of "
+                   f"net rent flows into Bitcoin; within the band, "
+                   f"{base_invest_rate*100:.0f}%; above {upper_threshold*100:.0f}%, "
+                   f"no new investments are made — {sell_en}. Over the simulation "
+                   f"period the strategy delivered a net CAGR of "
+                   f"{net_cagr*100:.1f}%, versus {re_cagr*100:.1f}% for the "
+                   f"identical property model without Bitcoin. As the property "
+                   f"sleeve rests on a smoothed valuation index, results should be "
+                   f"read as a parametric simulation rather than a market-data "
+                   f"backtest.")
         kt_de = [
             f"Netto-CAGR von {net_cagr*100:.1f}% gegenüber {re_cagr*100:.1f}% für das identische Immobilienmodell ohne Bitcoin — ein BTC-Beitrag von {excess*100:+.1f}% p.a.",
-            (f"Eine Netto-Eigenkapitalrendite von {net_equity_yield*100:.1f}% (letzte 12 Monate) speist das monatliche Bitcoin-DCA."
-             if pd.notna(net_equity_yield) else
-             "Die monatlichen Netto-Mieterträge speisen das Bitcoin-DCA."),
+            f"Bandregeln steuern die Mietallokation: {boost_invest_rate*100:.0f}% unter {lower_threshold*100:.0f}% BTC-Quote, {base_invest_rate*100:.0f}% im Band, Stopp über {upper_threshold*100:.0f}% — aktuelle BTC/Cash-Quote {w_btc*100:.0f}%/{w_cash*100:.0f}%.",
             "Geglätteter Bewertungsindex: Volatilität und Drawdowns des Immobilienteils sind strukturell untererfasst — siehe Hinweise.",
         ]
         kt_en = [
             f"Net CAGR of {net_cagr*100:.1f}% versus {re_cagr*100:.1f}% for the identical property model without Bitcoin — a BTC contribution of {excess*100:+.1f}% p.a.",
-            (f"A net equity yield of {net_equity_yield*100:.1f}% (trailing 12 months) funds the monthly Bitcoin DCA."
-             if pd.notna(net_equity_yield) else
-             "Monthly net rental income funds the Bitcoin DCA."),
+            f"Band rules govern rent allocation: {boost_invest_rate*100:.0f}% below a {lower_threshold*100:.0f}% BTC weight, {base_invest_rate*100:.0f}% within the band, none above {upper_threshold*100:.0f}% — current BTC/cash weights {w_btc*100:.0f}%/{w_cash*100:.0f}%.",
             "Smoothed valuation index: volatility and drawdowns of the property sleeve are structurally understated — see Disclosures.",
         ]
-
         snapshot = [("sn_inception", f"{net.index[0]:%d %b %Y}"),
                     ("sn_currency", "CHF"),
                     ("sn_benchmark", "RE only (same model)"),
@@ -872,42 +856,41 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             ("Initial Capital", f"CHF {initial_capital:,.0f}"),
             ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Residential RE / {initial_btc_pct*100:.0f}% BTC"),
             ("Capital-Value Source", f"SNB index '{series_label[:48]}' (quarterly, interpolated)"),
-            ("Gross Rental Yield", f"{gross_yield*100:.1f}% p.a. (on current value)"),
-            ("Vacancy / Loss of Rent", f"{vacancy*100:.1f}%"),
-            ("Opex & Maintenance", f"{opex_pct*100:.0f}% of gross rent"),
-            ("Mortgage LTV", f"{ltv*100:.0f}%"),
-            ("Mortgage Rate", f"{mortgage_rate*100:.2f}% p.a."),
-            ("Amortization", f"{amort_rate*100:.2f}% of initial mortgage p.a."),
-            ("BTC Upper Threshold", f"{upper_threshold*100:.0f}%"),
-            ("BTC Target after Rebalance", f"{target_btc_pct*100:.0f}%"),
-            ("BTC Sell-Down Proceeds", "Mortgage repayment first, then property"),
+            ("Net Rental Yield", f"{net_yield*100:.1f}% p.a. (pre-computed, on current value)"),
+            ("Lower BTC Threshold", f"{lower_threshold*100:.0f}%"),
+            ("Upper BTC Threshold", f"{upper_threshold*100:.0f}%"),
+            ("Base Investment Rate (net rent)", f"{base_invest_rate*100:.0f}%"),
+            ("Boosted Rate below Lower Threshold", f"{boost_invest_rate*100:.0f}%"),
+            ("Rent → BTC Allocation", "Monthly" if rent_to_btc_freq == "monatlich" else "Quarterly"),
+            ("BTC → Cash Allocation", "Monthly" if btc_to_cash_freq == "monatlich" else "Quarterly"),
+            ("Sell Rule (above Upper Threshold)", "Sell down to upper threshold into CHF cash" if sell_on_upper else "Disabled"),
+            ("Cash Treatment", "Uninvested CHF, 0% interest (one-way buffer)"),
             ("Transaction Cost (BTC)", f"{tx_cost_bps} bps per trade"),
             ("Management Fee", f"{mgmt_fee*100:.2f}% p.a."),
             ("Performance Fee", f"{perf_fee*100:.0f}% (Quarterly, Hard Hurdle {hurdle*100:.1f}% Yr 1)"),
         ]
-
         universe_rows = [
             ["Bitcoin", "BTC", "Digital Assets",
-             f"{target_btc_pct*100:.0f}% · cap {upper_threshold*100:.0f}%"],
+             f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%"],
             ["CH Wohnliegenschaften (parametrisch)", "SNB plimoinchq", "Residential Real Estate",
-             f"{(1-initial_btc_pct)*100:.0f}% · LTV {ltv*100:.0f}%"],
+             f"{(1-initial_btc_pct)*100:.0f}% initial"],
+            ["CHF Cash", "—", "Cash",
+             "Rebalancing-Puffer · 0%"],
         ]
-
         disc_de = [
             "Dieses Dokument wurde von Oakwood Capital ausschliesslich zu illustrativen und informativen Zwecken erstellt. Es stellt weder eine Anlageberatung, eine Empfehlung, ein Angebot noch eine Aufforderung zum Kauf oder Verkauf eines Finanzinstruments dar.",
-            "OAK RE/BTC ist eine PARAMETRISCHE SIMULATION, kein marktdatenbasierter Backtest. Die Kapitalwert-Entwicklung des Immobilienteils folgt einem quartalsweisen Bewertungsindex der SNB-Datenplattform (linear auf Tagesbasis interpoliert); Bewertungsindizes sind geglättet und unterzeichnen die tatsächliche Volatilität und die Drawdowns von Immobilienanlagen erheblich. Volatilität, Sharpe Ratio und Drawdown-Kennzahlen sind daher NICHT mit marktbasierten Strategien vergleichbar. Mieterträge, Kosten, Leerstand, Hypothekarzins und Amortisation sind Annahmen (eigene Parametrik) und keine realisierten Werte.",
-            "Der Bitcoin-Anteil basiert auf historischen Marktpreisen (BTC/USD, in CHF konvertiert). Digitale Vermögenswerte sind hochvolatil und können zum Totalverlust führen. Eine Belehnung (Hypothek) hebelt sowohl Gewinne als auch Verluste auf das Eigenkapital; bei negativen Netto-Cashflows entsteht ein Liquiditätsbedarf.",
-            "Die simulierte Performance ist hypothetisch, unterliegt dem Vorteil der Rückschau und ist kein verlässlicher Indikator für zukünftige Ergebnisse. Die Performance-Zahlen werden nach Abzug der angegebenen Management- und Performance-Gebühren ausgewiesen. Steuern (insb. Grundstückgewinn-, Liegenschafts- und Einkommenssteuern) sind nicht modelliert.",
+            "OAK RE/BTC ist eine parametrische Simulation und kein marktdatenbasierter Backtest. Die Wertentwicklung des Immobilienteils folgt einem quartalsweise erhobenen Bewertungsindex der SNB-Datenplattform, der für die Simulation linear auf Tagesbasis interpoliert wird. Bewertungsindizes sind geglättet und unterzeichnen die tatsächliche Volatilität und die Drawdowns von Immobilienanlagen erheblich; Volatilität, Sharpe Ratio und Drawdown-Kennzahlen sind deshalb nicht mit marktbasierten Strategien vergleichbar. Die Nettomietrendite ist eine extern vorberechnete Annahme — nach Leerstand, Bewirtschaftung, Unterhalt und Finanzierung — und kein realisierter Wert; eine allfällige Fremdfinanzierung der Liegenschaften ist im Modell nicht abgebildet.",
+            "Der Bitcoin-Anteil basiert auf historischen Marktpreisen (BTC/USD, in Schweizer Franken umgerechnet). Digitale Vermögenswerte sind hochvolatil und können zum Totalverlust des eingesetzten Kapitals führen. Der CHF-Cash-Puffer wird unverzinst gehalten; seine dämpfende Wirkung auf die Volatilität geht zulasten der erwarteten Rendite.",
+            "Die simulierte Performance ist hypothetisch, unterliegt dem Vorteil der Rückschau und ist kein verlässlicher Indikator für zukünftige Ergebnisse. Die ausgewiesenen Zahlen verstehen sich nach Abzug der angegebenen Management- und Performance-Gebühren; Steuern — insbesondere Grundstückgewinn-, Liegenschafts- und Einkommenssteuern — sind nicht modelliert.",
             "Dieses Material ist streng vertraulich und ausschliesslich für den Empfänger bestimmt. Es darf ohne vorherige schriftliche Zustimmung von Oakwood Capital weder reproduziert noch verbreitet werden.",
         ]
         disc_en = [
             "This document has been prepared by Oakwood Capital for illustrative and informational purposes only. It does not constitute investment advice, a recommendation, an offer, or a solicitation to buy or sell any financial instrument.",
-            "OAK RE/BTC is a PARAMETRIC SIMULATION, not a market-data backtest. Capital values of the property sleeve follow a quarterly valuation index from the SNB data portal (linearly interpolated to daily); valuation indices are smoothed and materially understate the true volatility and drawdowns of real estate investments. Volatility, Sharpe ratio and drawdown figures are therefore NOT comparable to market-priced strategies. Rental income, costs, vacancy, mortgage rate and amortization are assumptions (own parametrization), not realized figures.",
-            "The Bitcoin sleeve is based on historical market prices (BTC/USD converted to CHF). Digital assets are highly volatile and may result in total loss. Mortgage leverage amplifies both gains and losses on equity; negative net cash flows create liquidity needs.",
-            "Simulated performance is hypothetical, benefits from hindsight, and is not a reliable indicator of future results. Performance figures are shown net of the stated management and performance fees. Taxes (in particular property-gains, property and income taxes) are not modelled.",
+            "OAK RE/BTC is a parametric simulation, not a market-data backtest. Capital values of the property sleeve follow a quarterly valuation index from the SNB data portal, linearly interpolated to daily frequency for the simulation. Valuation indices are smoothed and materially understate the true volatility and drawdowns of real estate investments; volatility, Sharpe ratio and drawdown figures are therefore not comparable to market-priced strategies. The net rental yield is an externally pre-computed assumption — after vacancy, operating costs, maintenance and financing — not a realized figure; any debt financing of the properties is not modelled.",
+            "The Bitcoin sleeve is based on historical market prices (BTC/USD converted to CHF). Digital assets are highly volatile and may result in total loss. The CHF cash buffer is held uninvested; its dampening effect on volatility comes at the cost of expected return.",
+            "Simulated performance is hypothetical, benefits from hindsight, and is not a reliable indicator of future results. Figures are shown net of the stated management and performance fees; taxes — in particular property-gains, property and income taxes — are not modelled.",
             "This material is strictly confidential and intended solely for the recipient. It may not be reproduced or distributed without the prior written consent of Oakwood Capital.",
         ]
-
         pdf_bytes = build_bilingual_tearsheet(
             strategy_name="OAK RE/BTC",
             strategy_subtitle_de="Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation, mietertragsfinanziertem DCA und schwellenwertbasiertem Risikomanagement.",
