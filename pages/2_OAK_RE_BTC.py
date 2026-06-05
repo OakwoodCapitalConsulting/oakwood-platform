@@ -65,6 +65,7 @@ def _to_series(x):
 
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_series(ticker, start, end):
     df = yf.download(ticker, start=start, end=end, progress=False,
                      auto_adjust=False, threads=False)
@@ -678,12 +679,20 @@ if not run:
     st.stop()
 
 with st.spinner("Lade BTC/FX-Daten und simuliere…"):
+    # Tickers/Konvertierung identisch zur SMI-Seite (dort nachweislich
+    # funktionierend): USDCHF=X liefert CHF je USD -> BTC_CHF = BTC_USD * FX.
     btc_usd = fetch_series("BTC-USD", str(start_date), str(end_date))
-    fx = fetch_series("CHFUSD=X", str(start_date), str(end_date))
-    if btc_usd.empty or fx.empty:
-        st.error("BTC/FX-Daten konnten nicht geladen werden.")
+    fx = fetch_series("USDCHF=X", str(start_date), str(end_date))
+    problems = [name for name, s in
+                [("BTC-USD", btc_usd), ("USDCHF=X", fx)] if s.empty]
+    if problems:
+        st.error(f"Keine Daten erhalten für: {', '.join(problems)}. "
+                 "Häufigste Ursache ist ein temporäres Rate-Limit von Yahoo "
+                 "Finance — nach 1–2 Minuten erneut versuchen. Besteht das "
+                 "Problem, bitte prüfen, ob die SMI-Seite aktuell Daten lädt "
+                 "(gleiche Quelle).")
         st.stop()
-    btc_chf = (btc_usd / fx.reindex(btc_usd.index).ffill()).dropna()
+    btc_chf = (btc_usd * fx.reindex(btc_usd.index).ffill()).dropna()
     btc_chf = btc_chf[(btc_chf.index >= pd.Timestamp(start_date))
                       & (btc_chf.index <= pd.Timestamp(end_date))]
 
