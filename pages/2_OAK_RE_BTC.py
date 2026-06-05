@@ -319,30 +319,62 @@ def compute_risk_metrics(values, risk_free_rate=0.01, base_value=None):
 # ===========================================================================
 # SNB data layer — Immobilienpreisindizes (Cube plimoinchq)
 # ===========================================================================
-SNB_CSV_URL = "https://data.snb.ch/api/cube/plimoinchq/data/csv/de"
+SNB_CUBE = "plimoinchq"
+SNB_CSV_URL = f"https://data.snb.ch/api/cube/{SNB_CUBE}/data/csv/de"
+SNB_DIM_URL = f"https://data.snb.ch/api/cube/{SNB_CUBE}/dimensions/de"
+SNB_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "Accept": "text/csv,application/json;q=0.9,*/*;q=0.8",
+}
 
 
 def _parse_snb_csv(text):
-    """Parse an SNB data-portal CSV (semicolon-separated, metadata header
-    lines before the actual 'Date;...' header). Returns a DataFrame with
-    columns: Date (quarter string like '2020-Q3'), one column per dimension,
-    and 'Value'. Robust against the exact number of dimension columns."""
+    """Parse an SNB data-portal CSV. Real-world format (live-verified on the
+    sibling cube snbfxtr — the API envelope is uniform across cubes):
+
+        \ufeff"CubeId";"plimoinchq"
+        "PublishingDate";"2026-05-29 09:00"
+        <leer>
+        "Date";"D0";"Value"
+        "2022-Q4";"XYZ";"123.4"
+
+    i.e. UTF-8 BOM, ALLE Felder in Anführungszeichen, Metadaten-Zeilen vor
+    dem Header. Erkennung dynamisch: erste Zeile, die entquotet mit 'Date;'
+    beginnt. pd.read_csv übernimmt das Quote-Handling der Datenzeilen."""
+    text = text.lstrip("\ufeff")
     lines = text.splitlines()
     header_i = None
     for i, ln in enumerate(lines):
-        if ln.strip().startswith("Date;"):
+        if ln.replace('"', "").strip().startswith("Date;"):
             header_i = i
             break
     if header_i is None:
-        raise ValueError("SNB-CSV: keine 'Date;'-Headerzeile gefunden")
+        raise ValueError("SNB-CSV: keine 'Date;…'-Headerzeile gefunden — "
+                         f"Antwort beginnt mit: {lines[:3]!r}")
     body = "\n".join(lines[header_i:])
     df = pd.read_csv(io.StringIO(body), sep=";")
-    df.columns = [c.strip() for c in df.columns]
+    df.columns = [str(c).replace('"', "").strip() for c in df.columns]
     if "Value" not in df.columns:
-        raise ValueError("SNB-CSV: 'Value'-Spalte fehlt")
+        raise ValueError(f"SNB-CSV: 'Value'-Spalte fehlt — Spalten: {list(df.columns)}")
     df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
     df = df.dropna(subset=["Value"])
     return df
+
+
+def _extract_dim_items(node, out):
+    """Recursively collect {id: name} from the /dimensions JSON
+    ({"dimensions":[{"id","name","dimensionItems":[{"id","name"},…]}]},
+    tolerant of nested hierarchies)."""
+    if isinstance(node, dict):
+        nid, name = node.get("id"), node.get("name")
+        if nid is not None and name is not None:
+            out[str(nid)] = str(name)
+        for v in node.values():
+            _extract_dim_items(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _extract_dim_items(v, out)
 
 
 def _quarter_to_timestamp(qstr):
@@ -352,17 +384,20 @@ def _quarter_to_timestamp(qstr):
     return per.to_timestamp(how="end").normalize()
 
 
-def snb_series_catalog(df):
+def snb_series_catalog(df, code_map=None):
     """From a parsed SNB frame, build {series_label: quarterly pd.Series}.
-    The label is the join of all dimension columns (everything that is not
-    Date/Value), so the user can pick the exact index variant."""
+    Die SNB-CSV enthält Dimensions-CODES (z.B. 'T0'); code_map (aus dem
+    /dimensions-Endpoint) übersetzt sie in Klartext-Labels. Ohne Mapping
+    werden die Codes angezeigt — funktional, nur weniger lesbar."""
+    code_map = code_map or {}
     dim_cols = [c for c in df.columns if c not in ("Date", "Value")]
     out = {}
     if dim_cols:
         for key, sub in df.groupby(dim_cols, dropna=False):
             if not isinstance(key, tuple):
                 key = (key,)
-            label = " · ".join(str(k) for k in key if pd.notna(k) and str(k).strip())
+            label = " · ".join(code_map.get(str(k), str(k))
+                               for k in key if pd.notna(k) and str(k).strip())
             s = pd.Series(sub["Value"].values,
                           index=[_quarter_to_timestamp(d) for d in sub["Date"]])
             out[label or "Serie"] = s.sort_index()
@@ -376,11 +411,21 @@ def snb_series_catalog(df):
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def fetch_snb_catalog():
-    """Fetch the full SNB residential price-index cube and return the
-    series catalog. Cached for a day (quarterly data)."""
-    r = requests.get(SNB_CSV_URL, timeout=30)
-    r.raise_for_status()
-    return snb_series_catalog(_parse_snb_csv(r.text))
+    """Fetch the SNB cube (CSV) plus the dimension labels (JSON) and return
+    the series catalog with readable labels. Cached for a day."""
+    r = requests.get(SNB_CSV_URL, headers=SNB_HEADERS, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} von data.snb.ch — "
+                           f"Antwort: {r.text[:200]!r}")
+    df = _parse_snb_csv(r.text)
+    code_map = {}
+    try:  # Labels sind kosmetisch — Codes funktionieren auch
+        rd = requests.get(SNB_DIM_URL, headers=SNB_HEADERS, timeout=30)
+        if rd.status_code == 200:
+            _extract_dim_items(rd.json(), code_map)
+    except Exception:
+        pass
+    return snb_series_catalog(df, code_map)
 
 
 def interpolate_quarterly_to_daily(qseries, daily_index):
@@ -559,9 +604,10 @@ def run_re_only(prop_index_daily, ref_index, params):
 # UI
 # ===========================================================================
 st.title("OAK RE/BTC — AMC Backtesting")
-st.caption("Wohnimmobilien Schweiz (SNB-Index + eigene Netto-Rendite-Parametrik) "
-           "mit struktureller Bitcoin-Allokation. Parametrische Simulation — "
-           "siehe Methodik.")
+st.caption("Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation — "
+           "die Kapitalwerte folgen dem SNB-Wohnimmobilienpreisindex, die "
+           "Nettoerträge einer eigenen Parametrik. Parametrische Simulation; "
+           "Details unter Methodik & Hinweise.")
 
 with st.sidebar:
     st.markdown("### Kapital & BTC-Sleeve")
@@ -759,38 +805,51 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                                  f"CHF {ev.get('mgmt_fee', 0) + ev.get('perf_fee', 0):,.0f}"])
 
         period_str = f"{net.index[0]:%Y-%m-%d} to {net.index[-1]:%Y-%m-%d}"
-        exec_de = (f"OAK RE/BTC kombiniert ein parametrisches Schweizer Wohnimmobilien-"
-                   f"Portfolio (Kapitalwert gemäss SNB-Immobilienpreisindex, Netto-"
-                   f"Eigenkapitalrendite gemäss eigener Parametrik mit {ltv*100:.0f}% "
-                   f"Belehnung) mit einer strukturellen Bitcoin-Allokation. Die "
-                   f"monatlichen Netto-Mieterträge fliessen via Dollar-Cost-Averaging "
-                   f"in Bitcoin; eine Schwellenwert-Regel begrenzt die BTC-Quote auf "
-                   f"{upper_threshold*100:.0f}%. Im Simulationszeitraum resultierte "
-                   f"ein Netto-CAGR von {net_cagr*100:.1f}% gegenüber "
-                   f"{re_cagr*100:.1f}% für das identische Immobilienmodell ohne "
-                   f"Bitcoin. Achtung: parametrische Simulation auf Basis eines "
-                   f"geglätteten Bewertungsindex — nicht mit kotierten Strategien "
-                   f"vergleichbar.")
-        exec_en = (f"OAK RE/BTC combines a parametric Swiss residential property "
-                   f"portfolio (capital values per the SNB residential price index, "
-                   f"net equity yield per our own parametrization at {ltv*100:.0f}% "
-                   f"LTV) with a structural Bitcoin allocation. Monthly net rental "
-                   f"cash flows are dollar-cost-averaged into Bitcoin; a threshold "
-                   f"rule caps the BTC share at {upper_threshold*100:.0f}%. Over the "
-                   f"simulation period the strategy delivered a net CAGR of "
-                   f"{net_cagr*100:.1f}% versus {re_cagr*100:.1f}% for the identical "
-                   f"property model without Bitcoin. Note: parametric simulation on "
-                   f"a smoothed valuation index — not comparable to listed strategies.")
+        exec_de = (f"Die Strategie kombiniert ein Schweizer Wohnimmobilien-Portfolio "
+                   f"mit einer strukturellen Bitcoin-Allokation. Die Wertentwicklung "
+                   f"der Liegenschaften folgt dem Wohnimmobilienpreisindex der "
+                   f"Schweizerischen Nationalbank; die Nettoerträge auf das "
+                   f"Eigenkapital — Mieteinnahmen nach Leerstand, Bewirtschaftung, "
+                   f"Hypothekarzins und Amortisation bei {ltv*100:.0f}% Belehnung — "
+                   f"finanzieren ein diszipliniertes monatliches "
+                   f"Dollar-Cost-Averaging-Programm in Bitcoin. Eine "
+                   f"schwellenwertbasierte Rebalancing-Regel begrenzt die "
+                   f"Bitcoin-Quote auf {upper_threshold*100:.0f}%. Im "
+                   f"Simulationszeitraum erzielte die Strategie einen Netto-CAGR von "
+                   f"{net_cagr*100:.1f}%, gegenüber {re_cagr*100:.1f}% für das "
+                   f"identische Immobilienmodell ohne Bitcoin. Der Immobilienteil "
+                   f"beruht auf einem geglätteten Bewertungsindex und eigenen "
+                   f"Ertragsannahmen — die Ergebnisse sind als parametrische "
+                   f"Simulation zu verstehen, nicht als marktdatenbasierter "
+                   f"Backtest.")
+        exec_en = (f"The strategy combines a Swiss residential property portfolio "
+                   f"with a structural Bitcoin allocation. Property values track the "
+                   f"Swiss National Bank's residential property price index, while "
+                   f"the net yield on equity — rental income after vacancy, "
+                   f"operating costs, mortgage interest and amortization at "
+                   f"{ltv*100:.0f}% loan-to-value — funds a disciplined monthly "
+                   f"dollar-cost-averaging programme into Bitcoin. A threshold-based "
+                   f"rebalancing rule caps the Bitcoin share at "
+                   f"{upper_threshold*100:.0f}%. Over the simulation period the "
+                   f"strategy delivered a net CAGR of {net_cagr*100:.1f}%, versus "
+                   f"{re_cagr*100:.1f}% for the identical property model without "
+                   f"Bitcoin. As the property sleeve rests on a smoothed valuation "
+                   f"index and our own income assumptions, results should be read as "
+                   f"a parametric simulation rather than a market-data backtest.")
 
         kt_de = [
-            f"Netto-CAGR {net_cagr*100:.1f}% vs. {re_cagr*100:.1f}% für RE-only — BTC-Beitrag {excess*100:+.1f}% p.a.",
-            f"Netto-Eigenkapitalrendite (letzte 12M) {net_equity_yield*100:.1f}% speist das monatliche BTC-DCA." if pd.notna(net_equity_yield) else "Monatliche Netto-Mieterträge speisen das BTC-DCA.",
-            "Parametrische Simulation: geglätteter Bewertungsindex, Risikokennzahlen nicht mit Marktdaten vergleichbar.",
+            f"Netto-CAGR von {net_cagr*100:.1f}% gegenüber {re_cagr*100:.1f}% für das identische Immobilienmodell ohne Bitcoin — ein BTC-Beitrag von {excess*100:+.1f}% p.a.",
+            (f"Eine Netto-Eigenkapitalrendite von {net_equity_yield*100:.1f}% (letzte 12 Monate) speist das monatliche Bitcoin-DCA."
+             if pd.notna(net_equity_yield) else
+             "Die monatlichen Netto-Mieterträge speisen das Bitcoin-DCA."),
+            "Geglätteter Bewertungsindex: Volatilität und Drawdowns des Immobilienteils sind strukturell untererfasst — siehe Hinweise.",
         ]
         kt_en = [
-            f"Net CAGR {net_cagr*100:.1f}% vs. {re_cagr*100:.1f}% for RE-only — BTC contribution {excess*100:+.1f}% p.a.",
-            f"Net equity yield (last 12M) of {net_equity_yield*100:.1f}% funds the monthly BTC DCA." if pd.notna(net_equity_yield) else "Monthly net rental cash flows fund the BTC DCA.",
-            "Parametric simulation: smoothed valuation index — risk metrics not comparable to market-priced strategies.",
+            f"Net CAGR of {net_cagr*100:.1f}% versus {re_cagr*100:.1f}% for the identical property model without Bitcoin — a BTC contribution of {excess*100:+.1f}% p.a.",
+            (f"A net equity yield of {net_equity_yield*100:.1f}% (trailing 12 months) funds the monthly Bitcoin DCA."
+             if pd.notna(net_equity_yield) else
+             "Monthly net rental income funds the Bitcoin DCA."),
+            "Smoothed valuation index: volatility and drawdowns of the property sleeve are structurally understated — see Disclosures.",
         ]
 
         snapshot = [("sn_inception", f"{net.index[0]:%d %b %Y}"),
@@ -842,8 +901,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
 
         pdf_bytes = build_bilingual_tearsheet(
             strategy_name="OAK RE/BTC",
-            strategy_subtitle_de="Schweizer Wohnimmobilien mit struktureller BTC-Allokation — Netto-Mieterträge finanzieren ein diszipliniertes Bitcoin-DCA.",
-            strategy_subtitle_en="Swiss residential real estate with a structural BTC allocation — net rental income funds a disciplined Bitcoin DCA.",
+            strategy_subtitle_de="Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation, mietertragsfinanziertem DCA und schwellenwertbasiertem Risikomanagement.",
+            strategy_subtitle_en="Swiss residential real estate with a structural Bitcoin allocation, rent-funded DCA and threshold-based risk management.",
             period_str=period_str,
             kpis_performance=[("Strategy (Net)", f"CHF {net.iloc[-1]:,.0f}"),
                               ("Net CAGR", f"{net_cagr*100:.2f}%"),
