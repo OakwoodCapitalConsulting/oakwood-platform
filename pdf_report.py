@@ -1619,6 +1619,9 @@ def build_tearsheet(
     period_returns=None,   # optional: list of (label_key, strat, bench, excess) from compute_period_returns()
     top_drawdowns=None,    # optional: list of dicts from identify_top_drawdowns()
     lang="en",             # "en" or "de" (de falls back to en strings in Phase 1)
+    # --- Per-product overrides (so non-SMI products don't inherit SMI wording) ---
+    perf_summary_sub=None,     # optional str: replaces the "Net of fees …35% WHT" subtitle
+    disclaimer_paragraphs=None,  # optional list[str]: replaces DISCLAIMER_PARAGRAPHS[lang]
 ):
     """Build the PDF and return raw bytes."""
     S = _S(lang)
@@ -1684,7 +1687,7 @@ def build_tearsheet(
         story.append(Spacer(1, 9))
 
     story.append(Paragraph(S("perf_summary"), styles["h2"]))
-    story.append(Paragraph(S("perf_summary_sub"), styles["h3"]))
+    story.append(Paragraph(perf_summary_sub or S("perf_summary_sub"), styles["h3"]))
     story.append(Spacer(1, 2))
     story.append(_kpi_grid(kpis_performance, styles, cols=4, accent=True))
     story.append(Spacer(1, 9))
@@ -1860,7 +1863,8 @@ def build_tearsheet(
     story.append(PageBreak())
     for fl in _section_heading("07", S("disclosures"), styles, lang):
         story.append(fl)
-    disclaimer_paragraphs = (DISCLAIMER_PARAGRAPHS.get(lang)
+    disclaimer_paragraphs = (disclaimer_paragraphs
+                             or DISCLAIMER_PARAGRAPHS.get(lang)
                              or DISCLAIMER_PARAGRAPHS["en"])
     for p in disclaimer_paragraphs:
         story.append(Paragraph(p, styles["disclaimer"]))
@@ -1947,6 +1951,11 @@ def build_bilingual_tearsheet(
     snapshot_data=None,
     period_returns=None,
     top_drawdowns=None,
+    # Per-product overrides, per language (None = keep SMI defaults)
+    perf_summary_sub_de=None,
+    perf_summary_sub_en=None,
+    disclaimer_paragraphs_de=None,
+    disclaimer_paragraphs_en=None,
 ):
     """Build a single PDF with both DE and EN versions concatenated.
 
@@ -1998,6 +2007,8 @@ def build_bilingual_tearsheet(
         exec_summary=exec_summary_de,
         key_takeaways=key_takeaways_de,
         lang="de",
+        perf_summary_sub=perf_summary_sub_de,
+        disclaimer_paragraphs=disclaimer_paragraphs_de,
         **common_kwargs,
     )
     en_pdf = build_tearsheet(
@@ -2005,6 +2016,8 @@ def build_bilingual_tearsheet(
         exec_summary=exec_summary_en,
         key_takeaways=key_takeaways_en,
         lang="en",
+        perf_summary_sub=perf_summary_sub_en,
+        disclaimer_paragraphs=disclaimer_paragraphs_en,
         **common_kwargs,
     )
 
