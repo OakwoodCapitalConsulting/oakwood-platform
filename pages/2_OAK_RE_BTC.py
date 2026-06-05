@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 import yfinance as yf
@@ -40,6 +41,427 @@ from pdf_report import (build_bilingual_tearsheet,
 
 st.set_page_config(page_title="OAK RE/BTC — AMC Backtesting",
                    page_icon="🏠", layout="wide")
+
+OAK_GREEN     = "#293624"
+OAK_GREEN_2   = "#1F2A1B"
+OAK_GREEN_3   = "#3A4A33"
+OAK_SAGE      = "#99A796"
+OAK_SAGE_DIM  = "#A9B5A4"   # lightened for legibility on dark green (was #6B7868)
+OAK_AXIS      = "#6B7868"   # dark muted tone retained for chart axes/gridlines only
+OAK_CREAM     = "#F5F5F1"
+OAK_CREAM_DIM = "#D4D4CE"
+OAK_GOLD      = "#C9A961"
+OAK_BORDER    = "#3D4A36"
+OAK_BTC       = "#F7931A"
+OAK_RED       = "#B85042"
+
+def style_plotly(fig, height=500):
+    fig.update_layout(
+        plot_bgcolor=OAK_GREEN_2, paper_bgcolor=OAK_GREEN,
+        font=dict(family="'Inter', sans-serif", size=12, color=OAK_CREAM),
+        height=height, margin=dict(l=60, r=30, t=40, b=50),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor=OAK_GREEN_2, font_color=OAK_CREAM, bordercolor=OAK_SAGE,
+                        font_size=12),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                    bgcolor="rgba(31,42,27,0.0)", borderwidth=0,
+                    font=dict(size=11, color=OAK_CREAM_DIM)),
+    )
+    # Softer, more transparent gridlines; brighter axis lines for legibility
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(169,181,164,0.10)", gridwidth=1,
+                     showline=True, linewidth=1, linecolor="rgba(169,181,164,0.35)", zeroline=False,
+                     ticks="outside", tickcolor="rgba(169,181,164,0.35)",
+                     tickfont=dict(color=OAK_CREAM_DIM, size=11),
+                     title_font=dict(color=OAK_CREAM, size=12))
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(169,181,164,0.10)", gridwidth=1,
+                     showline=True, linewidth=1, linecolor="rgba(169,181,164,0.35)", zeroline=False,
+                     ticks="outside", tickcolor="rgba(169,181,164,0.35)",
+                     tickfont=dict(color=OAK_CREAM_DIM, size=11),
+                     title_font=dict(color=OAK_CREAM, size=12))
+    return fig
+
+
+def load_logo_base64():
+    here = Path(__file__).parent.parent / "assets"
+    for name in ("oakwood_logo.png", "logo.png", "OAKWOOD-CAPITAL-LOGO-DARK.png"):
+        path = here / name
+        if path.exists():
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("ascii")
+    return None
+
+
+logo_b64 = load_logo_base64()
+
+
+CUSTOM_CSS = f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"], [data-testid="stAppViewContainer"] {{
+    font-family: 'Inter', sans-serif !important;
+}}
+[data-testid="stAppViewContainer"] {{ background-color: {OAK_GREEN}; }}
+[data-testid="stAppViewContainer"] > .main {{ background-color: {OAK_GREEN}; color: {OAK_CREAM}; }}
+.main .block-container {{ padding-top: 1rem; padding-bottom: 3rem; max-width: 1400px; }}
+header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
+#MainMenu, footer {{ visibility: hidden; }}
+
+.oak-bar {{
+    background: linear-gradient(180deg, {OAK_GREEN_2} 0%, #1A2317 100%);
+    border-bottom: 1px solid {OAK_BORDER};
+    padding: 28px 36px; margin: -1rem -1rem 36px -1rem;
+    display: flex; align-items: center; justify-content: space-between;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}}
+.oak-bar .oak-logo img {{ height: 56px; width: auto; }}
+.oak-bar .oak-tagline {{
+    text-align: right; color: {OAK_SAGE};
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 16px; font-style: italic; letter-spacing: 0.02em;
+}}
+.oak-bar .oak-tagline .stamp {{
+    display: block; font-family: 'Inter', sans-serif; font-style: normal;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em;
+    color: {OAK_SAGE_DIM}; margin-top: 6px;
+}}
+
+.main h1, [data-testid="stMarkdownContainer"] h1, [data-testid="stHeading"] h1 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-weight: 500 !important; font-size: 44px !important; letter-spacing: -0.01em;
+    margin: 8px 0 4px 0; line-height: 1.1;
+}}
+.main h1 a, [data-testid="stMarkdownContainer"] h1 a,
+.main h1 span, [data-testid="stMarkdownContainer"] h1 span {{
+    color: {OAK_CREAM} !important;
+}}
+.main h2, [data-testid="stMarkdownContainer"] h2 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-weight: 500 !important; font-size: 30px !important; letter-spacing: -0.01em;
+    margin-top: 44px; margin-bottom: 16px; padding-bottom: 10px;
+    border-bottom: 1px solid {OAK_BORDER};
+}}
+.main h3, [data-testid="stMarkdownContainer"] h3 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important; font-size: 13px !important; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-top: 24px; margin-bottom: 12px;
+    padding-bottom: 6px; border-bottom: 1px solid {OAK_GREEN_3};
+}}
+.main h4, [data-testid="stMarkdownContainer"] h4 {{
+    color: {OAK_CREAM} !important; font-weight: 600 !important;
+    font-size: 14px !important; margin-top: 16px;
+}}
+.main p, .main li, .main span, .main label, .main div {{ color: {OAK_CREAM_DIM}; }}
+.main strong, .main b, [data-testid="stMarkdownContainer"] strong {{ color: {OAK_CREAM} !important; }}
+
+[data-testid="stSidebar"] {{ background-color: {OAK_GREEN_2}; border-right: 1px solid {OAK_BORDER}; }}
+[data-testid="stSidebar"] * {{ color: {OAK_CREAM} !important; }}
+
+/* Sidebar page navigation links (multipage nav) */
+[data-testid="stSidebarNav"] a {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebarNav"] a span {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebarNav"] a:hover {{ background-color: {OAK_GREEN_3} !important; }}
+[data-testid="stSidebarNav"] li div a span {{ color: {OAK_CREAM} !important; }}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-weight: 500 !important; font-size: 22px !important;
+    padding-bottom: 8px; border-bottom: 1px solid {OAK_SAGE_DIM};
+    margin-bottom: 16px; margin-top: 8px; letter-spacing: 0; text-transform: none;
+}}
+[data-testid="stSidebar"] h3 {{
+    color: {OAK_CREAM} !important; font-size: 11px !important;
+    text-transform: uppercase; letter-spacing: 0.18em; font-weight: 700 !important;
+    margin-top: 24px; margin-bottom: 10px;
+    padding-bottom: 6px; border-bottom: 1px solid {OAK_GREEN_3};
+}}
+[data-testid="stSidebar"] label {{
+    color: {OAK_SAGE} !important; font-size: 11px !important;
+    font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.12em;
+}}
+[data-testid="stSidebar"] .stRadio label, [data-testid="stSidebar"] .stSelectbox label > div {{
+    text-transform: none; letter-spacing: 0; font-size: 13px !important;
+    color: {OAK_CREAM} !important;
+}}
+[data-testid="stSidebar"] input, [data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-baseweb="input"] > div {{
+    background-color: {OAK_GREEN} !important; color: {OAK_CREAM} !important;
+    border: 1px solid {OAK_BORDER} !important; border-radius: 9px !important;
+}}
+[data-testid="stSidebar"] .stSlider [data-baseweb="slider"] > div > div > div {{
+    background-color: {OAK_SAGE} !important;
+}}
+[data-testid="stSidebar"] .stSlider [role="slider"] {{
+    background-color: {OAK_CREAM} !important; border-color: {OAK_SAGE} !important;
+}}
+
+.stButton > button {{
+    border-radius: 9px !important; font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.1em;
+    font-size: 12px !important; padding: 14px 24px !important;
+    transition: all 0.2s ease;
+}}
+.stButton > button[kind="primary"] {{
+    background-color: {OAK_SAGE} !important; color: {OAK_GREEN_2} !important;
+    border: 1px solid {OAK_SAGE} !important;
+}}
+.stButton > button[kind="primary"]:hover {{
+    background-color: {OAK_CREAM} !important; border-color: {OAK_CREAM} !important;
+}}
+/* Secondary buttons (e.g. stress-test scenario tiles) */
+.stButton > button[kind="secondary"] {{
+    background-color: {OAK_GREEN_3} !important; color: {OAK_CREAM} !important;
+    border: 1px solid {OAK_BORDER} !important;
+    text-transform: none !important; letter-spacing: 0.02em !important;
+    font-size: 11px !important; padding: 8px 10px !important;
+    min-height: 56px !important; white-space: normal !important;
+    line-height: 1.25 !important;
+}}
+.stButton > button[kind="secondary"]:hover {{
+    border-color: {OAK_GOLD} !important; color: {OAK_CREAM} !important;
+    background-color: {OAK_GREEN} !important;
+}}
+.stButton > button[kind="secondary"] p {{
+    color: {OAK_CREAM} !important; font-size: 11px !important;
+}}
+
+[data-testid="stMetric"] {{
+    background: {OAK_GREEN_2};
+    padding: 22px 26px;
+    border: 1px solid {OAK_BORDER};
+    border-left: 3px solid {OAK_SAGE};
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.02);
+    transition: border-color 0.2s ease, transform 0.15s ease;
+}}
+[data-testid="stMetric"]:hover {{
+    border-left-color: {OAK_GOLD};
+}}
+[data-testid="stMetricLabel"] {{
+    color: {OAK_SAGE} !important; font-size: 10px !important;
+    font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.14em;
+}}
+[data-testid="stMetricValue"] {{
+    color: {OAK_CREAM} !important;
+    font-family: 'Cormorant Garamond', Georgia, serif !important;
+    font-size: 32px !important; font-weight: 500 !important;
+    letter-spacing: -0.01em; margin-top: 6px; line-height: 1.1;
+}}
+[data-testid="stMetricDelta"] {{
+    color: {OAK_CREAM_DIM} !important; font-size: 11px !important; font-weight: 500 !important;
+    margin-top: 6px;
+}}
+[data-testid="stMetricDelta"] svg {{ fill: {OAK_SAGE} !important; }}
+
+[data-testid="stExpander"] {{
+    background-color: {OAK_GREEN_2}; border: 1px solid {OAK_BORDER} !important;
+    border-radius: 9px !important; margin-bottom: 12px;
+}}
+[data-testid="stExpander"] summary, [data-testid="stExpander"] details > summary {{
+    background-color: transparent !important; color: {OAK_CREAM} !important;
+    font-weight: 600 !important; padding: 14px 18px !important;
+    font-size: 13px !important; letter-spacing: 0.05em; text-transform: uppercase;
+}}
+[data-testid="stExpander"] summary:hover {{ background-color: {OAK_GREEN_3} !important; }}
+
+[data-testid="stAlert"] {{
+    background-color: {OAK_GREEN_2} !important; border-radius: 9px !important;
+    border-left: 3px solid {OAK_SAGE} !important; color: {OAK_CREAM} !important;
+}}
+[data-testid="stAlert"] * {{ color: {OAK_CREAM} !important; }}
+
+[data-testid="stDataFrame"] {{ border: 1px solid {OAK_BORDER}; border-radius: 9px; }}
+hr {{ border-color: {OAK_BORDER} !important; margin: 32px 0 !important; }}
+.stSpinner > div {{ border-top-color: {OAK_SAGE} !important; }}
+.modebar {{ background-color: transparent !important; }}
+.modebar-btn path {{ fill: {OAK_SAGE_DIM} !important; }}
+.modebar-btn:hover path {{ fill: {OAK_CREAM} !important; }}
+
+.oak-footer {{
+    margin-top: 56px; padding: 24px 0 8px 0;
+    border-top: 1px solid {OAK_BORDER}; color: {OAK_SAGE_DIM};
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; text-align: center;
+}}
+.oak-footer .oak-mark {{
+    font-family: 'Cormorant Garamond', Georgia, serif; text-transform: none;
+    letter-spacing: 0; font-style: italic; font-size: 13px;
+    color: {OAK_SAGE}; margin-top: 8px; display: block;
+}}
+
+/* Risk metrics table */
+.oak-metrics-table {{
+    width: 100%; border-collapse: collapse;
+    background: {OAK_GREEN_2}; border: 1px solid {OAK_BORDER};
+    font-family: 'Inter', sans-serif; font-size: 13px;
+    margin-bottom: 16px;
+}}
+.oak-metrics-table thead th {{
+    background: {OAK_GREEN_3}; color: {OAK_CREAM};
+    font-weight: 600; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.12em; padding: 12px 16px; text-align: right;
+    border-bottom: 1px solid {OAK_BORDER};
+}}
+.oak-metrics-table thead th:first-child {{ text-align: left; }}
+.oak-metrics-table tbody td {{
+    padding: 10px 16px; color: {OAK_CREAM_DIM}; text-align: right;
+    border-bottom: 1px solid {OAK_GREEN_3}; font-variant-numeric: tabular-nums;
+}}
+.oak-metrics-table tbody td.metric-label {{
+    text-align: left; color: {OAK_CREAM}; font-weight: 500;
+}}
+.oak-metrics-table tbody td.metric-label .hint {{
+    display: block; color: {OAK_SAGE_DIM}; font-size: 10px; font-weight: 400;
+    text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px;
+}}
+.oak-metrics-table tr.oak-section td {{
+    background: {OAK_GREEN}; color: {OAK_SAGE};
+    font-weight: 600; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.15em; padding: 14px 16px 6px 16px;
+    border-bottom: 1px solid {OAK_BORDER}; text-align: left;
+}}
+.oak-metrics-table tr:last-child td {{ border-bottom: none; }}
+.oak-metrics-table td.strategy-col {{ color: {OAK_GOLD}; font-weight: 600; }}
+
+/* ---- Defensive legibility: ensure no dark-on-dark text slips through ---- */
+/* Dataframe / table cells */
+[data-testid="stDataFrame"] *, [data-testid="stTable"] * {{
+    color: {OAK_CREAM_DIM} !important;
+}}
+[data-testid="stDataFrame"] [role="columnheader"] {{
+    color: {OAK_CREAM} !important; background-color: {OAK_GREEN_3} !important;
+}}
+/* Slider min/max + current value labels */
+[data-testid="stSlider"] [data-testid="stTickBar"],
+[data-testid="stSlider"] [data-testid="stTickBarMin"],
+[data-testid="stSlider"] [data-testid="stTickBarMax"],
+[data-testid="stSlider"] div[data-baseweb] div {{
+    color: {OAK_CREAM_DIM} !important;
+}}
+[data-testid="stSlider"] [role="slider"] + div, .stSlider [data-testid="stThumbValue"] {{
+    color: {OAK_CREAM} !important;
+}}
+/* Selectbox / dropdown popover options (rendered in a portal) */
+[data-baseweb="popover"] li, [data-baseweb="menu"] li,
+ul[role="listbox"] li, [data-baseweb="select"] span {{
+    color: {OAK_CREAM} !important;
+}}
+[data-baseweb="popover"] ul, [data-baseweb="menu"] ul, ul[role="listbox"] {{
+    background-color: {OAK_GREEN_2} !important;
+}}
+[data-baseweb="popover"] li:hover, ul[role="listbox"] li:hover {{
+    background-color: {OAK_GREEN_3} !important;
+}}
+/* Number input text + radio/checkbox labels */
+[data-testid="stNumberInput"] input, [data-testid="stTextInput"] input {{
+    color: {OAK_CREAM} !important;
+}}
+.stRadio label, .stCheckbox label, [data-testid="stWidgetLabel"] {{
+    color: {OAK_CREAM} !important;
+}}
+/* Tooltips (the small "?" help bubbles) */
+[data-baseweb="tooltip"], [role="tooltip"] {{
+    background-color: {OAK_GREEN_2} !important; color: {OAK_CREAM} !important;
+    border: 1px solid {OAK_BORDER} !important;
+}}
+[data-baseweb="tooltip"] * {{ color: {OAK_CREAM} !important; }}
+/* Date input */
+[data-testid="stDateInput"] input {{ color: {OAK_CREAM} !important; }}
+/* General caption text */
+[data-testid="stCaptionContainer"], .stCaption {{ color: {OAK_SAGE_DIM} !important; }}
+
+/* Softer card shadows for depth */
+[data-testid="stMetric"] {{
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.03) !important;
+}}
+
+/* ---- Visibility fixes for default Streamlit chrome ---- */
+/* Sidebar collapse arrow + scrollbar are primarily handled by the dark base
+   theme + gold primaryColor in .streamlit/config.toml. The rules below are a
+   defensive fallback for the scrollbar in case the theme doesn't fully cover it. */
+::-webkit-scrollbar {{ width: 11px; height: 11px; }}
+::-webkit-scrollbar-track {{ background: {OAK_GREEN_2}; }}
+::-webkit-scrollbar-thumb {{
+    background: {OAK_SAGE_DIM}; border-radius: 8px;
+    border: 2px solid {OAK_GREEN_2};
+}}
+::-webkit-scrollbar-thumb:hover {{ background: {OAK_GOLD}; }}
+/* Firefox */
+html, body, [data-testid="stSidebar"], section[data-testid="stSidebar"] > div {{
+    scrollbar-color: {OAK_SAGE_DIM} {OAK_GREEN_2}; scrollbar-width: thin;
+}}
+
+/* 3. Number input +/- stepper buttons (initial capital etc.) */
+[data-testid="stNumberInput"] button {{
+    background-color: {OAK_GREEN_3} !important;
+    border: 1px solid {OAK_BORDER} !important;
+    color: {OAK_CREAM} !important;
+}}
+[data-testid="stNumberInput"] button svg,
+[data-testid="stNumberInput"] button path,
+[data-testid="stNumberInput"] [data-testid="stNumberInputStepUp"] svg,
+[data-testid="stNumberInput"] [data-testid="stNumberInputStepDown"] svg {{
+    fill: {OAK_CREAM} !important; color: {OAK_CREAM} !important;
+}}
+[data-testid="stNumberInput"] button:hover {{
+    background-color: {OAK_SAGE} !important;
+}}
+[data-testid="stNumberInput"] button:hover svg,
+[data-testid="stNumberInput"] button:hover path {{
+    fill: {OAK_GREEN_2} !important;
+}}
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+def compute_benchmark_metrics(strategy, benchmark, risk_free_rate=0.01):
+    """Strategy vs benchmark: alpha (Jensen), beta, tracking error, IR, correlation."""
+    if strategy is None or benchmark is None or strategy.empty or benchmark.empty:
+        return {}
+    aligned = pd.concat([strategy, benchmark], axis=1, join="inner").dropna()
+    if aligned.empty or len(aligned) < 30:
+        return {}
+    aligned.columns = ["s", "b"]
+    s_ret = aligned["s"].pct_change().dropna()
+    b_ret = aligned["b"].pct_change().dropna()
+    combined = pd.concat([s_ret, b_ret], axis=1, join="inner").dropna()
+    combined.columns = ["s", "b"]
+    if combined.empty:
+        return {}
+    corr = float(combined["s"].corr(combined["b"]))
+    cov = float(combined["s"].cov(combined["b"]))
+    var_b = float(combined["b"].var())
+    beta = cov / var_b if var_b > 0 else 0.0
+    excess = combined["s"] - combined["b"]
+    te = float(excess.std() * np.sqrt(252))
+    info_ratio = float(excess.mean() * 252 / te) if te > 0 else 0.0
+    years = len(aligned) / 252.0
+    s_cagr = float((aligned["s"].iloc[-1] / aligned["s"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    b_cagr = float((aligned["b"].iloc[-1] / aligned["b"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
+    alpha = s_cagr - (risk_free_rate + beta * (b_cagr - risk_free_rate))
+    return {
+        "correlation": corr, "r_squared": corr ** 2,
+        "beta": beta, "alpha": alpha,
+        "tracking_error": te, "information_ratio": info_ratio,
+    }
+
+
+def _fmt_pct(x, decimals=2):
+    if x is None or pd.isna(x):
+        return "—"
+    return f"{x*100:+.{decimals}f}%" if x < 0 else f"{x*100:.{decimals}f}%"
+
+
+def _fmt_num(x, decimals=2):
+    if x is None or pd.isna(x):
+        return "—"
+    return f"{x:.{decimals}f}"
+
+
+
 
 # ===========================================================================
 # REUSED-FROM-SMI-PAGE BLOCK (injected verbatim by build script)
@@ -614,6 +1036,8 @@ with st.sidebar:
     mgmt_fee = st.slider("Management Fee (% p.a.)", 0.0, 3.0, 1.5, 0.05) / 100.0
     perf_fee = st.slider("Performance Fee (%)", 0, 30, 15, 1) / 100.0
     hurdle = st.slider("Hurdle (Jahr 1, %)", 0.0, 10.0, 5.0, 0.5) / 100.0
+    risk_free_rate = st.slider("Risk-Free Rate (% p.a.)", 0.0, 3.0, 1.0, 0.25,
+                               help="Für Sharpe/Sortino.") / 100.0
 
     st.markdown("### Zeitraum")
     start_date = st.date_input("Start", date(2018, 1, 3))
@@ -702,33 +1126,432 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
         crystallization_freq="Quarterly", hurdle_type="Hard Hurdle")
 
 # --------------------------------------------------------------------------
-# KPIs & charts
+# KPIs & charts — section structure mirrors 1_SMI_Strategy.py
 # --------------------------------------------------------------------------
+st.markdown("## Performance Summary")
+
+gross = ts["total_value"]
 years = max((net.index[-1] - net.index[0]).days / 365.25, 1e-9)
 net_cagr = (net.iloc[-1] / initial_capital) ** (1 / years) - 1
+gross_cagr = (gross.iloc[-1] / initial_capital) ** (1 / years) - 1
 re_cagr = (bench_re.iloc[-1] / initial_capital) ** (1 / years) - 1
-m = compute_risk_metrics(net, base_value=initial_capital)
+idx_final = float(bench_index_daily.iloc[-1])
+idx_cagr = (idx_final / initial_capital) ** (1 / years) - 1
+fee_drag = gross_cagr - net_cagr
+excess = net_cagr - re_cagr
+m = compute_risk_metrics(net, risk_free_rate, base_value=initial_capital)
 w_btc = ts["btc_value"].iloc[-1] / ts["total_value"].iloc[-1]
 w_cash = ts["cash"].iloc[-1] / ts["total_value"].iloc[-1]
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Strategie (Netto)", f"CHF {net.iloc[-1]:,.0f}", f"{net_cagr*100:.2f}% CAGR")
-c2.metric("RE only (Benchmark)", f"CHF {bench_re.iloc[-1]:,.0f}", f"{re_cagr*100:.2f}% CAGR")
-c3.metric("Max Drawdown (Netto)", f"{m['max_drawdown']*100:.2f}%")
-c4.metric("BTC / Cash Gewicht aktuell", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%")
+c1.metric("Strategy (Net of Fees)", f"CHF {net.iloc[-1]:,.0f}",
+          f"{(net.iloc[-1]/initial_capital - 1)*100:+.1f}%")
+c2.metric("Strategy (Gross)", f"CHF {gross.iloc[-1]:,.0f}",
+          f"Fee drag: {fee_drag*100:.2f}% p.a.")
+c3.metric("RE only (same model)", f"CHF {bench_re.iloc[-1]:,.0f}",
+          f"{(bench_re.iloc[-1]/initial_capital - 1)*100:+.1f}%")
+c4.metric("SNB Index (price only)", f"CHF {idx_final:,.0f}",
+          f"{(idx_final/initial_capital - 1)*100:+.1f}%")
 
-st.line_chart(pd.DataFrame({
-    "OAK RE/BTC (Netto)": net,
-    "RE only (gleiches Modell, ohne BTC)": bench_re,
-    "SNB-Index (preis-only, skaliert)": bench_index_daily,
-}))
+c5, c6, c7, c8 = st.columns(4)
+c5.metric("Net CAGR", f"{net_cagr*100:.2f}%", f"after all fees · {years:.1f} years")
+c6.metric("Gross CAGR", f"{gross_cagr*100:.2f}%", "before fees")
+c7.metric("Excess vs RE only", f"{excess*100:+.2f}% p.a.", "net of fees")
+c8.metric("BTC / Cash (today)", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%",
+          f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%")
 
-st.area_chart(pd.DataFrame({
-    "Wohnimmobilien": ts["re_value"],
-    "BTC": ts["btc_value"],
-    "CHF Cash": ts["cash"],
-}))
+c9, c10, c11, c12 = st.columns(4)
+c9.metric("Total Mgmt Fees", f"CHF {total_mgmt:,.0f}", f"{mgmt_fee*100:.2f}% p.a. on NAV")
+c10.metric("Total Perf Fees", f"CHF {total_perf:,.0f}", f"{perf_fee*100:.0f}% × excess")
+c11.metric("Total Fees", f"CHF {total_mgmt + total_perf:,.0f}",
+           f"{(total_mgmt+total_perf)/initial_capital*100:.1f}% of initial capital")
+c12.metric("Net Rental Yield (input)", f"{net_yield*100:.1f}% p.a.",
+           "pre-computed, on current value")
 
+# =====================================================================
+# Portfolio Evolution vs. Benchmarks
+# =====================================================================
+st.markdown("## Portfolio Evolution vs. Benchmarks")
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=net.index, y=net.values, name="Strategy (Net of Fees)",
+                         line=dict(color=OAK_GOLD, width=3),
+                         fill="tozeroy", fillcolor="rgba(201,169,97,0.10)"))
+fig.add_trace(go.Scatter(x=gross.index, y=gross.values, name="Strategy (Gross)",
+                         line=dict(color=OAK_GOLD, width=1.2, dash="dot"), opacity=0.55))
+fig.add_trace(go.Scatter(x=bench_re.index, y=bench_re.values,
+                         name="RE only (same model, no BTC)",
+                         line=dict(color=OAK_SAGE, width=2, dash="dash")))
+fig.add_trace(go.Scatter(x=bench_index_daily.index, y=bench_index_daily.values,
+                         name="SNB Residential Index (price only)",
+                         line=dict(color=OAK_SAGE_DIM, width=1.5, dash="dot")))
+fig = style_plotly(fig, height=480)
+fig.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
+st.plotly_chart(fig, use_container_width=True)
+
+# =====================================================================
+# Sleeve Development — property, BTC, cash (point: cash/btc/EK Entwicklung)
+# =====================================================================
+st.markdown("## Sleeve Development")
+fig_sl = go.Figure()
+fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["property_value"],
+                            name="Immobilienwert", line=dict(color=OAK_SAGE, width=2)))
+fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["btc_value"],
+                            name="BTC", line=dict(color=OAK_BTC, width=2)))
+fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["cash"],
+                            name="CHF Cash", line=dict(color=OAK_CREAM_DIM, width=2)))
+fig_sl = style_plotly(fig_sl, height=380)
+fig_sl.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
+st.plotly_chart(fig_sl, use_container_width=True)
+
+st.markdown("### BTC & Cash Weight vs. Thresholds")
+w_btc_series = (ts["btc_value"] / ts["total_value"]) * 100
+w_cash_series = (ts["cash"] / ts["total_value"]) * 100
+fig_w = go.Figure()
+fig_w.add_trace(go.Scatter(x=ts.index, y=w_btc_series, name="BTC % of NAV",
+                           line=dict(color=OAK_BTC, width=2.5),
+                           fill="tozeroy", fillcolor="rgba(247,147,26,0.1)"))
+fig_w.add_trace(go.Scatter(x=ts.index, y=w_cash_series, name="Cash % of NAV",
+                           line=dict(color=OAK_CREAM_DIM, width=1.8, dash="dot")))
+fig_w.add_hline(y=upper_threshold * 100, line=dict(color=OAK_RED, width=2, dash="dash"),
+                annotation_text=f"Upper {upper_threshold*100:.0f}%",
+                annotation_position="top right",
+                annotation_font=dict(color=OAK_RED, size=11))
+fig_w.add_hline(y=lower_threshold * 100, line=dict(color=OAK_SAGE, width=1.5, dash="dot"),
+                annotation_text=f"Lower {lower_threshold*100:.0f}%",
+                annotation_position="bottom right",
+                annotation_font=dict(color=OAK_SAGE, size=11))
+sell_days = ts.index[ts["btc_sells"] > 0]
+if len(sell_days):
+    fig_w.add_trace(go.Scatter(
+        x=sell_days, y=w_btc_series.loc[sell_days] + 0.7, mode="markers",
+        name="Sell → Cash",
+        marker=dict(symbol="diamond", size=11, color=OAK_RED,
+                    line=dict(color=OAK_CREAM, width=1.5))))
+fig_w = style_plotly(fig_w, height=380)
+fig_w.update_yaxes(title_text="% of NAV", ticksuffix="%")
+st.plotly_chart(fig_w, use_container_width=True)
+
+# =====================================================================
+# Risk Analytics
+# =====================================================================
+st.markdown("## Risk Analytics")
+strat_m = m
+re_m = compute_risk_metrics(bench_re, risk_free_rate, base_value=initial_capital)
+idx_m = compute_risk_metrics(bench_index_daily, risk_free_rate, base_value=initial_capital)
+bm_re = compute_benchmark_metrics(net, bench_re, risk_free_rate)
+
+
+def _row(label, key, fmt="pct", hint=""):
+    if fmt == "pct":
+        s, b1, b2 = _fmt_pct(strat_m.get(key)), _fmt_pct(re_m.get(key)), _fmt_pct(idx_m.get(key))
+    else:
+        s, b1, b2 = _fmt_num(strat_m.get(key)), _fmt_num(re_m.get(key)), _fmt_num(idx_m.get(key))
+    hint_html = f"<span class='hint'>{hint}</span>" if hint else ""
+    return (f"<tr><td class='metric-label'>{label}{hint_html}</td>"
+            f"<td class='strategy-col'>{s}</td><td>{b1}</td><td>{b2}</td></tr>")
+
+
+def _section(title):
+    return f"<tr class='oak-section'><td colspan='4'>{title}</td></tr>"
+
+
+st.markdown(f"""
+<table class="oak-metrics-table">
+    <thead>
+        <tr><th>Metric</th><th>Strategy (Net)</th><th>RE only</th><th>SNB Index</th></tr>
+    </thead>
+    <tbody>
+        {_section("Return")}
+        {_row("Total Return", "total_return")}
+        {_row("Annualized Return (CAGR)", "cagr")}
+        {_section("Risk · smoothed valuation index — see note")}
+        {_row("Annualized Volatility", "vol_ann", hint="Std. dev. of daily returns × √252")}
+        {_row("Downside Deviation", "downside_vol", hint="Volatility of negative returns only")}
+        {_row("Maximum Drawdown", "max_drawdown", hint="Largest peak-to-trough loss")}
+        {_section("Risk-Adjusted Performance")}
+        {_row("Sharpe Ratio", "sharpe", "num", "(CAGR − Rf) / Volatility")}
+        {_row("Sortino Ratio", "sortino", "num", "(CAGR − Rf) / Downside Vol")}
+        {_row("Calmar Ratio", "calmar", "num", "CAGR / |Max DD|")}
+        {_section("Tail Risk · Monthly")}
+        {_row("Value at Risk (95%)", "var_95_monthly", hint="5th-percentile monthly return")}
+        {_row("Expected Shortfall (95%)", "cvar_95_monthly", hint="Avg. return in worst 5% of months")}
+        {_row("Worst Month", "worst_month")}
+        {_section("Consistency")}
+        {_row("Best Month", "best_month")}
+        {_row("Positive Months", "pct_positive_months", hint="% of months with positive return")}
+    </tbody>
+</table>
+""", unsafe_allow_html=True)
+st.markdown(
+    f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-8px;'>"
+    f"Risk-free rate: {risk_free_rate*100:.2f}% p.a. · Property sleeve rests on a "
+    f"smoothed quarterly valuation index — volatility and drawdowns of all three "
+    f"columns are structurally understated and not comparable to market-priced "
+    f"strategies.</p>", unsafe_allow_html=True)
+
+st.markdown("### Strategy vs. RE only")
+bc1, bc2, bc3, bc4 = st.columns(4)
+bc1.metric("Alpha (Jensen, annualized)", _fmt_pct(bm_re.get("alpha")),
+           "Excess return adj. for beta")
+bc2.metric("Beta", _fmt_num(bm_re.get("beta")), "Sensitivity to RE only")
+bc3.metric("Tracking Error", _fmt_pct(bm_re.get("tracking_error")),
+           "Std. dev. of excess returns")
+bc4.metric("Information Ratio", _fmt_num(bm_re.get("information_ratio")),
+           "Excess return / TE")
+
+bc5, bc6 = st.columns([1, 3])
+bc5.metric("Correlation", _fmt_num(bm_re.get("correlation")),
+           f"R² = {_fmt_num(bm_re.get('r_squared'))}")
+with bc6:
+    if strat_m.get("dd_peak") and strat_m.get("dd_trough"):
+        peak = pd.Timestamp(strat_m["dd_peak"]).strftime("%Y-%m-%d")
+        trough = pd.Timestamp(strat_m["dd_trough"]).strftime("%Y-%m-%d")
+        rec = (pd.Timestamp(strat_m["dd_recovery"]).strftime("%Y-%m-%d")
+               if strat_m.get("dd_recovery") else "not yet recovered")
+        days = strat_m.get("dd_duration_days", 0)
+        st.markdown(
+            f"<div style='background:{OAK_GREEN_2}; padding:16px 20px; "
+            f"border:1px solid {OAK_BORDER}; border-left:3px solid {OAK_RED}; "
+            f"border-radius:9px; margin-top:0;'>"
+            f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
+            f"letter-spacing:0.12em; font-weight:600;'>Strategy Max Drawdown Episode</div>"
+            f"<div style='color:{OAK_CREAM}; font-family:Cormorant Garamond, serif; "
+            f"font-size:22px; margin-top:6px;'>{_fmt_pct(strat_m['max_drawdown'])}</div>"
+            f"<div style='color:{OAK_CREAM_DIM}; font-size:11px; margin-top:6px;'>"
+            f"Peak: <strong style='color:{OAK_CREAM};'>{peak}</strong> · "
+            f"Trough: <strong style='color:{OAK_CREAM};'>{trough}</strong> · "
+            f"Recovery: <strong style='color:{OAK_CREAM};'>{rec}</strong> · "
+            f"Duration: <strong style='color:{OAK_CREAM};'>{days} days</strong>"
+            f"</div></div>", unsafe_allow_html=True)
+
+st.markdown("### Drawdown Analysis")
+dd_strat = compute_drawdown(net) * 100
+dd_re = compute_drawdown(bench_re) * 100
+fig_dd = go.Figure()
+fig_dd.add_trace(go.Scatter(x=dd_strat.index, y=dd_strat.values, name="Strategy (Net)",
+                            line=dict(color=OAK_GOLD, width=2),
+                            fill="tozeroy", fillcolor="rgba(201,169,97,0.2)"))
+fig_dd.add_trace(go.Scatter(x=dd_re.index, y=dd_re.values, name="RE only",
+                            line=dict(color=OAK_SAGE, width=1.5, dash="dash")))
+fig_dd = style_plotly(fig_dd, height=340)
+fig_dd.update_yaxes(title_text="Drawdown", ticksuffix="%")
+st.plotly_chart(fig_dd, use_container_width=True)
+
+st.markdown("### Rolling Volatility (60-day window, annualized)")
+roll_s = net.pct_change().dropna().rolling(60).std() * np.sqrt(252) * 100
+roll_b = bench_re.pct_change().dropna().rolling(60).std() * np.sqrt(252) * 100
+fig_vol = go.Figure()
+fig_vol.add_trace(go.Scatter(x=roll_s.index, y=roll_s.values, name="Strategy (Net)",
+                             line=dict(color=OAK_GOLD, width=2)))
+fig_vol.add_trace(go.Scatter(x=roll_b.index, y=roll_b.values, name="RE only",
+                             line=dict(color=OAK_SAGE, width=1.5, dash="dash")))
+fig_vol = style_plotly(fig_vol, height=320)
+fig_vol.update_yaxes(title_text="Annualized Volatility", ticksuffix="%")
+st.plotly_chart(fig_vol, use_container_width=True)
+
+st.markdown("### Monthly Returns · Strategy (Net)")
+matrix = monthly_returns_matrix(net)
+if not matrix.empty:
+    z = matrix.values.astype(float) * 100
+    years_idx = matrix.index.astype(str).tolist()
+    cols = matrix.columns.tolist()
+    colorscale = [[0.0, "#7A2A1F"], [0.25, "#B85042"], [0.5, OAK_GREEN_2],
+                  [0.75, "#7A8975"], [1.0, OAK_SAGE]]
+    vmax = max(abs(np.nanmin(z)), abs(np.nanmax(z)))
+    text = [[f"{v:+.1f}%" if not np.isnan(v) else "" for v in row] for row in z]
+    fig_hm = go.Figure(data=go.Heatmap(
+        z=z, x=cols, y=years_idx, colorscale=colorscale, zmid=0, zmin=-vmax, zmax=vmax,
+        text=text, texttemplate="%{text}",
+        textfont=dict(size=11, color=OAK_CREAM, family="Inter"), xgap=2, ygap=2,
+        colorbar=dict(title=dict(text="Return %", font=dict(color=OAK_CREAM, size=11)),
+                      tickfont=dict(color=OAK_CREAM_DIM, size=10),
+                      outlinecolor=OAK_BORDER, outlinewidth=1, len=0.85, thickness=12),
+        hovertemplate="%{y} · %{x}: <b>%{z:+.2f}%</b><extra></extra>"))
+    fig_hm = style_plotly(fig_hm, height=max(280, 38 * len(years_idx) + 80))
+    fig_hm.update_xaxes(side="top", showgrid=False, ticks="")
+    fig_hm.update_yaxes(showgrid=False, ticks="", autorange="reversed")
+    st.plotly_chart(fig_hm, use_container_width=True)
+
+st.markdown("### Yearly Performance & High Water Mark")
+yearly_net = net.resample("YE").last()
+yearly_ret = yearly_net.pct_change()
+yearly_ret.iloc[0] = yearly_net.iloc[0] / initial_capital - 1
+years_list = yearly_net.index.year.tolist()
+rets_pct = (yearly_ret.values * 100).tolist()
+fig_yr = go.Figure()
+fig_yr.add_trace(go.Bar(
+    x=years_list, y=rets_pct,
+    marker=dict(color=[OAK_SAGE if r >= 0 else OAK_RED for r in rets_pct],
+                line=dict(color=OAK_GREEN_2, width=1)),
+    name="Strategy Annual Return (Net)",
+    text=[f"{r:+.1f}%" for r in rets_pct], textposition="outside",
+    textfont=dict(color=OAK_CREAM, size=11)))
+fig_yr.add_hline(y=hurdle * 100, line=dict(color=OAK_GOLD, width=1.5, dash="dash"),
+                 annotation_text=f"Year-1 Hurdle {hurdle*100:.0f}%",
+                 annotation_position="top right",
+                 annotation_font=dict(color=OAK_GOLD, size=11))
+fig_yr.add_hline(y=0, line=dict(color=OAK_SAGE_DIM, width=1))
+fig_yr = style_plotly(fig_yr, height=380)
+fig_yr.update_xaxes(title_text="Year", dtick=1)
+fig_yr.update_yaxes(title_text="Annual Return (Net)", ticksuffix="%")
+st.plotly_chart(fig_yr, use_container_width=True)
+
+# =====================================================================
+# Parameter Sensitivity (grid backtest, like the SMI page)
+# =====================================================================
+st.markdown("## Parameter Sensitivity")
+st.markdown(
+    f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
+    "Robustness check: re-runs the backtest across a grid of initial BTC "
+    "allocations and upper thresholds, holding all other parameters at the "
+    "current sidebar values (the lower threshold is clamped below each tested "
+    "upper threshold). A single strong path means little if nearby parameters "
+    "collapse.</p>", unsafe_allow_html=True)
+
+if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
+    btc_grid = [0.05, 0.10, 0.15, 0.20, 0.25]
+    thr_grid = [0.20, 0.25, 0.30, 0.35]
+    cagr_matrix, dd_matrix = [], []
+    prog = st.progress(0.0, text="Running grid backtests ...")
+    done, total_cells = 0, len(btc_grid) * len(thr_grid)
+    for b in btc_grid:
+        cagr_row, dd_row = [], []
+        for thr in thr_grid:
+            lo_g = min(lower_threshold, round(thr * 0.6, 2))
+            try:
+                ts_g = run_re_btc(prop_daily, btc_chf,
+                                  dict(params, initial_btc_pct=b,
+                                       upper_threshold=thr, lower_threshold=lo_g))
+                if not ts_g.empty:
+                    net_g, _, _, _ = apply_fees(
+                        ts_g["total_value"], initial_capital,
+                        mgmt_fee_annual=mgmt_fee, perf_fee_rate=perf_fee,
+                        hwm_hurdle=hurdle, crystallization_freq="Quarterly",
+                        hurdle_type="Hard Hurdle")
+                    m_g = compute_risk_metrics(net_g, risk_free_rate,
+                                               base_value=initial_capital)
+                    cagr_row.append(m_g.get("cagr", float("nan")) * 100)
+                    dd_row.append(m_g.get("max_drawdown", float("nan")) * 100)
+                else:
+                    cagr_row.append(float("nan")); dd_row.append(float("nan"))
+            except Exception:
+                cagr_row.append(float("nan")); dd_row.append(float("nan"))
+            done += 1
+            prog.progress(done / total_cells,
+                          text=f"Running grid backtests ... {done}/{total_cells}")
+        cagr_matrix.append(cagr_row); dd_matrix.append(dd_row)
+    prog.empty()
+
+    x_labels = [f"{int(t*100)}%" for t in thr_grid]
+    y_labels = [f"{int(b*100)}%" for b in btc_grid]
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        fig_cagr = go.Figure(data=go.Heatmap(
+            z=cagr_matrix, x=x_labels, y=y_labels,
+            colorscale=[[0, OAK_RED], [0.5, OAK_GREEN_3], [1, OAK_GOLD]],
+            text=[[f"{v:.1f}%" for v in row] for row in cagr_matrix],
+            texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
+            colorbar=dict(title="CAGR %", tickfont=dict(color=OAK_CREAM)),
+            hovertemplate="BTC init %{y} · Upper %{x}<br>Net CAGR %{z:.2f}%<extra></extra>"))
+        fig_cagr.update_layout(title="Net CAGR (%)")
+        fig_cagr = style_plotly(fig_cagr, height=380)
+        fig_cagr.update_xaxes(title_text="Upper Threshold")
+        fig_cagr.update_yaxes(title_text="Initial BTC %")
+        st.plotly_chart(fig_cagr, use_container_width=True)
+    with sc2:
+        fig_ddh = go.Figure(data=go.Heatmap(
+            z=dd_matrix, x=x_labels, y=y_labels,
+            colorscale=[[0, OAK_RED], [1, OAK_GREEN_3]],
+            text=[[f"{v:.1f}%" for v in row] for row in dd_matrix],
+            texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
+            colorbar=dict(title="Max DD %", tickfont=dict(color=OAK_CREAM)),
+            hovertemplate="BTC init %{y} · Upper %{x}<br>Max Drawdown %{z:.2f}%<extra></extra>"))
+        fig_ddh.update_layout(title="Maximum Drawdown (%)")
+        fig_ddh = style_plotly(fig_ddh, height=380)
+        fig_ddh.update_xaxes(title_text="Upper Threshold")
+        fig_ddh.update_yaxes(title_text="Initial BTC %")
+        st.plotly_chart(fig_ddh, use_container_width=True)
+
+# =====================================================================
+# Monte-Carlo Forward Projection (like the SMI page)
+# =====================================================================
+st.markdown("## Monte-Carlo Projection")
+st.markdown(
+    f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
+    "Forward-looking simulation: bootstraps the strategy's historical daily net "
+    "returns to generate thousands of possible future paths, shown as percentile "
+    "bands. This is a statistical illustration based on past behaviour — "
+    "<strong>not a forecast</strong>. Because the property sleeve rests on a "
+    "smoothed valuation index, the projected bands understate real-world "
+    "dispersion.</p>", unsafe_allow_html=True)
+
+mc1, mc2, mc3 = st.columns(3)
+with mc1:
+    mc_years = st.slider("Projection Horizon (years)", 1, 10, 5, key="mc_years")
+with mc2:
+    mc_paths = st.select_slider("Number of Paths", options=[500, 1000, 2000, 5000],
+                                value=1000, key="mc_paths")
+with mc3:
+    mc_method = st.selectbox("Method", ["Bootstrap (historical)", "Normal (parametric)"],
+                             key="mc_method",
+                             help="Bootstrap resamples actual historical daily returns "
+                                  "(keeps fat tails). Normal assumes Gaussian returns "
+                                  "with the same mean/volatility.")
+
+if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
+    daily_ret = net.pct_change().dropna().values
+    if len(daily_ret) < 30:
+        st.warning("Not enough history for a meaningful projection.")
+    else:
+        start_value = float(net.iloc[-1])
+        horizon_days = int(mc_years * 252)
+        n_paths = int(mc_paths)
+        rng = np.random.default_rng(42)
+        if mc_method.startswith("Bootstrap"):
+            sampled = rng.choice(daily_ret, size=(n_paths, horizon_days), replace=True)
+        else:
+            sampled = rng.normal(float(np.mean(daily_ret)), float(np.std(daily_ret)),
+                                 size=(n_paths, horizon_days))
+        cum = start_value * np.cumprod(1.0 + sampled, axis=1)
+        bands = {p: np.percentile(cum, p, axis=0) for p in [5, 25, 50, 75, 95]}
+        future_idx = pd.bdate_range(net.index[-1], periods=horizon_days + 1, freq="B")[1:]
+
+        fig_mc = go.Figure()
+        fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[95], mode="lines",
+                                    line=dict(width=0), showlegend=False, hoverinfo="skip"))
+        fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[5], mode="lines", fill="tonexty",
+                                    fillcolor="rgba(153,167,150,0.15)", line=dict(width=0),
+                                    name="5th–95th percentile"))
+        fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[75], mode="lines",
+                                    line=dict(width=0), showlegend=False, hoverinfo="skip"))
+        fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[25], mode="lines", fill="tonexty",
+                                    fillcolor="rgba(153,167,150,0.30)", line=dict(width=0),
+                                    name="25th–75th percentile"))
+        fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[50], mode="lines",
+                                    line=dict(color=OAK_GOLD, width=2.5), name="Median path"))
+        fig_mc = style_plotly(fig_mc, height=420)
+        fig_mc.update_xaxes(title_text="Projected Date")
+        fig_mc.update_yaxes(title_text="Projected Value (CHF)", tickformat=",.0f")
+        st.plotly_chart(fig_mc, use_container_width=True)
+
+        terminal = cum[:, -1]
+        t1, t2, t3, t4, t5 = st.columns(5)
+        t1.metric("5th percentile", f"CHF {np.percentile(terminal,5):,.0f}")
+        t2.metric("25th percentile", f"CHF {np.percentile(terminal,25):,.0f}")
+        t3.metric("Median", f"CHF {np.percentile(terminal,50):,.0f}")
+        t4.metric("75th percentile", f"CHF {np.percentile(terminal,75):,.0f}")
+        t5.metric("95th percentile", f"CHF {np.percentile(terminal,95):,.0f}")
+        prob_loss = float(np.mean(terminal < start_value)) * 100
+        st.markdown(
+            f"<p style='color:{OAK_SAGE_DIM}; font-size:12px;'>"
+            f"Starting from the current net value of CHF {start_value:,.0f}, over a "
+            f"{mc_years}-year horizon across {n_paths:,} simulated paths: "
+            f"<strong>{prob_loss:.1f}%</strong> of paths end below today's value. "
+            "Results assume the future resembles the backtest period — which it may "
+            "not, and the smoothed property index narrows the bands.</p>",
+            unsafe_allow_html=True)
+
+# ---- detail expanders (unchanged) ----
 with st.expander("Monatliche Netto-Cashflows (Mieterträge → BTC-DCA)"):
     cf = ts["net_cf_monthly"].dropna()
     st.bar_chart(cf)
