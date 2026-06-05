@@ -24,6 +24,8 @@ WICHTIG — Methodischer Charakter:
 import base64
 import io
 from datetime import date
+
+from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +37,7 @@ import yfinance as yf
 
 from pdf_report import (build_bilingual_tearsheet,
                         render_line_chart, render_bar_chart,
-                        render_scatter_chart,
+                        render_scatter_chart, render_stacked_bar_chart,
                         compute_period_returns, identify_top_drawdowns,
                         get_font_status)
 
@@ -1001,19 +1003,53 @@ st.caption("Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation — "
            "Details unter Methodik & Hinweise.")
 
 with st.sidebar:
-    st.markdown("### Portfolio-Setup")
-    initial_capital = st.number_input("Startkapital (CHF)", 100_000, 100_000_000,
-                                      1_000_000, step=100_000)
+    st.markdown("## Parameters")
+
+    st.markdown("### Stress-Test Scenarios")
+    st.markdown(
+        f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-6px;'>"
+        "One-click historical crisis windows. Sets the backtest period below.</p>",
+        unsafe_allow_html=True)
+    _scenarios = {
+        "COVID Crash (2020)": (date(2020, 1, 1), date(2020, 12, 31)),
+        "BTC Bear Market (2022)": (date(2022, 1, 1), date(2022, 12, 31)),
+        "Banking Crisis / CS (2023)": (date(2023, 1, 1), date(2023, 12, 31)),
+        "Full History (2018–today)": (date(2018, 1, 1), date.today()),
+    }
+    _sc_cols = st.columns(2)
+    for _i, (_label, (_s, _e)) in enumerate(_scenarios.items()):
+        if _sc_cols[_i % 2].button(_label, use_container_width=True, key=f"re_sc_{_i}"):
+            st.session_state["re_scenario_start"] = _s
+            st.session_state["re_scenario_end"] = _e
+            st.session_state["re_btc_has_run"] = True  # auto-show results
+
+    st.markdown("### Backtest Period")
+    _default_start = st.session_state.get("re_scenario_start", date(2018, 1, 1))
+    _default_end = st.session_state.get("re_scenario_end", date.today())
+    start_date = st.date_input("Startdatum", value=_default_start,
+                               min_value=date(2010, 1, 1),
+                               max_value=date.today() - relativedelta(months=6))
+    end_date = st.date_input("Enddatum", value=_default_end,
+                             min_value=start_date + relativedelta(months=6),
+                             max_value=date.today())
+    initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
+                                      max_value=100_000_000, value=1_000_000, step=10_000)
+
+    st.markdown("### Allocation")
     initial_btc_pct = st.slider("Initial BTC Allokation (%)", 0, 50, 15, 1) / 100.0
+    lower_threshold = st.slider("Lower BTC Threshold (%)", 0, 40, 10, 1) / 100.0
+    upper_threshold = st.slider("Upper BTC Threshold (%)", 5, 75, 25, 1) / 100.0
+    if lower_threshold >= upper_threshold:
+        st.error("Lower Threshold muss kleiner als Upper Threshold sein.")
+
+    st.markdown("### Property Sleeve")
     net_yield = st.slider("Nettomietrendite (% p.a.)", 0.5, 6.0, 3.0, 0.1,
                           help="Extern vorberechnet — nach Leerstand, "
                                "Bewirtschaftung, Unterhalt und Finanzierung. "
                                "Bezieht sich auf den aktuellen "
                                "Liegenschaftswert.") / 100.0
 
-    st.markdown("### Rebalancing-Regeln (Nettomieteinnahmen)")
-    lower_threshold = st.slider("Lower BTC Threshold (%)", 0, 40, 10, 1) / 100.0
-    upper_threshold = st.slider("Upper BTC Threshold (%)", 5, 75, 25, 1) / 100.0
+    st.markdown("### Rent Allocation")
     base_invest_rate = st.slider("Basis-Investitionsrate der Nettomiete (%)",
                                  0, 100, 50, 5) / 100.0
     boost_invest_rate = st.slider("Investitionsrate unter Lower Threshold (%)",
@@ -1028,20 +1064,34 @@ with st.sidebar:
         help="Verkaufserlöse bleiben als CHF-Cash liegen und werden nicht "
              "reinvestiert — der wachsende Cash-Bestand dämpft die "
              "Volatilität.")
-    if lower_threshold >= upper_threshold:
-        st.error("Lower Threshold muss kleiner als Upper Threshold sein.")
 
-    st.markdown("### Kosten & Gebühren (AMC)")
-    tx_cost_bps = st.slider("Transaktionskosten BTC (bps)", 0, 50, 10, 1)
-    mgmt_fee = st.slider("Management Fee (% p.a.)", 0.0, 3.0, 1.5, 0.05) / 100.0
-    perf_fee = st.slider("Performance Fee (%)", 0, 30, 15, 1) / 100.0
-    hurdle = st.slider("Hurdle (Jahr 1, %)", 0.0, 10.0, 5.0, 0.5) / 100.0
-    risk_free_rate = st.slider("Risk-Free Rate (% p.a.)", 0.0, 3.0, 1.0, 0.25,
-                               help="Für Sharpe/Sortino.") / 100.0
+    st.markdown("### Risk Analytics")
+    risk_free_rate = st.slider("Risk-Free Rate (%)", 0.0, 5.0, 1.0, 0.25,
+                               help="Annualisiert. Default ~1% entspricht "
+                                    "historischem CHF/SARON-Durchschnitt.") / 100.0
 
-    st.markdown("### Zeitraum")
-    start_date = st.date_input("Start", date(2018, 1, 3))
-    end_date = st.date_input("Ende", date.today())
+    st.markdown("### Costs & Fees")
+    tx_cost_bps = st.slider("Transaction Cost (bps per trade)", 0, 50, 10, 1,
+                            help="Auf das gehandelte BTC-Volumen je Trade. "
+                                 "10 bps = 0.10%.")
+    mgmt_fee = st.slider("Management Fee (% p.a.)", 0.0, 3.0, 1.5, 0.05,
+                         help="Daily accrual, deducted from NAV.") / 100.0
+    perf_fee = st.slider("Performance Fee (%)", 0, 30, 15, 1,
+                         help="Charged on gains above the High Water Mark.") / 100.0
+    hurdle_type = st.selectbox("Hurdle Type",
+                               ["Hard Hurdle", "Soft Hurdle", "No Hurdle (HWM only)"],
+                               index=0)
+    hurdle = st.slider("Hurdle Rate Year 1 (%)", 0.0, 15.0, 5.0, 0.5,
+                       help="Jahres-Hurdle vor Performance-Fee im ersten Jahr; "
+                            "danach gilt die HWM.") / 100.0
+    crystallization_freq = st.selectbox("Performance Fee Crystallization",
+                                        ["Quarterly", "Semi-Annual", "Annual"], index=0)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    run_btn = st.button("Run Backtest", type="primary", use_container_width=True,
+                        disabled=(lower_threshold >= upper_threshold))
+    if run_btn:
+        st.session_state["re_btc_has_run"] = True
 
 # --------------------------------------------------------------------------
 # Data: SNB index (with manual-CSV fallback) + BTC in CHF
@@ -1076,13 +1126,9 @@ snb_q = snb_catalog[series_label]
 st.caption(f"Serie: {series_label} · {snb_q.index[0]:%Y-%m} bis {snb_q.index[-1]:%Y-%m} "
            f"({len(snb_q)} Quartale, linear auf Tagesbasis interpoliert)")
 
-run_btn = st.button("Backtest starten", type="primary",
-                    disabled=(lower_threshold >= upper_threshold))
-if run_btn:
-    st.session_state["re_btc_has_run"] = True
-# Sticky gate: Streamlit buttons are only True on the rerun right after the
-# click. The Sensitivity/Monte-Carlo buttons below trigger a rerun — without
-# session_state the page would st.stop() before ever reaching them.
+# Sticky gate (run button lives in the sidebar, like the SMI page): Streamlit
+# buttons are only True on the rerun right after the click — the Sensitivity/
+# Monte-Carlo buttons below trigger reruns, so we persist via session_state.
 if not (run_btn or st.session_state.get("re_btc_has_run", False)):
     st.stop()
 
@@ -1128,7 +1174,7 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
     net, total_mgmt, total_perf, fee_events = apply_fees(
         ts["total_value"], initial_capital, mgmt_fee_annual=mgmt_fee,
         perf_fee_rate=perf_fee, hwm_hurdle=hurdle,
-        crystallization_freq="Quarterly", hurdle_type="Hard Hurdle")
+        crystallization_freq=crystallization_freq, hurdle_type=hurdle_type)
 
 # --------------------------------------------------------------------------
 # KPIs & charts — section structure mirrors 1_SMI_Strategy.py
@@ -1207,6 +1253,25 @@ fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["cash"],
 fig_sl = style_plotly(fig_sl, height=380)
 fig_sl.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
 st.plotly_chart(fig_sl, use_container_width=True)
+
+st.markdown("### Asset Allocation Over Time (quarter-end values)")
+q_end = ts[["property_value", "btc_value", "cash"]].resample("QE").last().dropna()
+q_labels = [f"Q{d.quarter} {d.year}" for d in q_end.index]
+fig_alloc = go.Figure()
+fig_alloc.add_trace(go.Bar(x=q_labels, y=q_end["property_value"],
+                           name="Immobilien", marker_color=OAK_SAGE,
+                           hovertemplate="%{x}<br>Immobilien: CHF %{y:,.0f}<extra></extra>"))
+fig_alloc.add_trace(go.Bar(x=q_labels, y=q_end["btc_value"],
+                           name="BTC", marker_color=OAK_BTC,
+                           hovertemplate="%{x}<br>BTC: CHF %{y:,.0f}<extra></extra>"))
+fig_alloc.add_trace(go.Bar(x=q_labels, y=q_end["cash"],
+                           name="CHF Cash", marker_color=OAK_CREAM_DIM,
+                           hovertemplate="%{x}<br>Cash: CHF %{y:,.0f}<extra></extra>"))
+fig_alloc.update_layout(barmode="stack", bargap=0.25)
+fig_alloc = style_plotly(fig_alloc, height=400)
+fig_alloc.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
+fig_alloc.update_xaxes(tickangle=-45)
+st.plotly_chart(fig_alloc, use_container_width=True)
 
 st.markdown("### BTC & Cash Weight vs. Thresholds")
 w_btc_series = (ts["btc_value"] / ts["total_value"]) * 100
@@ -1431,8 +1496,8 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
                     net_g, _, _, _ = apply_fees(
                         ts_g["total_value"], initial_capital,
                         mgmt_fee_annual=mgmt_fee, perf_fee_rate=perf_fee,
-                        hwm_hurdle=hurdle, crystallization_freq="Quarterly",
-                        hurdle_type="Hard Hurdle")
+                        hwm_hurdle=hurdle, crystallization_freq=crystallization_freq,
+                        hurdle_type=hurdle_type)
                     m_g = compute_risk_metrics(net_g, risk_free_rate,
                                                base_value=initial_capital)
                     cagr_row.append(m_g.get("cagr", float("nan")) * 100)
@@ -1605,6 +1670,14 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             ("RE only", mb["vol_ann"] * 100, re_cagr * 100, "#7C8978", "s"),
         ])
 
+        q_end_pdf = ts[["property_value", "btc_value", "cash"]].resample("QE").last().dropna()
+        alloc_png = render_stacked_bar_chart(
+            [f"Q{d.quarter} {d.year}" for d in q_end_pdf.index],
+            [("Residential RE", q_end_pdf["property_value"].tolist(), "#7C8978"),
+             ("Bitcoin", q_end_pdf["btc_value"].tolist(), "#F7931A"),
+             ("CHF Cash", q_end_pdf["cash"].tolist(), "#C9C9C0")],
+            ylabel="Value (CHF)")
+
         mm = monthly_returns_matrix(net)
         monthly_dict = {int(y): [None if pd.isna(v) else round(v * 100, 1)
                                  for v in mm.loc[y, mm.columns[:12]]]
@@ -1695,7 +1768,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             ("Cash Treatment", "Uninvested CHF, 0% interest (one-way buffer)"),
             ("Transaction Cost (BTC)", f"{tx_cost_bps} bps per trade"),
             ("Management Fee", f"{mgmt_fee*100:.2f}% p.a."),
-            ("Performance Fee", f"{perf_fee*100:.0f}% (Quarterly, Hard Hurdle {hurdle*100:.1f}% Yr 1)"),
+            ("Performance Fee", f"{perf_fee*100:.0f}% ({crystallization_freq}, {hurdle_type} {hurdle*100:.1f}% Yr 1)"),
         ]
         universe_rows = [
             ["Bitcoin", "BTC", "Digital Assets",
@@ -1749,6 +1822,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             fee_table_headers=["Period", "Mgmt Fee", "Perf Fee", "Total Cost"],
             fee_table_rows=fee_rows,
             figures=[("Portfolio Evolution vs. RE-only & SNB Index", line),
+                     ("Asset Allocation Over Time (quarter-end)", alloc_png),
                      ("Drawdown Analysis*", dd_chart),
                      ("Yearly Net Performance", bar)],
             params_summary=params_summary,

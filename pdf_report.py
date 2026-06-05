@@ -231,6 +231,59 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
         return None
 
 
+def render_stacked_bar_chart(x_labels, series_list, title="", ylabel=""):
+    """Render a STACKED bar chart to PNG bytes — e.g. asset allocation over
+    time. series_list: list of (label, values, color); all values lists must
+    have the same length as x_labels. Styling matches render_bar_chart."""
+    try:
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        PANEL = "#FBFBF8"   # matches C_PAGE_BG
+        fig, ax = plt.subplots(figsize=(9.5, 4.7), dpi=170)
+        fig.patch.set_facecolor(PANEL)
+        ax.set_facecolor(PANEL)
+        import numpy as _np
+        bottoms = _np.zeros(len(x_labels))
+        for label, values, color in series_list:
+            vals = _np.asarray(values, dtype=float)
+            ax.bar(range(len(vals)), vals, bottom=bottoms, label=label,
+                   color=color, width=0.72, edgecolor=PANEL, linewidth=0.4,
+                   zorder=3)
+            bottoms = bottoms + vals
+        ax.set_xticks(range(len(x_labels)))
+        step = max(1, len(x_labels) // 16)  # thin out crowded quarter labels
+        ax.set_xticklabels([lbl if i % step == 0 else ""
+                            for i, lbl in enumerate(x_labels)],
+                           fontsize=7.5, color="#6B7868", rotation=45,
+                           ha="right")
+        ax.set_ylabel(ylabel, fontsize=8.5, color="#6B7868", labelpad=8)
+        ax.tick_params(labelsize=8, colors="#6B7868", length=0)
+        ax.grid(True, axis="y", color="#E2E4DD", linewidth=0.6, alpha=0.9,
+                zorder=0)
+        ax.set_axisbelow(True)
+        for spine in ["top", "right", "left"]:
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color("#D2D5CC")
+        ax.yaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: f"{x/1e6:.1f}M" if abs(x) >= 1e6
+                              else f"{x/1e3:.0f}k"))
+        leg = ax.legend(fontsize=8, frameon=False, loc="upper left", ncol=3,
+                        bbox_to_anchor=(0, 1.08))
+        if leg:
+            for t in leg.get_texts():
+                t.set_color("#2A2A26")
+        fig.tight_layout(pad=0.6)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", facecolor=PANEL, bbox_inches="tight")
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception:
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None
+
+
 def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
     """Render a bar chart (e.g. yearly returns) to PNG bytes."""
     try:
