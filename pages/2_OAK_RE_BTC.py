@@ -1076,9 +1076,14 @@ snb_q = snb_catalog[series_label]
 st.caption(f"Serie: {series_label} · {snb_q.index[0]:%Y-%m} bis {snb_q.index[-1]:%Y-%m} "
            f"({len(snb_q)} Quartale, linear auf Tagesbasis interpoliert)")
 
-run = st.button("Backtest starten", type="primary",
-                disabled=(lower_threshold >= upper_threshold))
-if not run:
+run_btn = st.button("Backtest starten", type="primary",
+                    disabled=(lower_threshold >= upper_threshold))
+if run_btn:
+    st.session_state["re_btc_has_run"] = True
+# Sticky gate: Streamlit buttons are only True on the rerun right after the
+# click. The Sensitivity/Monte-Carlo buttons below trigger a rerun — without
+# session_state the page would st.stop() before ever reaching them.
+if not (run_btn or st.session_state.get("re_btc_has_run", False)):
     st.stop()
 
 with st.spinner("Lade BTC/FX-Daten und simuliere…"):
