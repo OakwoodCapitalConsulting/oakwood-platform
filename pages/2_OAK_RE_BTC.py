@@ -1578,17 +1578,17 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
         excess = net_cagr - re_cagr
 
         line = render_line_chart([
-            ("OAK RE/BTC (Net of Fees)", net, "#B8954A", "-"),
-            ("RE only (same model, no BTC)", bench_re, "#7C8978", "--"),
-            ("SNB Residential Index (price only)", bench_index_daily, "#999999", ":"),
-        ], annotate_end=True, fill_first=True)
+            ("OAK RE/BTC (Net of Fees)", net, "#B8954A", {"lw": 2.2}),
+            ("RE only (same model, no BTC)", bench_re, "#7C8978", {"ls": "--", "lw": 1.6}),
+            ("SNB Residential Index (price only)", bench_index_daily, "#999999", {"ls": ":", "lw": 1.4}),
+        ], ylabel="Value (CHF)", annotate_end=True, fill_first=True)
 
         dd = compute_drawdown(net)
         dd_b = compute_drawdown(bench_re)
         dd_chart = render_line_chart([
-            ("Strategy (Net)", dd, "#B8954A", "-"),
-            ("RE only", dd_b, "#7C8978", "--"),
-        ])
+            ("Strategy (Net)", dd, "#B8954A", {"lw": 1.8}),
+            ("RE only", dd_b, "#7C8978", {"ls": "--", "lw": 1.4}),
+        ], ylabel="Drawdown", percent=True)
 
         yearly = net.resample("YE").last()
         yearly_ret = yearly.pct_change()
