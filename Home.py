@@ -105,7 +105,10 @@ a[data-testid="stPageLink-NavLink"], a[data-testid="stPageLink-NavLink"] * {{
     border-left: 3px solid {OAK_SAGE};
     border-radius: 10px;
     padding: 28px 32px;
+    min-height: 320px;
     height: 100%;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 4px 16px rgba(0,0,0,0.20);
     transition: border-left-color 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
 }}
@@ -133,7 +136,7 @@ a[data-testid="stPageLink-NavLink"], a[data-testid="stPageLink-NavLink"] * {{
 .strategy-card .strat-meta {{
     color: {OAK_SAGE_DIM}; font-size: 11px;
     text-transform: uppercase; letter-spacing: 0.1em;
-    padding-top: 16px; margin-top: 16px;
+    padding-top: 16px; margin-top: auto;
     border-top: 1px solid {OAK_GREEN_3};
 }}
 .strategy-card .strat-meta strong {{ color: {OAK_CREAM}; }}
