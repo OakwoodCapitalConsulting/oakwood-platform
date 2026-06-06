@@ -996,11 +996,36 @@ def run_re_only(prop_index_daily, ref_index, params):
 # ===========================================================================
 # UI
 # ===========================================================================
-st.title("OAK RE/BTC — AMC Backtesting")
-st.caption("Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation — "
-           "die Kapitalwerte folgen dem SNB-Wohnimmobilienpreisindex, die "
-           "Nettoerträge einer eigenen Parametrik. Parametrische Simulation; "
-           "Details unter Methodik & Hinweise.")
+if logo_b64:
+    logo_html = f'<img src="data:image/png;base64,{logo_b64}" alt="Oakwood Capital"/>'
+else:
+    logo_html = ('<span style="color:#F5F5F1; font-family:Cormorant Garamond, serif; '
+                 'font-size:28px;">Oakwood Capital</span>')
+
+st.markdown(f"""
+<div class="oak-bar">
+    <div class="oak-logo">{logo_html}</div>
+    <div class="oak-tagline">
+        Quantitative Strategy Research
+        <span class="stamp">Internal Tool · Confidential</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown(
+    f"<h1 style='color:{OAK_CREAM}; font-family:\"Cormorant Garamond\", Georgia, serif; "
+    f"font-weight:500; font-size:44px; letter-spacing:-0.01em; margin:8px 0 4px 0; "
+    f"line-height:1.1;'>OAK RE/BTC</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    f"<p style='color:{OAK_CREAM_DIM}; font-size:15px; margin-top:0; max-width: 820px;'>"
+    "Swiss residential real estate with a structural Bitcoin allocation, rent-funded "
+    "DCA and threshold-based risk management. Parametric simulation on the SNB "
+    "residential price index."
+    "</p>",
+    unsafe_allow_html=True
+)
 
 with st.sidebar:
     st.markdown("## Parameters")
@@ -1048,6 +1073,37 @@ with st.sidebar:
                                "Bewirtschaftung, Unterhalt und Finanzierung. "
                                "Bezieht sich auf den aktuellen "
                                "Liegenschaftswert.") / 100.0
+    snb_catalog, snb_error = {}, None
+    try:
+        snb_catalog = fetch_snb_catalog()
+    except Exception as e:  # network/API issue -> manual fallback below
+        snb_error = str(e)
+    if snb_error:
+        st.warning("SNB-API nicht erreichbar — CSV von data.snb.ch "
+                   "(Cube plimoinchq) hochladen.")
+        with st.expander("Fehlerdetails"):
+            st.code(snb_error)
+    if not snb_catalog:
+        up = st.file_uploader("SNB-CSV (manueller Fallback)", type=["csv"])
+        if up is not None:
+            try:
+                snb_catalog = snb_series_catalog(
+                    _parse_snb_csv(up.getvalue().decode("utf-8-sig")))
+                st.success(f"{len(snb_catalog)} Serien geladen.")
+            except Exception as e:
+                st.error(f"CSV konnte nicht geparst werden: {e}")
+    if snb_catalog:
+        _labels = sorted(snb_catalog.keys())
+        _default_i = next((i for i, l in enumerate(_labels)
+                           if "wohnliegenschaft" in l.lower()
+                           or "mehrfamilien" in l.lower()), 0)
+        series_label = st.selectbox("SNB-Indexserie (Kapitalwert)", _labels,
+                                    index=_default_i)
+        snb_q = snb_catalog[series_label]
+        st.caption(f"{snb_q.index[0]:%Y-%m} – {snb_q.index[-1]:%Y-%m} · "
+                   f"{len(snb_q)} Quartale · täglich interpoliert")
+    else:
+        series_label, snb_q = None, None
 
     st.markdown("### Rent Allocation")
     base_invest_rate = st.slider("Basis-Investitionsrate der Nettomiete (%)",
@@ -1093,40 +1149,24 @@ with st.sidebar:
     if run_btn:
         st.session_state["re_btc_has_run"] = True
 
+    st.markdown(
+        f"<div style='font-size:10px; color:{OAK_SAGE_DIM}; text-transform:uppercase; "
+        f"letter-spacing:0.12em; padding-top:24px; margin-top:24px; "
+        f"border-top:1px solid {OAK_BORDER};'>"
+        "Data Source: SNB plimoinchq (quarterly) · Yahoo Finance<br>"
+        "FX: USDCHF Spot · Parametric simulation"
+        "</div>", unsafe_allow_html=True
+    )
+
 # --------------------------------------------------------------------------
 # Data: SNB index (with manual-CSV fallback) + BTC in CHF
 # --------------------------------------------------------------------------
-snb_catalog, snb_error = {}, None
-try:
-    snb_catalog = fetch_snb_catalog()
-except Exception as e:  # network blocked / API change → manual fallback
-    snb_error = str(e)
-
-if snb_error:
-    st.warning(f"SNB-API nicht erreichbar ({snb_error}). "
-               "Lade die CSV manuell von data.snb.ch (Cube *plimoinchq*) hoch.")
-up = st.file_uploader("Optional: SNB-CSV manuell (data.snb.ch → Immobilienpreisindizes → Download CSV)",
-                      type=["csv"])
-if up is not None:
-    try:
-        snb_catalog = snb_series_catalog(_parse_snb_csv(up.getvalue().decode("utf-8-sig")))
-        st.success(f"{len(snb_catalog)} Serien aus Upload geladen.")
-    except Exception as e:
-        st.error(f"CSV konnte nicht geparst werden: {e}")
-
-if not snb_catalog:
-    st.info("Keine SNB-Daten verfügbar — Backtest kann nicht starten.")
+if snb_q is None:
+    st.info("Keine SNB-Daten verfügbar — Backtest kann nicht starten "
+            "(siehe Property Sleeve in der Sidebar).")
     st.stop()
 
-labels = sorted(snb_catalog.keys())
-default_i = next((i for i, l in enumerate(labels)
-                  if "wohnliegenschaft" in l.lower() or "mehrfamilien" in l.lower()), 0)
-series_label = st.selectbox("SNB-Indexserie (Kapitalwert-Entwicklung)", labels, index=default_i)
-snb_q = snb_catalog[series_label]
-st.caption(f"Serie: {series_label} · {snb_q.index[0]:%Y-%m} bis {snb_q.index[-1]:%Y-%m} "
-           f"({len(snb_q)} Quartale, linear auf Tagesbasis interpoliert)")
-
-# Sticky gate (run button lives in the sidebar, like the SMI page): Streamlit
+# Sticky gate (run button lives in the sidebar# Sticky gate (run button lives in the sidebar, like the SMI page): Streamlit
 # buttons are only True on the rerun right after the click — the Sensitivity/
 # Monte-Carlo buttons below trigger reruns, so we persist via session_state.
 if not (run_btn or st.session_state.get("re_btc_has_run", False)):
