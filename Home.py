@@ -187,9 +187,10 @@ st.markdown(
 )
 st.markdown(
     f"<p style='color:{OAK_CREAM_DIM}; font-size:16px; margin-top:0; max-width: 760px;'>"
-    "Institutional-grade backtest tooling for a systematic strategy combining "
-    "Swiss equity income with structural digital-asset exposure. "
-    "Open the strategy below or use the sidebar navigation."
+    "Institutional-grade backtest tooling for systematic strategies that pair "
+    "Swiss income assets — blue-chip equities and residential real estate — with "
+    "structural digital-asset exposure. "
+    "Open a strategy below or use the sidebar navigation."
     "</p>",
     unsafe_allow_html=True
 )
@@ -199,11 +200,11 @@ st.markdown(
     f"<h3 style='color:{OAK_CREAM} !important; font-family:Inter, sans-serif; "
     f"font-size:13px; text-transform:uppercase; letter-spacing:0.12em; "
     f"font-weight:600; padding-bottom:6px; "
-    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>Strategy</h3>",
+    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>Strategies</h3>",
     unsafe_allow_html=True
 )
 
-col1, col2 = st.columns([3, 2], gap="large")
+col1, col2 = st.columns(2, gap="large")
 
 with col1:
     st.markdown(f"""
@@ -223,6 +224,27 @@ with col1:
     st.markdown("<br>", unsafe_allow_html=True)
     if hasattr(st, "page_link"):
         st.page_link("pages/1_SMI_Strategy.py", label="Open SMI Strategy →",
+                     use_container_width=True)
+
+with col2:
+    st.markdown(f"""
+<div class="strategy-card">
+    <span class="strat-tag">Strategy 02 · Real Assets</span>
+    <h3>OAK RE/BTC</h3>
+    <p>Swiss residential real estate with capital values tracking the SNB
+    residential price index. Net rental income flows into Bitcoin via band-based
+    rebalancing rules; a growing CHF cash buffer dampens volatility.
+    Parametric simulation.</p>
+    <div class="strat-meta">
+        Universe: <strong>CH Residential (SNB)</strong> ·
+        Rent Allocation: <strong>Band Rules</strong> ·
+        BTC: <strong>10–25 % Band</strong>
+    </div>
+</div>
+    """, unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    if hasattr(st, "page_link"):
+        st.page_link("pages/2_OAK_RE_BTC.py", label="Open OAK RE/BTC →",
                      use_container_width=True)
 
 # Footer
