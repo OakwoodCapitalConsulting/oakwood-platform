@@ -1190,6 +1190,20 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
     btc_chf = btc_chf[(btc_chf.index >= pd.Timestamp(start_date))
                       & (btc_chf.index <= pd.Timestamp(end_date))]
 
+    # Market-listed real-estate fund benchmarks (real prices, incl. agio/disagio).
+    # Total-return basis via Adj Close. Graceful if Yahoo rate-limits a symbol.
+    fund_raw = {}
+    for _flabel, _ftks, _fcol in [("UBS Siat", ["SIAT.SW"], "#5E83A3"),
+                                  ("Realstone Swiss Property", ["RSF.SW", "RSPF.SW"], "#B07D4B")]:
+        for _ftk in _ftks:
+            try:
+                _s = fetch_series(_ftk, str(start_date), str(end_date))
+                if not _s.empty:
+                    fund_raw[_flabel] = (_s, _fcol)
+                    break
+            except Exception:
+                pass
+
     prop_daily = interpolate_quarterly_to_daily(snb_q, btc_chf.index)
 
     params = dict(initial_capital=initial_capital, initial_btc_pct=initial_btc_pct,
@@ -1234,6 +1248,14 @@ m = compute_risk_metrics(net, risk_free_rate, base_value=initial_capital)
 w_btc = ts["btc_value"].iloc[-1] / ts["total_value"].iloc[-1]
 w_cash = ts["cash"].iloc[-1] / ts["total_value"].iloc[-1]
 
+# Align fund benchmarks to the strategy timeline, rebased to initial_capital
+fund_benches = []  # (label, scaled_series, color)
+for _flabel, (_s, _fcol) in fund_raw.items():
+    _al = (_s.reindex(net.index.union(_s.index)).ffill()
+           .reindex(net.index).ffill().bfill())
+    if _al.notna().any() and _al.iloc[0] > 0:
+        fund_benches.append((_flabel, _al / _al.iloc[0] * initial_capital, _fcol))
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Strategy (Net of Fees)", f"CHF {net.iloc[-1]:,.0f}",
           f"{(net.iloc[-1]/initial_capital - 1)*100:+.1f}%")
@@ -1275,6 +1297,9 @@ fig.add_trace(go.Scatter(x=bench_re.index, y=bench_re.values,
 fig.add_trace(go.Scatter(x=bench_index_daily.index, y=bench_index_daily.values,
                          name="SNB Residential Index (price only)",
                          line=dict(color=OAK_SAGE_DIM, width=1.5, dash="dot")))
+for _flabel, _fseries, _fcol in fund_benches:
+    fig.add_trace(go.Scatter(x=_fseries.index, y=_fseries.values, name=_flabel,
+                             line=dict(color=_fcol, width=1.6)))
 fig = style_plotly(fig, height=480)
 fig.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
 st.plotly_chart(fig, use_container_width=True)
@@ -1507,6 +1532,59 @@ fig_yr.update_yaxes(title_text="Annual Return (Net)", ticksuffix="%")
 st.plotly_chart(fig_yr, use_container_width=True)
 
 # =====================================================================
+# Market-Listed Real Estate Benchmarks (real prices, total return)
+# =====================================================================
+st.markdown("## Market-Listed Real Estate Benchmarks")
+if fund_benches:
+    st.markdown(
+        f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
+        "Two SIX-listed Swiss <strong>residential</strong> real estate funds, chosen "
+        "to match the residential nature of this strategy — <strong>UBS «Siat»</strong> "
+        "(the largest Swiss residential fund) and <strong>Realstone Swiss Property</strong> "
+        "(predominantly residential) — on a total-return basis. Unlike the strategy's "
+        "smoothed SNB valuation index, these trade daily at market prices (including "
+        "agio/disagio swings), so their volatility and drawdowns reflect real market "
+        "risk. The gap shows how much the valuation smoothing flatters the strategy's "
+        "own risk metrics.</p>",
+        unsafe_allow_html=True)
+
+    _cols = [("Strategy (Net)", net, True)] + [(l, s, False) for l, s, _ in fund_benches]
+    _cells = []
+    for _lbl, _ser, _is_strat in _cols:
+        _rm = compute_risk_metrics(_ser, risk_free_rate, base_value=initial_capital)
+        if _is_strat:
+            _corr, _beta = "—", "—"
+        else:
+            _bb = compute_benchmark_metrics(net, _ser, risk_free_rate)
+            _corr, _beta = _fmt_num(_bb.get("correlation")), _fmt_num(_bb.get("beta"))
+        _cells.append((_lbl, _rm, _corr, _beta))
+
+    _header = "".join(f"<th>{_c[0]}</th>" for _c in _cells)
+    def _mrow(name, key):
+        tds = "".join(f"<td>{_fmt_pct(rm.get(key))}</td>" for _l, rm, _c, _b in _cells)
+        return f"<tr><td class='metric-label'>{name}</td>{tds}</tr>"
+    _corr_row = ("<tr><td class='metric-label'>Correlation to Strategy</td>"
+                 + "".join(f"<td>{c}</td>" for _l, _rm, c, _b in _cells) + "</tr>")
+    _beta_row = ("<tr><td class='metric-label'>Beta to Strategy</td>"
+                 + "".join(f"<td>{b}</td>" for _l, _rm, _c, b in _cells) + "</tr>")
+    st.markdown(f"""
+<table class="oak-metrics-table">
+    <thead><tr><th>Metric</th>{_header}</tr></thead>
+    <tbody>
+        {_mrow("Annualized Return (CAGR)", "cagr")}
+        {_mrow("Annualized Volatility", "vol_ann")}
+        {_mrow("Maximum Drawdown", "max_drawdown")}
+        {_corr_row}
+        {_beta_row}
+    </tbody>
+</table>
+""", unsafe_allow_html=True)
+else:
+    st.info("Markt-Benchmarks (UBS Sima / Swiss Life REF) konnten nicht geladen "
+            "werden — evtl. ein temporäres Yahoo-Finance-Limit. Später erneut "
+            "versuchen; die übrige Auswertung ist davon unberührt.")
+
+# =====================================================================
 # Parameter Sensitivity (grid backtest, like the SMI page)
 # =====================================================================
 st.markdown("## Parameter Sensitivity")
@@ -1682,11 +1760,15 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
         fee_drag = ((gross.iloc[-1] / initial_capital) ** (1 / years) - 1) - net_cagr
         excess = net_cagr - re_cagr
 
-        line = render_line_chart([
+        line_series = [
             ("OAK RE/BTC (Net of Fees)", net, "#B8954A", {"lw": 2.2}),
             ("RE only (same model, no BTC)", bench_re, "#7C8978", {"ls": "--", "lw": 1.6}),
             ("SNB Residential Index (price only)", bench_index_daily, "#999999", {"ls": ":", "lw": 1.4}),
-        ], ylabel="Value (CHF)", annotate_end=True, fill_first=True)
+        ]
+        for _flabel, _fseries, _fcol in fund_benches:
+            line_series.append((_flabel, _fseries, _fcol, {"lw": 1.3}))
+        line = render_line_chart(line_series, ylabel="Value (CHF)",
+                                 annotate_end=True, fill_first=True)
 
         dd = compute_drawdown(net)
         dd_b = compute_drawdown(bench_re)
