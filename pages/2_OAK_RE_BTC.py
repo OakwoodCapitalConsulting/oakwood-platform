@@ -1193,8 +1193,7 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
     # Market-listed real-estate fund benchmarks (real prices, incl. agio/disagio).
     # Total-return basis via Adj Close. Graceful if Yahoo rate-limits a symbol.
     fund_raw = {}
-    for _flabel, _ftks, _fcol in [("UBS Siat", ["SIAT.SW"], "#5E83A3"),
-                                  ("Realstone Swiss Property", ["RSF.SW", "RSPF.SW"], "#B07D4B")]:
+    for _flabel, _ftks, _fcol in [("UBS «Siat»", ["SIAT.SW"], "#5E83A3")]:
         for _ftk in _ftks:
             try:
                 _s = fetch_series(_ftk, str(start_date), str(end_date))
@@ -1255,6 +1254,9 @@ for _flabel, (_s, _fcol) in fund_raw.items():
            .reindex(net.index).ffill().bfill())
     if _al.notna().any() and _al.iloc[0] > 0:
         fund_benches.append((_flabel, _al / _al.iloc[0] * initial_capital, _fcol))
+siat_series = fund_benches[0][1] if fund_benches else None
+siat_m = (compute_risk_metrics(siat_series, risk_free_rate, base_value=initial_capital)
+          if siat_series is not None else {})
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Strategy (Net of Fees)", f"CHF {net.iloc[-1]:,.0f}",
@@ -1263,8 +1265,11 @@ c2.metric("Strategy (Gross)", f"CHF {gross.iloc[-1]:,.0f}",
           f"Fee drag: {fee_drag*100:.2f}% p.a.")
 c3.metric("RE only (same model)", f"CHF {bench_re.iloc[-1]:,.0f}",
           f"{(bench_re.iloc[-1]/initial_capital - 1)*100:+.1f}%")
-c4.metric("SNB Index (price only)", f"CHF {idx_final:,.0f}",
-          f"{(idx_final/initial_capital - 1)*100:+.1f}%")
+if siat_series is not None:
+    c4.metric("UBS «Siat» (residential fund)", f"CHF {siat_series.iloc[-1]:,.0f}",
+              f"{(siat_series.iloc[-1]/initial_capital - 1)*100:+.1f}%")
+else:
+    c4.metric("UBS «Siat» (residential fund)", "n/a", "Yahoo-Daten nicht verfügbar")
 
 c5, c6, c7, c8 = st.columns(4)
 c5.metric("Net CAGR", f"{net_cagr*100:.2f}%", f"after all fees · {years:.1f} years")
@@ -1294,9 +1299,6 @@ fig.add_trace(go.Scatter(x=gross.index, y=gross.values, name="Strategy (Gross)",
 fig.add_trace(go.Scatter(x=bench_re.index, y=bench_re.values,
                          name="RE only (same model, no BTC)",
                          line=dict(color=OAK_SAGE, width=2, dash="dash")))
-fig.add_trace(go.Scatter(x=bench_index_daily.index, y=bench_index_daily.values,
-                         name="SNB Residential Index (price only)",
-                         line=dict(color=OAK_SAGE_DIM, width=1.5, dash="dot")))
 for _flabel, _fseries, _fcol in fund_benches:
     fig.add_trace(go.Scatter(x=_fseries.index, y=_fseries.values, name=_flabel,
                              line=dict(color=_fcol, width=1.6)))
@@ -1372,15 +1374,14 @@ st.plotly_chart(fig_w, use_container_width=True)
 st.markdown("## Risk Analytics")
 strat_m = m
 re_m = compute_risk_metrics(bench_re, risk_free_rate, base_value=initial_capital)
-idx_m = compute_risk_metrics(bench_index_daily, risk_free_rate, base_value=initial_capital)
 bm_re = compute_benchmark_metrics(net, bench_re, risk_free_rate)
 
 
 def _row(label, key, fmt="pct", hint=""):
     if fmt == "pct":
-        s, b1, b2 = _fmt_pct(strat_m.get(key)), _fmt_pct(re_m.get(key)), _fmt_pct(idx_m.get(key))
+        s, b1, b2 = _fmt_pct(strat_m.get(key)), _fmt_pct(re_m.get(key)), _fmt_pct(siat_m.get(key))
     else:
-        s, b1, b2 = _fmt_num(strat_m.get(key)), _fmt_num(re_m.get(key)), _fmt_num(idx_m.get(key))
+        s, b1, b2 = _fmt_num(strat_m.get(key)), _fmt_num(re_m.get(key)), _fmt_num(siat_m.get(key))
     hint_html = f"<span class='hint'>{hint}</span>" if hint else ""
     return (f"<tr><td class='metric-label'>{label}{hint_html}</td>"
             f"<td class='strategy-col'>{s}</td><td>{b1}</td><td>{b2}</td></tr>")
@@ -1393,7 +1394,7 @@ def _section(title):
 st.markdown(f"""
 <table class="oak-metrics-table">
     <thead>
-        <tr><th>Metric</th><th>Strategy (Net)</th><th>RE only</th><th>SNB Index</th></tr>
+        <tr><th>Metric</th><th>Strategy (Net)</th><th>RE only</th><th>UBS «Siat»</th></tr>
     </thead>
     <tbody>
         {_section("Return")}
@@ -1424,19 +1425,22 @@ st.markdown(
     f"columns are structurally understated and not comparable to market-priced "
     f"strategies.</p>", unsafe_allow_html=True)
 
-st.markdown("### Strategy vs. RE only")
+bm_bench = (compute_benchmark_metrics(net, siat_series, risk_free_rate)
+            if siat_series is not None else bm_re)
+_bench_name = "UBS «Siat»" if siat_series is not None else "RE only"
+st.markdown(f"### Strategy vs. {_bench_name}")
 bc1, bc2, bc3, bc4 = st.columns(4)
-bc1.metric("Alpha (Jensen, annualized)", _fmt_pct(bm_re.get("alpha")),
+bc1.metric("Alpha (Jensen, annualized)", _fmt_pct(bm_bench.get("alpha")),
            "Excess return adj. for beta")
-bc2.metric("Beta", _fmt_num(bm_re.get("beta")), "Sensitivity to RE only")
-bc3.metric("Tracking Error", _fmt_pct(bm_re.get("tracking_error")),
+bc2.metric("Beta", _fmt_num(bm_bench.get("beta")), f"Sensitivity to {_bench_name}")
+bc3.metric("Tracking Error", _fmt_pct(bm_bench.get("tracking_error")),
            "Std. dev. of excess returns")
-bc4.metric("Information Ratio", _fmt_num(bm_re.get("information_ratio")),
+bc4.metric("Information Ratio", _fmt_num(bm_bench.get("information_ratio")),
            "Excess return / TE")
 
 bc5, bc6 = st.columns([1, 3])
-bc5.metric("Correlation", _fmt_num(bm_re.get("correlation")),
-           f"R² = {_fmt_num(bm_re.get('r_squared'))}")
+bc5.metric("Correlation", _fmt_num(bm_bench.get("correlation")),
+           f"R² = {_fmt_num(bm_bench.get('r_squared'))}")
 with bc6:
     if strat_m.get("dd_peak") and strat_m.get("dd_trough"):
         peak = pd.Timestamp(strat_m["dd_peak"]).strftime("%Y-%m-%d")
@@ -1532,59 +1536,8 @@ fig_yr.update_yaxes(title_text="Annual Return (Net)", ticksuffix="%")
 st.plotly_chart(fig_yr, use_container_width=True)
 
 # =====================================================================
-# Market-Listed Real Estate Benchmarks (real prices, total return)
-# =====================================================================
-st.markdown("## Market-Listed Real Estate Benchmarks")
-if fund_benches:
-    st.markdown(
-        f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
-        "Two SIX-listed Swiss <strong>residential</strong> real estate funds, chosen "
-        "to match the residential nature of this strategy — <strong>UBS «Siat»</strong> "
-        "(the largest Swiss residential fund) and <strong>Realstone Swiss Property</strong> "
-        "(predominantly residential) — on a total-return basis. Unlike the strategy's "
-        "smoothed SNB valuation index, these trade daily at market prices (including "
-        "agio/disagio swings), so their volatility and drawdowns reflect real market "
-        "risk. The gap shows how much the valuation smoothing flatters the strategy's "
-        "own risk metrics.</p>",
-        unsafe_allow_html=True)
-
-    _cols = [("Strategy (Net)", net, True)] + [(l, s, False) for l, s, _ in fund_benches]
-    _cells = []
-    for _lbl, _ser, _is_strat in _cols:
-        _rm = compute_risk_metrics(_ser, risk_free_rate, base_value=initial_capital)
-        if _is_strat:
-            _corr, _beta = "—", "—"
-        else:
-            _bb = compute_benchmark_metrics(net, _ser, risk_free_rate)
-            _corr, _beta = _fmt_num(_bb.get("correlation")), _fmt_num(_bb.get("beta"))
-        _cells.append((_lbl, _rm, _corr, _beta))
-
-    _header = "".join(f"<th>{_c[0]}</th>" for _c in _cells)
-    def _mrow(name, key):
-        tds = "".join(f"<td>{_fmt_pct(rm.get(key))}</td>" for _l, rm, _c, _b in _cells)
-        return f"<tr><td class='metric-label'>{name}</td>{tds}</tr>"
-    _corr_row = ("<tr><td class='metric-label'>Correlation to Strategy</td>"
-                 + "".join(f"<td>{c}</td>" for _l, _rm, c, _b in _cells) + "</tr>")
-    _beta_row = ("<tr><td class='metric-label'>Beta to Strategy</td>"
-                 + "".join(f"<td>{b}</td>" for _l, _rm, _c, b in _cells) + "</tr>")
-    st.markdown(f"""
-<table class="oak-metrics-table">
-    <thead><tr><th>Metric</th>{_header}</tr></thead>
-    <tbody>
-        {_mrow("Annualized Return (CAGR)", "cagr")}
-        {_mrow("Annualized Volatility", "vol_ann")}
-        {_mrow("Maximum Drawdown", "max_drawdown")}
-        {_corr_row}
-        {_beta_row}
-    </tbody>
-</table>
-""", unsafe_allow_html=True)
-else:
-    st.info("Markt-Benchmarks (UBS Sima / Swiss Life REF) konnten nicht geladen "
-            "werden — evtl. ein temporäres Yahoo-Finance-Limit. Später erneut "
-            "versuchen; die übrige Auswertung ist davon unberührt.")
-
-# =====================================================================
+# Parameter Sensitivity (grid backtest, like the SMI page)
+# =====================================================================# =====================================================================
 # Parameter Sensitivity (grid backtest, like the SMI page)
 # =====================================================================
 st.markdown("## Parameter Sensitivity")
@@ -1763,7 +1716,6 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
         line_series = [
             ("OAK RE/BTC (Net of Fees)", net, "#B8954A", {"lw": 2.2}),
             ("RE only (same model, no BTC)", bench_re, "#7C8978", {"ls": "--", "lw": 1.6}),
-            ("SNB Residential Index (price only)", bench_index_daily, "#999999", {"ls": ":", "lw": 1.4}),
         ]
         for _flabel, _fseries, _fcol in fund_benches:
             line_series.append((_flabel, _fseries, _fcol, {"lw": 1.3}))
@@ -1787,6 +1739,12 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                                hurdle=hurdle * 100)
 
         mb = compute_risk_metrics(bench_re, base_value=initial_capital)
+
+        def _sm(key, pct=True):
+            v = siat_m.get(key)
+            if v is None:
+                return "n/a"
+            return f"{v*100:.2f}%" if pct else f"{v:.2f}"
         scatter = render_scatter_chart([
             ("Strategy", m["vol_ann"] * 100, net_cagr * 100, "#B8954A", "o"),
             ("RE only", mb["vol_ann"] * 100, re_cagr * 100, "#7C8978", "s"),
@@ -1931,19 +1889,19 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                          ("Perf Fees", f"CHF {total_perf:,.0f}"),
                          ("Total Fees", f"CHF {total_mgmt+total_perf:,.0f}"),
                          ("Fee Drag", f"{fee_drag*100:.2f}% p.a.")],
-            risk_table_headers=["Metric", "Strategy (Net)", "RE only"],
+            risk_table_headers=["Metric", "Strategy (Net)", "RE only", "UBS «Siat»"],
             risk_table_rows=[
                 ["Total Return", f"{(net.iloc[-1]/initial_capital-1)*100:.2f}%",
-                 f"{(bench_re.iloc[-1]/initial_capital-1)*100:.2f}%"],
-                ["CAGR", f"{net_cagr*100:.2f}%", f"{re_cagr*100:.2f}%"],
-                ["Volatility*", f"{m['vol_ann']*100:.2f}%", f"{mb['vol_ann']*100:.2f}%"],
-                ["Max Drawdown*", f"{m['max_drawdown']*100:.2f}%", f"{mb['max_drawdown']*100:.2f}%"],
-                ["Sharpe Ratio*", f"{m['sharpe']:.2f}", f"{mb['sharpe']:.2f}"],
-                ["Sortino Ratio*", f"{m['sortino']:.2f}", f"{mb['sortino']:.2f}"],
+                 f"{(bench_re.iloc[-1]/initial_capital-1)*100:.2f}%", _sm("total_return")],
+                ["CAGR", f"{net_cagr*100:.2f}%", f"{re_cagr*100:.2f}%", _sm("cagr")],
+                ["Volatility*", f"{m['vol_ann']*100:.2f}%", f"{mb['vol_ann']*100:.2f}%", _sm("vol_ann")],
+                ["Max Drawdown*", f"{m['max_drawdown']*100:.2f}%", f"{mb['max_drawdown']*100:.2f}%", _sm("max_drawdown")],
+                ["Sharpe Ratio*", f"{m['sharpe']:.2f}", f"{mb['sharpe']:.2f}", _sm("sharpe", pct=False)],
+                ["Sortino Ratio*", f"{m['sortino']:.2f}", f"{mb['sortino']:.2f}", _sm("sortino", pct=False)],
             ],
             fee_table_headers=["Period", "Mgmt Fee", "Perf Fee", "Total Cost"],
             fee_table_rows=fee_rows,
-            figures=[("Portfolio Evolution vs. RE-only & SNB Index", line),
+            figures=[("Portfolio Evolution vs. RE-only & UBS «Siat»", line),
                      ("Asset Allocation Over Time (quarter-end)", alloc_png),
                      ("Drawdown Analysis*", dd_chart),
                      ("Yearly Net Performance", bar)],
