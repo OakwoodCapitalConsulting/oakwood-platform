@@ -465,8 +465,10 @@ def _fmt_num(x, decimals=2):
 
 
 def fmt_chf(x):
-    """Compact CHF formatter for KPI cards: full thousands-separated up to
-    <100m, then 'Mio.'/'Mrd.' so 9–10 digit values don't overflow the box."""
+    """Compact CHF for KPI cards. Abbreviates at >=1m so 8-10 digit values
+    never overflow the box; decimals shrink as magnitude grows and the bracket
+    is chosen rounding-safe, so every string stays <=13 chars. Below 1m: full
+    thousands-separated."""
     try:
         x = float(x)
     except (TypeError, ValueError):
@@ -474,10 +476,16 @@ def fmt_chf(x):
     if pd.isna(x):
         return "n/a"
     a = abs(x)
-    if a >= 1e9:
-        return f"CHF {x/1e9:,.2f} Mrd."
-    if a >= 1e8:
-        return f"CHF {x/1e6:,.1f} Mio."
+    if a >= 1e6:
+        v, unit = (x / 1e9, "Mrd.") if a >= 1e9 else (x / 1e6, "Mio.")
+        av = abs(v)
+        if av >= 99.95:        # rounds to >=100 -> no decimals
+            s = f"{v:,.0f}"
+        elif av >= 9.995:      # rounds to >=10  -> 1 decimal
+            s = f"{v:,.1f}"
+        else:
+            s = f"{v:,.2f}"
+        return f"CHF {s} {unit}"
     return f"CHF {x:,.0f}"
 
 
