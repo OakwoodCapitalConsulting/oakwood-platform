@@ -464,6 +464,23 @@ def _fmt_num(x, decimals=2):
     return f"{x:.{decimals}f}"
 
 
+def fmt_chf(x):
+    """Compact CHF formatter for KPI cards: full thousands-separated up to
+    <100m, then 'Mio.'/'Mrd.' so 9–10 digit values don't overflow the box."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return "n/a"
+    if pd.isna(x):
+        return "n/a"
+    a = abs(x)
+    if a >= 1e9:
+        return f"CHF {x/1e9:,.2f} Mrd."
+    if a >= 1e8:
+        return f"CHF {x/1e6:,.1f} Mio."
+    return f"CHF {x:,.0f}"
+
+
 
 
 # ===========================================================================
@@ -1298,14 +1315,14 @@ siat_m = (compute_risk_metrics(siat_series, risk_free_rate, base_value=initial_c
           if siat_series is not None else {})
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Strategy (Net of Fees)", f"CHF {net.iloc[-1]:,.0f}",
+c1.metric("Strategy (Net of Fees)", fmt_chf(net.iloc[-1]),
           f"{(net.iloc[-1]/initial_capital - 1)*100:+.1f}%")
-c2.metric("Strategy (Gross)", f"CHF {gross.iloc[-1]:,.0f}",
+c2.metric("Strategy (Gross)", fmt_chf(gross.iloc[-1]),
           f"Fee drag: {fee_drag*100:.2f}% p.a.")
-c3.metric("RE only (same model)", f"CHF {bench_re.iloc[-1]:,.0f}",
+c3.metric("RE only (same model)", fmt_chf(bench_re.iloc[-1]),
           f"{(bench_re.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 if siat_series is not None:
-    c4.metric("UBS «Siat» (residential fund)", f"CHF {siat_series.iloc[-1]:,.0f}",
+    c4.metric("UBS «Siat» (residential fund)", fmt_chf(siat_series.iloc[-1]),
               f"{(siat_series.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 else:
     c4.metric("UBS «Siat» (residential fund)", "n/a", "Yahoo-Daten nicht verfügbar")
@@ -1318,9 +1335,9 @@ c8.metric("BTC / Cash (today)", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%",
           f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%")
 
 c9, c10, c11, c12 = st.columns(4)
-c9.metric("Total Mgmt Fees", f"CHF {total_mgmt:,.0f}", f"{mgmt_fee*100:.2f}% p.a. on NAV")
-c10.metric("Total Perf Fees", f"CHF {total_perf:,.0f}", f"{perf_fee*100:.0f}% × excess")
-c11.metric("Total Fees", f"CHF {total_mgmt + total_perf:,.0f}",
+c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt), f"{mgmt_fee*100:.2f}% p.a. on NAV")
+c10.metric("Total Perf Fees", fmt_chf(total_perf), f"{perf_fee*100:.0f}% × excess")
+c11.metric("Total Fees", fmt_chf(total_mgmt + total_perf),
            f"{(total_mgmt+total_perf)/initial_capital*100:.1f}% of initial capital")
 c12.metric("Net Rental Yield (input)", f"{net_yield*100:.1f}% p.a.",
            "pre-computed, on invested capital")
@@ -1716,11 +1733,11 @@ if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
 
         terminal = cum[:, -1]
         t1, t2, t3, t4, t5 = st.columns(5)
-        t1.metric("5th percentile", f"CHF {np.percentile(terminal,5):,.0f}")
-        t2.metric("25th percentile", f"CHF {np.percentile(terminal,25):,.0f}")
-        t3.metric("Median", f"CHF {np.percentile(terminal,50):,.0f}")
-        t4.metric("75th percentile", f"CHF {np.percentile(terminal,75):,.0f}")
-        t5.metric("95th percentile", f"CHF {np.percentile(terminal,95):,.0f}")
+        t1.metric("5th percentile", fmt_chf(np.percentile(terminal,5)))
+        t2.metric("25th percentile", fmt_chf(np.percentile(terminal,25)))
+        t3.metric("Median", fmt_chf(np.percentile(terminal,50)))
+        t4.metric("75th percentile", fmt_chf(np.percentile(terminal,75)))
+        t5.metric("95th percentile", fmt_chf(np.percentile(terminal,95)))
         prob_loss = float(np.mean(terminal < start_value)) * 100
         st.markdown(
             f"<p style='color:{OAK_SAGE_DIM}; font-size:12px;'>"

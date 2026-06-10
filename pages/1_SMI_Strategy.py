@@ -1403,6 +1403,23 @@ def _fmt_num(x, decimals=2):
     return f"{x:.{decimals}f}"
 
 
+def fmt_chf(x):
+    """Compact CHF formatter for KPI cards: full thousands-separated up to
+    <100m, then 'Mio.'/'Mrd.' so 9–10 digit values don't overflow the box."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return "n/a"
+    if pd.isna(x):
+        return "n/a"
+    a = abs(x)
+    if a >= 1e9:
+        return f"CHF {x/1e9:,.2f} Mrd."
+    if a >= 1e8:
+        return f"CHF {x/1e6:,.1f} Mio."
+    return f"CHF {x:,.0f}"
+
+
 def footer():
     st.markdown(
         f"""<div class='oak-footer'>
@@ -1538,13 +1555,13 @@ if _show_results:
     fee_drag = strat_gross_cagr - strat_net_cagr
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Strategy (Net of Fees)", f"CHF {strategy_net:,.0f}",
+    c1.metric("Strategy (Net of Fees)", fmt_chf(strategy_net),
               f"{(strategy_net/initial_capital - 1)*100:+.1f}%")
-    c2.metric("Strategy (Gross)", f"CHF {strategy_gross:,.0f}",
+    c2.metric("Strategy (Gross)", fmt_chf(strategy_gross),
               f"Fee drag: {fee_drag*100:.2f}% p.a.")
-    c3.metric("SMI Total Return", f"CHF {smi_tr_final:,.0f}",
+    c3.metric("SMI Total Return", fmt_chf(smi_tr_final),
               f"{(smi_tr_final/initial_capital - 1)*100:+.1f}%")
-    c4.metric("SMI Price Index", f"CHF {smi_price_final:,.0f}",
+    c4.metric("SMI Price Index", fmt_chf(smi_price_final),
               f"{(smi_price_final/initial_capital - 1)*100:+.1f}%")
 
     # ---- KPI Row 2: CAGR comparison + alpha ----
@@ -1567,13 +1584,13 @@ if _show_results:
     n_perf_total_periods = int(len(fee_events_df)) if not fee_events_df.empty else 0
 
     c9, c10, c11, c12 = st.columns(4)
-    c9.metric("Total Mgmt Fees", f"CHF {total_mgmt_fees:,.0f}",
+    c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt_fees),
               f"{mgmt_fee_pct*100:.2f}% p.a. on NAV")
-    c10.metric("Total Perf Fees", f"CHF {total_perf_fees:,.0f}",
+    c10.metric("Total Perf Fees", fmt_chf(total_perf_fees),
                f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged")
-    c11.metric("Transaction Costs", f"CHF {total_tx_costs:,.0f}",
+    c11.metric("Transaction Costs", fmt_chf(total_tx_costs),
                f"{tx_cost_bps:.0f} bps per trade")
-    c12.metric("Total Cost (incl. TX)", f"CHF {fees_total:,.0f}",
+    c12.metric("Total Cost (incl. TX)", fmt_chf(fees_total),
                f"{fees_total_pct_initial:.1f}% of initial capital")
 
     # ---- KPI Row 4: Strategy mechanics ----
@@ -2061,11 +2078,11 @@ if _show_results:
             # Summary table of terminal outcomes
             terminal = cum[:, -1]
             t1, t2, t3, t4, t5 = st.columns(5)
-            t1.metric("5th percentile", f"CHF {np.percentile(terminal,5):,.0f}")
-            t2.metric("25th percentile", f"CHF {np.percentile(terminal,25):,.0f}")
-            t3.metric("Median", f"CHF {np.percentile(terminal,50):,.0f}")
-            t4.metric("75th percentile", f"CHF {np.percentile(terminal,75):,.0f}")
-            t5.metric("95th percentile", f"CHF {np.percentile(terminal,95):,.0f}")
+            t1.metric("5th percentile", fmt_chf(np.percentile(terminal,5)))
+            t2.metric("25th percentile", fmt_chf(np.percentile(terminal,25)))
+            t3.metric("Median", fmt_chf(np.percentile(terminal,50)))
+            t4.metric("75th percentile", fmt_chf(np.percentile(terminal,75)))
+            t5.metric("95th percentile", fmt_chf(np.percentile(terminal,95)))
 
             prob_loss = float(np.mean(terminal < start_value)) * 100
             st.markdown(
