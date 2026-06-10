@@ -10,8 +10,9 @@ Konzept:
   * BTC-Sleeve: identische Mechanik wie 'SMI Income meets Digital Assets' —
       Netto-Mieterträge fliessen monatlich via DCA in BTC; Threshold-Regel
       verkauft auf Zielquote zurück, sobald die BTC-Quote den Cap überschreitet.
-      Verkaufserlöse amortisieren die Hypothek (falls vorhanden), sonst
-      zusätzliche Immobilien-Exposure.
+      Verkaufserlöse + Über-Cap-Miete sammeln sich als CHF-Cash-Puffer; an
+      Quartalsenden wird der Puffer blockweise in Immobilien reinvestiert,
+      sobald die Blockgrösse erreicht ist (Rest bleibt Cash).
   * AMC-Schicht: identisch (Mgmt-Fee täglich, Perf-Fee je Periode auf HWM).
 
 WICHTIG — Methodischer Charakter:
@@ -885,6 +886,10 @@ def run_re_btc(prop_index_daily, btc_chf, params):
       btc_to_cash_freq     "M" or "Q" — sell-rule check dates
       sell_on_upper        bool — sell BTC down to the upper threshold into
                            CHF cash on check dates when the weight exceeds it
+      cash_reinvest_block  CHF block size for reinvesting the cash buffer into
+                           property. Checked at quarter-ends: when cash >= block,
+                           whole blocks are swept into prop_units, the remainder
+                           stays as cash. Omit/inf = never (pure one-way buffer).
       tx_cost_bps          transaction cost on BTC trades (bps)
 
     Zone rule applied on each DCA date (pre-trade BTC weight w):
@@ -892,10 +897,12 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         w > upper_threshold   ->  0%  (rent stays in cash)
         otherwise             ->  base_invest_rate
     Non-invested rent and all sale proceeds accumulate as CHF cash (0%
-    interest), which is never re-invested — a one-way volatility buffer.
+    interest). At quarter-ends the buffer is reinvested into property in fixed
+    blocks of cash_reinvest_block once it reaches that size; the remainder stays.
 
     Returns a daily DataFrame with columns: total_value, re_value, btc_value,
-    cash, property_value, net_cf_monthly (month-end rows), btc_buys, btc_sells.
+    cash, property_value, net_cf_monthly (month-end rows), btc_buys, btc_sells,
+    re_reinvest (cash reinvested into property on the sweep date).
     """
     idx = btc_chf.index.intersection(prop_index_daily.index).sort_values()
     if len(idx) < 30:
@@ -922,6 +929,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     f_dca = params.get("rent_to_btc_freq", "M")
     f_sell = params.get("btc_to_cash_freq", "Q")
     sell_on = bool(params.get("sell_on_upper", True))
+    reinv_blk = float(params.get("cash_reinvest_block", float("inf")))
 
     rows = []
     for i, d in enumerate(idx):
@@ -930,6 +938,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         net_cf = np.nan
         buys = 0.0
         sells = 0.0
+        reinv = 0.0
 
         is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
         is_qe = is_me and d.month in (3, 6, 9, 12)
@@ -962,6 +971,16 @@ def run_re_btc(prop_index_daily, btc_chf, params):
                 sells = sell_chf
                 b_val = btc_units * btc.loc[d]
 
+        # ---- cash sweep (quarter-end only): reinvest the buffer into property
+        #      in fixed blocks (e.g. CHF 3.0m each). As many whole blocks as the
+        #      buffer allows are deployed; the sub-block remainder stays cash --
+        if is_qe and reinv_blk > 0 and cash >= reinv_blk and pidx.loc[d] > 0:
+            n_blk = int(cash // reinv_blk)
+            reinv = n_blk * reinv_blk
+            prop_units += reinv / pidx.loc[d]
+            cash -= reinv
+            p_val = prop_units * pidx.loc[d]
+
         rows.append({
             "date": d,
             "total_value": p_val + b_val + cash + rent_pool,
@@ -972,6 +991,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             "net_cf_monthly": net_cf,
             "btc_buys": buys,
             "btc_sells": sells,
+            "re_reinvest": reinv,
         })
 
     return pd.DataFrame(rows).set_index("date")
@@ -1074,8 +1094,8 @@ with st.sidebar:
     net_yield = st.slider("Nettomietrendite (% p.a.)", 0.5, 6.0, 3.0, 0.1,
                           help="Extern vorberechnet — nach Leerstand, "
                                "Bewirtschaftung, Unterhalt und Finanzierung. "
-                               "Bezieht sich auf den aktuellen "
-                               "Liegenschaftswert.") / 100.0
+                               "Konstanter Netto-Cashflow auf den "
+                               "Anfangs-Liegenschaftswert.") / 100.0
     snb_catalog, snb_error = {}, None
     try:
         snb_catalog = fetch_snb_catalog()
@@ -1120,9 +1140,17 @@ with st.sidebar:
     sell_on_upper = st.checkbox(
         "Sell BTC to CHF cash on rebalancing dates whenever BTC weight is "
         "above the upper threshold.", value=True,
-        help="Verkaufserlöse bleiben als CHF-Cash liegen und werden nicht "
-             "reinvestiert — der wachsende Cash-Bestand dämpft die "
-             "Volatilität.")
+        help="Verkaufserlöse + Über-Cap-Miete sammeln sich als CHF-Cash; "
+             "ab der unten gesetzten Schwelle wird der Puffer in Immobilien "
+             "reinvestiert.")
+    cash_reinvest_block = st.number_input(
+        "Cash → Immobilien Reinvest-Block (CHF)",
+        min_value=0, value=3_000_000, step=100_000,
+        help="Quartalsweise geprüft: erreicht der Cash-Puffer am Quartalsende "
+             "diese Blockgrösse, wird ein ganzer Block (oder mehrere) in "
+             "Immobilien reinvestiert (kostenlos, parametrisches Modell); der "
+             "Rest bleibt als Cash liegen. 0 = deaktiviert (reiner "
+             "Einbahn-Cash-Puffer).")
 
     st.markdown("### Risk Analytics")
     risk_free_rate = st.slider("Risk-Free Rate (%)", 0.0, 5.0, 1.0, 0.25,
@@ -1215,6 +1243,7 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
                   rent_to_btc_freq=("M" if rent_to_btc_freq == "monatlich" else "Q"),
                   btc_to_cash_freq=("M" if btc_to_cash_freq == "monatlich" else "Q"),
                   sell_on_upper=sell_on_upper,
+                  cash_reinvest_block=cash_reinvest_block,
                   tx_cost_bps=tx_cost_bps)
 
     ts = run_re_btc(prop_daily, btc_chf, params)
@@ -1848,7 +1877,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             ("Rent → BTC Allocation", "Monthly" if rent_to_btc_freq == "monatlich" else "Quarterly"),
             ("BTC → Cash Allocation", "Monthly" if btc_to_cash_freq == "monatlich" else "Quarterly"),
             ("Sell Rule (above Upper Threshold)", "Sell down to upper threshold into CHF cash" if sell_on_upper else "Disabled"),
-            ("Cash Treatment", "Uninvested CHF, 0% interest (one-way buffer)"),
+            ("Cash Treatment", f"Uninvested CHF, 0% interest; reinvested into property quarterly in CHF {cash_reinvest_block:,.0f} blocks"),
             ("Transaction Cost (BTC)", f"{tx_cost_bps} bps per trade"),
             ("Management Fee", f"{mgmt_fee*100:.2f}% p.a."),
             ("Performance Fee", f"{perf_fee*100:.0f}% ({crystallization_freq}, {hurdle_type} {hurdle*100:.1f}% Yr 1)"),
@@ -1859,19 +1888,19 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             ["CH Wohnliegenschaften (parametrisch)", "SNB plimoinchq", "Residential Real Estate",
              f"{(1-initial_btc_pct)*100:.0f}% initial"],
             ["CHF Cash", "—", "Cash",
-             "Rebalancing-Puffer · 0%"],
+             "Sweep-Puffer · 0%"],
         ]
         disc_de = [
             "Dieses Dokument wurde von Oakwood Capital ausschliesslich zu illustrativen und informativen Zwecken erstellt. Es stellt weder eine Anlageberatung, eine Empfehlung, ein Angebot noch eine Aufforderung zum Kauf oder Verkauf eines Finanzinstruments dar.",
             "OAK RE/BTC ist eine parametrische Simulation und kein marktdatenbasierter Backtest. Die Wertentwicklung des Immobilienteils folgt einem quartalsweise erhobenen Bewertungsindex der SNB-Datenplattform, der für die Simulation linear auf Tagesbasis interpoliert wird. Bewertungsindizes sind geglättet und unterzeichnen die tatsächliche Volatilität und die Drawdowns von Immobilienanlagen erheblich; Volatilität, Sharpe Ratio und Drawdown-Kennzahlen sind deshalb nicht mit marktbasierten Strategien vergleichbar. Die Nettomietrendite ist eine extern vorberechnete Annahme — nach Leerstand, Bewirtschaftung, Unterhalt und Finanzierung — und kein realisierter Wert; eine allfällige Fremdfinanzierung der Liegenschaften ist im Modell nicht abgebildet.",
-            "Der Bitcoin-Anteil basiert auf historischen Marktpreisen (BTC/USD, in Schweizer Franken umgerechnet). Digitale Vermögenswerte sind hochvolatil und können zum Totalverlust des eingesetzten Kapitals führen. Der CHF-Cash-Puffer wird unverzinst gehalten; seine dämpfende Wirkung auf die Volatilität geht zulasten der erwarteten Rendite.",
+            "Der Bitcoin-Anteil basiert auf historischen Marktpreisen (BTC/USD, in Schweizer Franken umgerechnet). Digitale Vermögenswerte sind hochvolatil und können zum Totalverlust des eingesetzten Kapitals führen. Der CHF-Cash-Puffer wird unverzinst gehalten und quartalsweise in festgelegten Blöcken in Immobilien reinvestiert, sobald die Blockgrösse erreicht ist; der verbleibende Cash dämpft die Volatilität zulasten der erwarteten Rendite.",
             "Die simulierte Performance ist hypothetisch, unterliegt dem Vorteil der Rückschau und ist kein verlässlicher Indikator für zukünftige Ergebnisse. Die ausgewiesenen Zahlen verstehen sich nach Abzug der angegebenen Management- und Performance-Gebühren; Steuern — insbesondere Grundstückgewinn-, Liegenschafts- und Einkommenssteuern — sind nicht modelliert.",
             "Dieses Material ist streng vertraulich und ausschliesslich für den Empfänger bestimmt. Es darf ohne vorherige schriftliche Zustimmung von Oakwood Capital weder reproduziert noch verbreitet werden.",
         ]
         disc_en = [
             "This document has been prepared by Oakwood Capital for illustrative and informational purposes only. It does not constitute investment advice, a recommendation, an offer, or a solicitation to buy or sell any financial instrument.",
             "OAK RE/BTC is a parametric simulation, not a market-data backtest. Capital values of the property sleeve follow a quarterly valuation index from the SNB data portal, linearly interpolated to daily frequency for the simulation. Valuation indices are smoothed and materially understate the true volatility and drawdowns of real estate investments; volatility, Sharpe ratio and drawdown figures are therefore not comparable to market-priced strategies. The net rental yield is an externally pre-computed assumption — after vacancy, operating costs, maintenance and financing — not a realized figure; any debt financing of the properties is not modelled.",
-            "The Bitcoin sleeve is based on historical market prices (BTC/USD converted to CHF). Digital assets are highly volatile and may result in total loss. The CHF cash buffer is held uninvested; its dampening effect on volatility comes at the cost of expected return.",
+            "The Bitcoin sleeve is based on historical market prices (BTC/USD converted to CHF). Digital assets are highly volatile and may result in total loss. The CHF cash buffer is held uninvested and reinvested into property quarterly in fixed blocks once the buffer reaches the block size; the remaining cash dampens volatility at the cost of expected return.",
             "Simulated performance is hypothetical, benefits from hindsight, and is not a reliable indicator of future results. Figures are shown net of the stated management and performance fees; taxes — in particular property-gains, property and income taxes — are not modelled.",
             "This material is strictly confidential and intended solely for the recipient. It may not be reproduced or distributed without the prior written consent of Oakwood Capital.",
         ]
