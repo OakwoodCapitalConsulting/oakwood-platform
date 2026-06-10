@@ -873,7 +873,8 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     params (dict):
       initial_capital      total CHF at t0
       initial_btc_pct      fraction of capital in BTC at t0
-      net_yield            net rental yield p.a. on CURRENT property value
+      net_yield            net rental yield p.a. on the INITIAL property value
+                           (static; constant nominal net cash flow over time)
                            (pre-computed externally: vacancy, operating costs
                            and any financing are already netted out)
       lower_threshold      BTC weight below which the boosted rate applies
@@ -908,6 +909,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     btc_chf0 = cap * float(params["initial_btc_pct"])
     btc_units = (btc_chf0 * (1 - tx)) / btc.iloc[0] if btc_chf0 > 0 else 0.0
     prop_units = (cap - btc_chf0) / pidx.iloc[0]
+    prop_value_0 = cap - btc_chf0   # FIXED base for the (static) net rental yield
 
     cash = 0.0        # one-way buffer: rent remainders + sale proceeds
     rent_pool = 0.0   # rent accumulated since the last DCA date
@@ -934,7 +936,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
 
         # ---- month-end: net rent accrues into the rent pool ----------------
         if is_me:
-            net_cf = ny / 12.0 * p_val
+            net_cf = ny / 12.0 * prop_value_0
             rent_pool += net_cf
 
         # ---- DCA date: allocate accumulated rent per the zone rule ---------
@@ -984,12 +986,13 @@ def run_re_only(prop_index_daily, ref_index, params):
     cap = float(params["initial_capital"])
     ny = float(params["net_yield"])
     prop_units = cap / pidx.iloc[0]
+    prop_value_0 = cap   # FIXED base, mirrors run_re_btc (here full cap is property)
     vals = []
     for i, d in enumerate(idx):
         p_val = prop_units * pidx.loc[d]
         is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
         if is_me:
-            prop_units += (ny / 12.0 * p_val) / pidx.loc[d]
+            prop_units += (ny / 12.0 * prop_value_0) / pidx.loc[d]
             p_val = prop_units * pidx.loc[d]
         vals.append(p_val)
     return pd.Series(vals, index=idx)
@@ -1284,7 +1287,7 @@ c10.metric("Total Perf Fees", f"CHF {total_perf:,.0f}", f"{perf_fee*100:.0f}% ×
 c11.metric("Total Fees", f"CHF {total_mgmt + total_perf:,.0f}",
            f"{(total_mgmt+total_perf)/initial_capital*100:.1f}% of initial capital")
 c12.metric("Net Rental Yield (input)", f"{net_yield*100:.1f}% p.a.",
-           "pre-computed, on current value")
+           "pre-computed, on initial value")
 
 # =====================================================================
 # Portfolio Evolution vs. Benchmarks
@@ -1837,7 +1840,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             ("Initial Capital", f"CHF {initial_capital:,.0f}"),
             ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Residential RE / {initial_btc_pct*100:.0f}% BTC"),
             ("Capital-Value Source", f"SNB index '{series_label[:48]}' (quarterly, interpolated)"),
-            ("Net Rental Yield", f"{net_yield*100:.1f}% p.a. (pre-computed, on current value)"),
+            ("Net Rental Yield", f"{net_yield*100:.1f}% p.a. (pre-computed, on initial value)"),
             ("Lower BTC Threshold", f"{lower_threshold*100:.0f}%"),
             ("Upper BTC Threshold", f"{upper_threshold*100:.0f}%"),
             ("Base Investment Rate (net rent)", f"{base_invest_rate*100:.0f}%"),
