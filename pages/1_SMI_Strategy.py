@@ -99,6 +99,18 @@ def _clean_index(obj):
     return obj
 
 
+def _norm_ts(x):
+    """Coerce any date/datetime/Timestamp (tz-aware or naive) to a tz-naive,
+    midnight-normalized pd.Timestamp. pandas 3.x raises on datetime64-vs-date
+    comparisons and won't match tz-aware keys against tz-naive ones, so every
+    scalar used in a cross-series comparison or dict-key lookup goes through
+    this first."""
+    t = pd.Timestamp(x)
+    if t.tzinfo is not None:
+        t = t.tz_localize(None)
+    return t.normalize()
+
+
 def _to_series(x):
     if isinstance(x, pd.DataFrame):
         if x.shape[1] >= 1:
@@ -798,6 +810,11 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     tx_cost = tx_cost_bps / 10000.0  # bps -> fraction
     total_tx_costs = 0.0  # accumulator in CHF
     total_wht = 0.0       # gross dividend withheld at source (35%, non-reclaimable)
+    # Normalize the index to tz-naive, midnight Timestamps so that comparisons
+    # against the (cleaned) BTC/FX series and the dividend/rebalance keys stay
+    # consistent under pandas 3.x.
+    prices = _clean_index(prices.copy())
+    rebalance_dates_set = {_norm_ts(x) for x in rebalance_dates_set}
     available = [t for t in weights if t in prices.columns]
     if not available:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -832,7 +849,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     if not dividends_df.empty:
         for _, r in dividends_df.iterrows():
             # Net dividend after non-reclaimable 35% Swiss withholding tax (AMC wrapper)
-            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = \
+            div_lookup[(_norm_ts(r["date"]), r["ticker"])] = \
                 r["dividend_per_share"] * DIVIDEND_NET_FACTOR
 
     # Month-end dates within our index
@@ -1041,6 +1058,8 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
        - Price Only: dividends discarded (price index behavior)
     Returns DataFrame with columns: smi_tr, smi_price
     """
+    prices = _clean_index(prices.copy())
+    rebalance_dates_set = {_norm_ts(x) for x in rebalance_dates_set}
     available = [t for t in weights if t in prices.columns]
     if not available:
         return pd.DataFrame()
@@ -1058,7 +1077,7 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
         for _, r in dividends_df.iterrows():
             # Net dividend after non-reclaimable 35% Swiss withholding tax (AMC wrapper),
             # applied to the SMI Total Return benchmark for a consistent comparison.
-            div_lookup[(pd.Timestamp(r["date"]).normalize(), r["ticker"])] = \
+            div_lookup[(_norm_ts(r["date"]), r["ticker"])] = \
                 r["dividend_per_share"] * DIVIDEND_NET_FACTOR
 
     first_day = prices_clean.index[0]
