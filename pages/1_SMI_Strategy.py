@@ -548,7 +548,7 @@ with st.sidebar:
                              min_value=start_date + relativedelta(months=6),
                              max_value=date.today())
     initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
-                                      max_value=100_000_000, value=1_000_000, step=10_000)
+                                      max_value=10_000_000_000, value=1_000_000, step=10_000)
 
     st.markdown("### Allocation")
     initial_btc_pct = st.slider("Initial BTC Allokation (%)",
@@ -560,6 +560,7 @@ with st.sidebar:
 
     if target_btc_pct >= upper_threshold:
         st.error("Target muss kleiner als Upper Threshold sein.")
+        st.stop()
 
     st.markdown("### Equity Sleeve")
     weighting_method = st.radio("SMI Gewichtung",
@@ -828,6 +829,10 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     prices_clean = prices[available].dropna(how="all")
     if prices_clean.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    # Forward-fill isolated missing quotes per ticker so a single NaN day does
+    # not value the holding at zero (fake NAV dips / spurious threshold sells).
+    # Leading NaNs are NOT filled — late listings (e.g. Alcon) stay intact.
+    prices_clean = prices_clean.ffill()
 
     # First trading date for each ticker (the day it starts having a price).
     # Tickers added later (e.g. Alcon spin-off Apr 2019) enter the portfolio
@@ -906,6 +911,9 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     # DCA queue
     pending_dca = []  # each: {"remaining": int, "monthly_chf": float}
+    dividend_cash = 0.0  # harvested net dividends awaiting DCA deployment —
+                         # part of the NAV (was previously omitted: NAV dipped
+                         # at every ex-date and the undeployed queue vanished)
 
     records = []
     threshold_events = []
@@ -934,6 +942,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                         {"date": d, "ticker": t, "cash_chf": cash})
                     # cash is already net (×0.65); back out the 35% withheld
                     total_wht += cash * (WITHHOLDING_TAX / DIVIDEND_NET_FACTOR)
+                    dividend_cash += cash
                     pending_dca.append({"remaining": dca_months,
                                         "monthly_chf": cash / dca_months,
                                         "ticker": t})
@@ -941,17 +950,21 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         # 2. Month-end: execute DCA buys
         is_month_end = d in month_ends
         if is_month_end and pending_dca:
-            total_dca_chf = 0.0
-            for entry in pending_dca:
-                if entry["remaining"] > 0:
-                    total_dca_chf += entry["monthly_chf"]
-                    entry["remaining"] -= 1
-            pending_dca = [e for e in pending_dca if e["remaining"] > 0]
+            total_dca_chf = sum(e["monthly_chf"] for e in pending_dca
+                                if e["remaining"] > 0)
 
             if total_dca_chf > 0 and btc_price_d and fx_d and fx_d > 0:
+                # Consume one tranche per entry ONLY now that the buy executes
+                # (previously tranches were consumed even when BTC/FX quotes
+                # were missing — that money silently vanished).
+                for entry in pending_dca:
+                    if entry["remaining"] > 0:
+                        entry["remaining"] -= 1
+                pending_dca = [e for e in pending_dca if e["remaining"] > 0]
                 cost = total_dca_chf * tx_cost
                 total_tx_costs += cost
                 net_dca_chf = total_dca_chf - cost
+                dividend_cash -= total_dca_chf   # deployed (incl. tx cost)
                 usd = net_dca_chf / fx_d
                 btc_bought = usd / btc_price_d
                 btc_held += btc_bought
@@ -965,7 +978,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         if is_month_end and btc_price_d and fx_d and fx_d > 0:
             smi_value = _smi_value_on(d, row)
             btc_value_chf = btc_held * btc_price_d * fx_d
-            total = smi_value + btc_value_chf
+            total = smi_value + btc_value_chf + dividend_cash
             if total > 0:
                 btc_pct = btc_value_chf / total
                 if btc_pct > upper_threshold:
@@ -996,7 +1009,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
                     smi_value_after = _smi_value_on(d, row)
                     btc_value_after = btc_held * btc_price_d * fx_d
-                    total_after = smi_value_after + btc_value_after
+                    total_after = smi_value_after + btc_value_after + dividend_cash
                     threshold_events.append({
                         "date": d, "btc_pct_before": btc_pct,
                         "btc_pct_after": btc_value_after / total_after if total_after > 0 else 0,
@@ -1031,10 +1044,11 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         # 5. Record state of day
         smi_value = _smi_value_on(d, row)
         btc_value_chf = btc_held * btc_price_d * fx_d if (btc_price_d and fx_d) else 0
-        total = smi_value + btc_value_chf
+        total = smi_value + btc_value_chf + dividend_cash
         records.append({
             "date": d, "smi_value": smi_value, "btc_value_chf": btc_value_chf,
-            "btc_held": btc_held, "total_value": total,
+            "btc_held": btc_held, "dividend_cash": dividend_cash,
+            "total_value": total,
             "btc_pct": btc_value_chf / total if total > 0 else 0,
         })
 
@@ -1071,6 +1085,9 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
     prices_clean = prices[available].dropna(how="all")
     if prices_clean.empty:
         return pd.DataFrame()
+    # Same per-ticker ffill as run_strategy (single missing quotes must not
+    # value a holding at zero for a day); leading NaNs stay for late listings.
+    prices_clean = prices_clean.ffill()
 
     div_lookup = {}
     if not dividends_df.empty:
@@ -1155,13 +1172,21 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         crystal_months = {12}
         periods_per_year = 1
 
-    # Per-period hurdle rate (annual hurdle pro-rated to the crystallization period)
-    period_hurdle = hwm_hurdle / periods_per_year if hwm_hurdle > 0 else 0.0
+    # Adaptive observation frequency: derive periods-per-year from the actual
+    # index (≈252 on an equity calendar, ≈365 on the BTC/RE daily calendar) so
+    # the management-fee accrual matches the stated annual rate exactly.
+    _span_years = max((gross_values.index[-1] - gross_values.index[0]).days
+                      / 365.25, 1e-9)
+    obs_per_year = max((len(gross_values) - 1) / _span_years, 1.0)
 
-    daily_mgmt = mgmt_fee_annual / 252.0
+    daily_mgmt = mgmt_fee_annual / obs_per_year
     net = pd.Series(index=gross_values.index, dtype=float)
-    net.iloc[0] = float(initial_capital)
+    # Start the net series at the actual day-0 gross value so the initial
+    # transaction-cost drag is reflected in the net NAV as well (previously
+    # net was rebased to initial_capital, silently dropping that cost).
+    net.iloc[0] = float(gross_values.iloc[0])
     hwm = float(initial_capital)            # plain high water mark (post-fee highs)
+    prev_cryst_date = gross_values.index[0]  # for pro-rata hurdle on partial periods
     total_mgmt = 0.0
     period_mgmt = 0.0   # management fee accrued within the current crystallization period
     total_perf = 0.0
@@ -1190,8 +1215,12 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
             quarter = (d.month - 1) // 3 + 1
             period_label = f"Q{quarter} {d.year}"
 
-            # The hurdle-grown threshold the NAV must clear this period
-            hurdle_threshold = hwm * (1.0 + period_hurdle)
+            # The hurdle-grown threshold the NAV must clear this period.
+            # Pro-rated by the ACTUAL elapsed time since the last crystallization
+            # so partial periods (esp. the final one) are not held to a full
+            # period's hurdle.
+            _frac = max((d - prev_cryst_date).days, 0) / 365.25
+            hurdle_threshold = hwm * (1.0 + hwm_hurdle * _frac)
 
             perf_today = 0.0
             excess = 0.0
@@ -1230,6 +1259,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                 })
                 hwm = max(hwm, nv)
 
+            prev_cryst_date = d
             period_mgmt = 0.0   # reset bucket for next period
 
         net.iloc[i] = nv
@@ -1317,19 +1347,23 @@ def compute_risk_metrics(values, risk_free_rate=0.01, base_value=None):
     if returns.empty:
         return {}
     n_days = len(returns)
-    years = n_days / 252.0  # for annualizing volatility (trading days)
     # CAGR must use CALENDAR time so it matches the KPI boxes exactly.
     cal_years = (values.index[-1] - values.index[0]).days / 365.25
+    # Adaptive annualization: observations per calendar year from the index
+    # itself (≈252 equity calendar, ≈365 BTC/RE daily calendar) — using a
+    # hardcoded 252 understates volatility ~17% on a 365-day calendar.
+    obs_per_year = max(n_days / cal_years, 1.0) if cal_years > 0 else 252.0
 
     start_val = float(base_value) if base_value else float(values.iloc[0])
     total_return = float(values.iloc[-1] / start_val - 1)
     cagr = float((values.iloc[-1] / start_val) ** (1 / cal_years) - 1) if cal_years > 0 else 0.0
-    vol_ann = float(returns.std() * np.sqrt(252))
+    vol_ann = float(returns.std() * np.sqrt(obs_per_year))
 
     sharpe = (cagr - risk_free_rate) / vol_ann if vol_ann > 0 else 0.0
 
     downside = returns[returns < 0]
-    downside_vol = float(downside.std() * np.sqrt(252)) if not downside.empty else 0.0
+    downside_vol = (float(downside.std() * np.sqrt(obs_per_year))
+                    if not downside.empty else 0.0)
     sortino = (cagr - risk_free_rate) / downside_vol if downside_vol > 0 else 0.0
 
     dd_info = max_drawdown_info(values)
@@ -1378,9 +1412,11 @@ def compute_benchmark_metrics(strategy, benchmark, risk_free_rate=0.01):
     var_b = float(combined["b"].var())
     beta = cov / var_b if var_b > 0 else 0.0
     excess = combined["s"] - combined["b"]
-    te = float(excess.std() * np.sqrt(252))
-    info_ratio = float(excess.mean() * 252 / te) if te > 0 else 0.0
-    years = len(aligned) / 252.0
+    _bm_years = max((aligned.index[-1] - aligned.index[0]).days / 365.25, 1e-9)
+    _bm_opy = max((len(aligned) - 1) / _bm_years, 1.0)
+    te = float(excess.std() * np.sqrt(_bm_opy))
+    info_ratio = float(excess.mean() * _bm_opy / te) if te > 0 else 0.0
+    years = _bm_years
     s_cagr = float((aligned["s"].iloc[-1] / aligned["s"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
     b_cagr = float((aligned["b"].iloc[-1] / aligned["b"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
     alpha = s_cagr - (risk_free_rate + beta * (b_cagr - risk_free_rate))
@@ -1566,7 +1602,7 @@ if _show_results:
     c1.metric("Strategy (Net of Fees)", fmt_chf(strategy_net),
               f"{(strategy_net/initial_capital - 1)*100:+.1f}%")
     c2.metric("Strategy (Gross)", fmt_chf(strategy_gross),
-              f"Fee drag: {fee_drag*100:.2f}% p.a.")
+              f"Fee drag: {fee_drag*100:.2f}% p.a.", delta_color="off")
     c3.metric("SMI Total Return", fmt_chf(smi_tr_final),
               f"{(smi_tr_final/initial_capital - 1)*100:+.1f}%")
     c4.metric("SMI Price Index", fmt_chf(smi_price_final),
@@ -1575,9 +1611,9 @@ if _show_results:
     # ---- KPI Row 2: CAGR comparison + alpha ----
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Net CAGR", f"{strat_net_cagr*100:.2f}%",
-              f"after all fees · {years:.1f} years")
+              f"after all fees · {years:.1f} years", delta_color="off")
     c6.metric("Gross CAGR", f"{strat_gross_cagr*100:.2f}%",
-              f"before fees")
+              f"before fees", delta_color="off")
     c7.metric("Excess vs SMI TR", f"{excess_vs_tr*100:+.2f}% p.a.",
               f"net of fees")
     c8.metric("Excess vs Price Index", f"{excess_vs_price*100:+.2f}% p.a.",
@@ -1593,13 +1629,13 @@ if _show_results:
 
     c9, c10, c11, c12 = st.columns(4)
     c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt_fees),
-              f"{mgmt_fee_pct*100:.2f}% p.a. on NAV")
+              f"{mgmt_fee_pct*100:.2f}% p.a. on NAV", delta_color="off")
     c10.metric("Total Perf Fees", fmt_chf(total_perf_fees),
-               f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged")
+               f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged", delta_color="off")
     c11.metric("Transaction Costs", fmt_chf(total_tx_costs),
-               f"{tx_cost_bps:.0f} bps per trade")
+               f"{tx_cost_bps:.0f} bps per trade", delta_color="off")
     c12.metric("Total Cost (incl. TX)", fmt_chf(fees_total),
-               f"{fees_total_pct_initial:.1f}% of initial capital")
+               f"{fees_total_pct_initial:.1f}% of initial capital", delta_color="off")
 
     # ---- KPI Row 4: Strategy mechanics ----
     n_thresholds = len(evts)
@@ -1672,6 +1708,29 @@ if _show_results:
             ))
     fig = style_plotly(fig, height=580)
     fig.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
+
+    # Endpoint value labels for the main series, with vertical anti-overlap
+    # spreading so close endpoints never collide.
+    _ep = [(ts.index[-1], float(ts["total_value_net"].iloc[-1]), OAK_GOLD)]
+    if not bench.empty:
+        _ep.append((bench.index[-1], float(bench["smi_tr"].iloc[-1]), OAK_SAGE))
+        _ep.append((bench.index[-1], float(bench["smi_price"].iloc[-1]), OAK_SAGE_DIM))
+    _ys = sorted(range(len(_ep)), key=lambda i: _ep[i][1])
+    _lo_y = min(v for _, v, _c in _ep)
+    _hi_y = max(v for _, v, _c in _ep)
+    _min_gap = max((_hi_y - _lo_y), _hi_y * 0.02) * 0.045
+    _pos = {}
+    _prev = None
+    for _i in _ys:
+        _y = _ep[_i][1]
+        if _prev is not None and _y - _prev < _min_gap:
+            _y = _prev + _min_gap
+        _pos[_i] = _y
+        _prev = _y
+    for _i, (_x, _v, _c) in enumerate(_ep):
+        fig.add_annotation(x=_x, y=_pos[_i], text=fmt_chf(_v), showarrow=False,
+                           xanchor="left", xshift=8, yanchor="middle",
+                           font=dict(family="'Inter', sans-serif", size=11, color=_c))
     st.plotly_chart(fig, use_container_width=True)
 
     # =====================================================================
@@ -1965,6 +2024,17 @@ if _show_results:
         x_labels = [f"{int(t*100)}%" for t in thr_grid]
         y_labels = [f"{int(b*100)}%" for b in btc_grid]
 
+        def _mark_current(figh):
+            """Outline the cell of the CURRENT sidebar parameters, if on the grid."""
+            _cx = f"{int(round(upper_threshold*100))}%"
+            _cy = f"{int(round(initial_btc_pct*100))}%"
+            if _cx in x_labels and _cy in y_labels:
+                figh.add_annotation(x=_cx, y=_cy, text="◉", showarrow=False,
+                                    yshift=-1, font=dict(size=18, color=OAK_CREAM))
+                figh.add_annotation(x=_cx, y=_cy, text="current", showarrow=False,
+                                    yshift=-17, font=dict(size=9, color=OAK_CREAM))
+            return figh
+
         sens_col1, sens_col2 = st.columns(2)
         with sens_col1:
             fig_cagr = go.Figure(data=go.Heatmap(
@@ -1976,7 +2046,7 @@ if _show_results:
                 hovertemplate="BTC init %{y} · Threshold %{x}<br>Net CAGR %{z:.2f}%<extra></extra>",
             ))
             fig_cagr.update_layout(title="Net CAGR (%)")
-            fig_cagr = style_plotly(fig_cagr, height=380)
+            fig_cagr = style_plotly(_mark_current(fig_cagr), height=380)
             fig_cagr.update_xaxes(title_text="Upper Threshold")
             fig_cagr.update_yaxes(title_text="Initial BTC %")
             st.plotly_chart(fig_cagr, use_container_width=True)
@@ -1991,7 +2061,7 @@ if _show_results:
                 hovertemplate="BTC init %{y} · Threshold %{x}<br>Max Drawdown %{z:.2f}%<extra></extra>",
             ))
             fig_dd.update_layout(title="Maximum Drawdown (%)")
-            fig_dd = style_plotly(fig_dd, height=380)
+            fig_dd = style_plotly(_mark_current(fig_dd), height=380)
             fig_dd.update_xaxes(title_text="Upper Threshold")
             fig_dd.update_yaxes(title_text="Initial BTC %")
             st.plotly_chart(fig_dd, use_container_width=True)

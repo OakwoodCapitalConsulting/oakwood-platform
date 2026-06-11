@@ -224,6 +224,11 @@ def render_line_chart(series_dict, title="", ylabel="", percent=False, fill_firs
         bio.seek(0)
         return bio.getvalue()
     except Exception:
+        # IMPORTANT: never swallow silently — a failed chart vanishes from the
+        # PDF without any visible error (hard-won lesson). Log to stderr so
+        # Streamlit Cloud logs show the root cause.
+        import traceback as _tb
+        _tb.print_exc()
         try:
             plt.close("all")
         except Exception:
@@ -277,6 +282,11 @@ def render_stacked_bar_chart(x_labels, series_list, title="", ylabel=""):
         plt.close(fig)
         return buf.getvalue()
     except Exception:
+        # IMPORTANT: never swallow silently — a failed chart vanishes from the
+        # PDF without any visible error (hard-won lesson). Log to stderr so
+        # Streamlit Cloud logs show the root cause.
+        import traceback as _tb
+        _tb.print_exc()
         try:
             plt.close("all")
         except Exception:
@@ -336,6 +346,11 @@ def render_bar_chart(x_labels, values, title="", ylabel="", hurdle=None):
         bio.seek(0)
         return bio.getvalue()
     except Exception:
+        # IMPORTANT: never swallow silently — a failed chart vanishes from the
+        # PDF without any visible error (hard-won lesson). Log to stderr so
+        # Streamlit Cloud logs show the root cause.
+        import traceback as _tb
+        _tb.print_exc()
         try:
             plt.close("all")
         except Exception:
@@ -414,6 +429,11 @@ def render_scatter_chart(points, xlabel="Volatility (ann.)", ylabel="CAGR (ann.)
         bio.seek(0)
         return bio.getvalue()
     except Exception:
+        # IMPORTANT: never swallow silently — a failed chart vanishes from the
+        # PDF without any visible error (hard-won lesson). Log to stderr so
+        # Streamlit Cloud logs show the root cause.
+        import traceback as _tb
+        _tb.print_exc()
         try:
             plt.close("all")
         except Exception:
@@ -457,10 +477,17 @@ def compute_period_returns(strat, bench=None):
             return None
         if ytd:
             start_of_year = _pd.Timestamp(year=asof.year, month=1, day=1)
+            # Anchor at the LAST close of the prior year (standard YTD
+            # convention); fall back to the first in-year value only when the
+            # series starts within the current year (inception year).
+            prior = series.loc[series.index < start_of_year]
             window = series.loc[series.index >= start_of_year]
-            if len(window) < 2:
+            if window.empty:
                 return None
-            return (window.iloc[-1] / window.iloc[0] - 1) * 100.0
+            anchor = float(prior.iloc[-1]) if not prior.empty else float(window.iloc[0])
+            if anchor <= 0 or (prior.empty and len(window) < 2):
+                return None
+            return (window.iloc[-1] / anchor - 1) * 100.0
         if lookback_days is not None:
             cutoff = asof - _pd.Timedelta(days=lookback_days)
             if series.index[0] > cutoff:

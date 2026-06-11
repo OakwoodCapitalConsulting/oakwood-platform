@@ -439,9 +439,11 @@ def compute_benchmark_metrics(strategy, benchmark, risk_free_rate=0.01):
     var_b = float(combined["b"].var())
     beta = cov / var_b if var_b > 0 else 0.0
     excess = combined["s"] - combined["b"]
-    te = float(excess.std() * np.sqrt(252))
-    info_ratio = float(excess.mean() * 252 / te) if te > 0 else 0.0
-    years = len(aligned) / 252.0
+    _bm_years = max((aligned.index[-1] - aligned.index[0]).days / 365.25, 1e-9)
+    _bm_opy = max((len(aligned) - 1) / _bm_years, 1.0)
+    te = float(excess.std() * np.sqrt(_bm_opy))
+    info_ratio = float(excess.mean() * _bm_opy / te) if te > 0 else 0.0
+    years = _bm_years
     s_cagr = float((aligned["s"].iloc[-1] / aligned["s"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
     b_cagr = float((aligned["b"].iloc[-1] / aligned["b"].iloc[0]) ** (1 / years) - 1) if years > 0 else 0.0
     alpha = s_cagr - (risk_free_rate + beta * (b_cagr - risk_free_rate))
@@ -560,13 +562,21 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         crystal_months = {12}
         periods_per_year = 1
 
-    # Per-period hurdle rate (annual hurdle pro-rated to the crystallization period)
-    period_hurdle = hwm_hurdle / periods_per_year if hwm_hurdle > 0 else 0.0
+    # Adaptive observation frequency: derive periods-per-year from the actual
+    # index (≈252 on an equity calendar, ≈365 on the BTC/RE daily calendar) so
+    # the management-fee accrual matches the stated annual rate exactly.
+    _span_years = max((gross_values.index[-1] - gross_values.index[0]).days
+                      / 365.25, 1e-9)
+    obs_per_year = max((len(gross_values) - 1) / _span_years, 1.0)
 
-    daily_mgmt = mgmt_fee_annual / 252.0
+    daily_mgmt = mgmt_fee_annual / obs_per_year
     net = pd.Series(index=gross_values.index, dtype=float)
-    net.iloc[0] = float(initial_capital)
+    # Start the net series at the actual day-0 gross value so the initial
+    # transaction-cost drag is reflected in the net NAV as well (previously
+    # net was rebased to initial_capital, silently dropping that cost).
+    net.iloc[0] = float(gross_values.iloc[0])
     hwm = float(initial_capital)            # plain high water mark (post-fee highs)
+    prev_cryst_date = gross_values.index[0]  # for pro-rata hurdle on partial periods
     total_mgmt = 0.0
     period_mgmt = 0.0   # management fee accrued within the current crystallization period
     total_perf = 0.0
@@ -595,8 +605,12 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
             quarter = (d.month - 1) // 3 + 1
             period_label = f"Q{quarter} {d.year}"
 
-            # The hurdle-grown threshold the NAV must clear this period
-            hurdle_threshold = hwm * (1.0 + period_hurdle)
+            # The hurdle-grown threshold the NAV must clear this period.
+            # Pro-rated by the ACTUAL elapsed time since the last crystallization
+            # so partial periods (esp. the final one) are not held to a full
+            # period's hurdle.
+            _frac = max((d - prev_cryst_date).days, 0) / 365.25
+            hurdle_threshold = hwm * (1.0 + hwm_hurdle * _frac)
 
             perf_today = 0.0
             excess = 0.0
@@ -635,6 +649,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                 })
                 hwm = max(hwm, nv)
 
+            prev_cryst_date = d
             period_mgmt = 0.0   # reset bucket for next period
 
         net.iloc[i] = nv
@@ -723,19 +738,23 @@ def compute_risk_metrics(values, risk_free_rate=0.01, base_value=None):
     if returns.empty:
         return {}
     n_days = len(returns)
-    years = n_days / 252.0  # for annualizing volatility (trading days)
     # CAGR must use CALENDAR time so it matches the KPI boxes exactly.
     cal_years = (values.index[-1] - values.index[0]).days / 365.25
+    # Adaptive annualization: observations per calendar year from the index
+    # itself (≈252 equity calendar, ≈365 BTC/RE daily calendar) — using a
+    # hardcoded 252 understates volatility ~17% on a 365-day calendar.
+    obs_per_year = max(n_days / cal_years, 1.0) if cal_years > 0 else 252.0
 
     start_val = float(base_value) if base_value else float(values.iloc[0])
     total_return = float(values.iloc[-1] / start_val - 1)
     cagr = float((values.iloc[-1] / start_val) ** (1 / cal_years) - 1) if cal_years > 0 else 0.0
-    vol_ann = float(returns.std() * np.sqrt(252))
+    vol_ann = float(returns.std() * np.sqrt(obs_per_year))
 
     sharpe = (cagr - risk_free_rate) / vol_ann if vol_ann > 0 else 0.0
 
     downside = returns[returns < 0]
-    downside_vol = float(downside.std() * np.sqrt(252)) if not downside.empty else 0.0
+    downside_vol = (float(downside.std() * np.sqrt(obs_per_year))
+                    if not downside.empty else 0.0)
     sortino = (cagr - risk_free_rate) / downside_vol if downside_vol > 0 else 0.0
 
     dd_info = max_drawdown_info(values)
@@ -1112,7 +1131,7 @@ with st.sidebar:
                              min_value=start_date + relativedelta(months=6),
                              max_value=date.today())
     initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
-                                      max_value=100_000_000, value=1_000_000, step=10_000)
+                                      max_value=10_000_000_000, value=1_000_000, step=10_000)
 
     st.markdown("### Allocation")
     initial_btc_pct = st.slider("Initial BTC Allokation (%)", 0, 50, 15, 1) / 100.0
@@ -1120,6 +1139,7 @@ with st.sidebar:
     upper_threshold = st.slider("Upper BTC Threshold (%)", 5, 75, 25, 1) / 100.0
     if lower_threshold >= upper_threshold:
         st.error("Lower Threshold muss kleiner als Upper Threshold sein.")
+        st.stop()
 
     st.markdown("### Property Sleeve")
     net_yield = st.slider("Nettomietrendite (% p.a.)", 0.5, 6.0, 3.0, 0.1,
@@ -1311,13 +1331,17 @@ m = compute_risk_metrics(net, risk_free_rate, base_value=initial_capital)
 w_btc = ts["btc_value"].iloc[-1] / ts["total_value"].iloc[-1]
 w_cash = ts["cash"].iloc[-1] / ts["total_value"].iloc[-1]
 
-# Align fund benchmarks to the strategy timeline, rebased to initial_capital
+# Align fund benchmarks to the strategy window, rebased to initial_capital.
+# Kept on the fund's OWN trading calendar (≈252 days/yr): force-filling onto
+# the 365-day strategy grid would inject ~31% synthetic zero-return days
+# (diluting vol/beta/correlation), and bfill would fabricate a flat segment
+# if the fund's data starts after the backtest. Adaptive annualization in the
+# metric functions handles the different calendar correctly.
 fund_benches = []  # (label, scaled_series, color)
 for _flabel, (_s, _fcol) in fund_raw.items():
-    _al = (_s.reindex(net.index.union(_s.index)).ffill()
-           .reindex(net.index).ffill().bfill())
-    if _al.notna().any() and _al.iloc[0] > 0:
-        fund_benches.append((_flabel, _al / _al.iloc[0] * initial_capital, _fcol))
+    _w = _s[(_s.index >= net.index[0]) & (_s.index <= net.index[-1])].dropna()
+    if len(_w) > 1 and _w.iloc[0] > 0:
+        fund_benches.append((_flabel, _w / _w.iloc[0] * initial_capital, _fcol))
 siat_series = fund_benches[0][1] if fund_benches else None
 siat_m = (compute_risk_metrics(siat_series, risk_free_rate, base_value=initial_capital)
           if siat_series is not None else {})
@@ -1326,7 +1350,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Strategy (Net of Fees)", fmt_chf(net.iloc[-1]),
           f"{(net.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 c2.metric("Strategy (Gross)", fmt_chf(gross.iloc[-1]),
-          f"Fee drag: {fee_drag*100:.2f}% p.a.")
+          f"Fee drag: {fee_drag*100:.2f}% p.a.", delta_color="off")
 c3.metric("RE only (same model)", fmt_chf(bench_re.iloc[-1]),
           f"{(bench_re.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 if siat_series is not None:
@@ -1336,19 +1360,19 @@ else:
     c4.metric("UBS «Siat» (residential fund)", "n/a", "Yahoo-Daten nicht verfügbar")
 
 c5, c6, c7, c8 = st.columns(4)
-c5.metric("Net CAGR", f"{net_cagr*100:.2f}%", f"after all fees · {years:.1f} years")
-c6.metric("Gross CAGR", f"{gross_cagr*100:.2f}%", "before fees")
+c5.metric("Net CAGR", f"{net_cagr*100:.2f}%", f"after all fees · {years:.1f} years", delta_color="off")
+c6.metric("Gross CAGR", f"{gross_cagr*100:.2f}%", "before fees", delta_color="off")
 c7.metric("Excess vs RE only", f"{excess*100:+.2f}% p.a.", "net of fees")
 c8.metric("BTC / Cash (today)", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%",
-          f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%")
+          f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%", delta_color="off")
 
 c9, c10, c11, c12 = st.columns(4)
-c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt), f"{mgmt_fee*100:.2f}% p.a. on NAV")
-c10.metric("Total Perf Fees", fmt_chf(total_perf), f"{perf_fee*100:.0f}% × excess")
+c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt), f"{mgmt_fee*100:.2f}% p.a. on NAV", delta_color="off")
+c10.metric("Total Perf Fees", fmt_chf(total_perf), f"{perf_fee*100:.0f}% × excess", delta_color="off")
 c11.metric("Total Fees", fmt_chf(total_mgmt + total_perf),
-           f"{(total_mgmt+total_perf)/initial_capital*100:.1f}% of initial capital")
+           f"{(total_mgmt+total_perf)/initial_capital*100:.1f}% of initial capital", delta_color="off")
 c12.metric("Net Rental Yield (input)", f"{net_yield*100:.1f}% p.a.",
-           "pre-computed, on invested capital")
+           "pre-computed, on invested capital", delta_color="off")
 
 # =====================================================================
 # Portfolio Evolution vs. Benchmarks
@@ -1368,6 +1392,29 @@ for _flabel, _fseries, _fcol in fund_benches:
                              line=dict(color=_fcol, width=1.6)))
 fig = style_plotly(fig, height=480)
 fig.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
+
+# Endpoint value labels with vertical anti-overlap spreading: labels closer
+# than ~4.5% of the y-range get pushed apart so they never collide.
+_ep = [(net.index[-1], float(net.iloc[-1]), OAK_GOLD)]
+_ep.append((bench_re.index[-1], float(bench_re.iloc[-1]), OAK_SAGE))
+for _flabel, _fseries, _fcol in fund_benches:
+    _ep.append((_fseries.index[-1], float(_fseries.iloc[-1]), _fcol))
+_ys = sorted(range(len(_ep)), key=lambda i: _ep[i][1])
+_lo_y = min(v for _, v, _c in _ep)
+_hi_y = max(v for _, v, _c in _ep)
+_min_gap = max((_hi_y - _lo_y), _hi_y * 0.02) * 0.045
+_pos = {}
+_prev = None
+for _i in _ys:
+    _y = _ep[_i][1]
+    if _prev is not None and _y - _prev < _min_gap:
+        _y = _prev + _min_gap
+    _pos[_i] = _y
+    _prev = _y
+for _i, (_x, _v, _c) in enumerate(_ep):
+    fig.add_annotation(x=_x, y=_pos[_i], text=fmt_chf(_v), showarrow=False,
+                       xanchor="left", xshift=8, yanchor="middle",
+                       font=dict(family="'Inter', sans-serif", size=11, color=_c))
 st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================================
@@ -1381,6 +1428,15 @@ fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["btc_value"],
                             name="BTC", line=dict(color=OAK_BTC, width=2)))
 fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["cash"],
                             name="CHF Cash", line=dict(color=OAK_CREAM_DIM, width=2)))
+_reinv_days = ts.index[ts["re_reinvest"] > 0]
+if len(_reinv_days):
+    fig_sl.add_trace(go.Scatter(
+        x=_reinv_days, y=ts.loc[_reinv_days, "cash"] + ts.loc[_reinv_days, "re_reinvest"],
+        mode="markers", name="Cash → Immobilien Reinvest",
+        marker=dict(symbol="triangle-down", size=11, color=OAK_GOLD,
+                    line=dict(color=OAK_GREEN_2, width=1)),
+        hovertemplate="%{x}<br>Reinvestiert: CHF %{customdata:,.0f}<extra></extra>",
+        customdata=ts.loc[_reinv_days, "re_reinvest"]))
 fig_sl = style_plotly(fig_sl, height=380)
 fig_sl.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
 st.plotly_chart(fig_sl, use_container_width=True)
@@ -1540,9 +1596,11 @@ fig_dd = style_plotly(fig_dd, height=340)
 fig_dd.update_yaxes(title_text="Drawdown", ticksuffix="%")
 st.plotly_chart(fig_dd, use_container_width=True)
 
-st.markdown("### Rolling Volatility (60-day window, annualized)")
-roll_s = net.pct_change().dropna().rolling(60).std() * np.sqrt(252) * 100
-roll_b = bench_re.pct_change().dropna().rolling(60).std() * np.sqrt(252) * 100
+st.markdown("### Rolling Volatility (90-day window, annualized)")
+# 90 calendar days ≈ 3 months on this 365-day series (mirrors the SMI page's
+# 60 trading days); annualized with √365 to match the daily BTC/RE calendar.
+roll_s = net.pct_change().dropna().rolling(90).std() * np.sqrt(365) * 100
+roll_b = bench_re.pct_change().dropna().rolling(90).std() * np.sqrt(365) * 100
 fig_vol = go.Figure()
 fig_vol.add_trace(go.Scatter(x=roll_s.index, y=roll_s.values, name="Strategy (Net)",
                              line=dict(color=OAK_GOLD, width=2)))
@@ -1649,6 +1707,19 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
 
     x_labels = [f"{int(t*100)}%" for t in thr_grid]
     y_labels = [f"{int(b*100)}%" for b in btc_grid]
+
+    def _mark_current(figh):
+        """Outline the cell of the CURRENT sidebar parameters, if on the grid."""
+        _cx = f"{int(round(upper_threshold*100))}%"
+        _cy = f"{int(round(initial_btc_pct*100))}%"
+        if _cx in x_labels and _cy in y_labels:
+            figh.add_annotation(x=_cx, y=_cy, text="◉", showarrow=False,
+                                yshift=-1, font=dict(size=18, color=OAK_CREAM))
+            figh.add_annotation(x=_cx, y=_cy, text="current", showarrow=False,
+                                yshift=-17,
+                                font=dict(size=9, color=OAK_CREAM))
+        return figh
+
     sc1, sc2 = st.columns(2)
     with sc1:
         fig_cagr = go.Figure(data=go.Heatmap(
@@ -1659,7 +1730,7 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
             colorbar=dict(title="CAGR %", tickfont=dict(color=OAK_CREAM)),
             hovertemplate="BTC init %{y} · Upper %{x}<br>Net CAGR %{z:.2f}%<extra></extra>"))
         fig_cagr.update_layout(title="Net CAGR (%)")
-        fig_cagr = style_plotly(fig_cagr, height=380)
+        fig_cagr = style_plotly(_mark_current(fig_cagr), height=380)
         fig_cagr.update_xaxes(title_text="Upper Threshold")
         fig_cagr.update_yaxes(title_text="Initial BTC %")
         st.plotly_chart(fig_cagr, use_container_width=True)
@@ -1672,7 +1743,7 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
             colorbar=dict(title="Max DD %", tickfont=dict(color=OAK_CREAM)),
             hovertemplate="BTC init %{y} · Upper %{x}<br>Max Drawdown %{z:.2f}%<extra></extra>"))
         fig_ddh.update_layout(title="Maximum Drawdown (%)")
-        fig_ddh = style_plotly(fig_ddh, height=380)
+        fig_ddh = style_plotly(_mark_current(fig_ddh), height=380)
         fig_ddh.update_xaxes(title_text="Upper Threshold")
         fig_ddh.update_yaxes(title_text="Initial BTC %")
         st.plotly_chart(fig_ddh, use_container_width=True)
@@ -1709,7 +1780,7 @@ if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
         st.warning("Not enough history for a meaningful projection.")
     else:
         start_value = float(net.iloc[-1])
-        horizon_days = int(mc_years * 252)
+        horizon_days = int(mc_years * 365)  # series runs on a 365-day calendar
         n_paths = int(mc_paths)
         rng = np.random.default_rng(42)
         if mc_method.startswith("Bootstrap"):
@@ -1719,7 +1790,7 @@ if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
                                  size=(n_paths, horizon_days))
         cum = start_value * np.cumprod(1.0 + sampled, axis=1)
         bands = {p: np.percentile(cum, p, axis=0) for p in [5, 25, 50, 75, 95]}
-        future_idx = pd.bdate_range(net.index[-1], periods=horizon_days + 1, freq="B")[1:]
+        future_idx = pd.date_range(net.index[-1], periods=horizon_days + 1, freq="D")[1:]
 
         fig_mc = go.Figure()
         fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[95], mode="lines",
@@ -1764,7 +1835,7 @@ with st.expander("Monatliche Netto-Cashflows (Mieterträge → BTC-DCA)"):
 with st.expander("Gebühren-Aufstellung je Periode"):
     if fee_events is not None and not fee_events.empty:
         st.dataframe(fee_events)
-    st.write(f"Mgmt: CHF {total_mgmt:,.0f} · Perf: CHF {total_perf:,.0f} · "
+    st.write(f"Mgmt: {fmt_chf(total_mgmt)} · Perf: {fmt_chf(total_perf)} · "
              f"Total: CHF {total_mgmt + total_perf:,.0f}")
 
 # --------------------------------------------------------------------------
