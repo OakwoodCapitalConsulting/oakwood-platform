@@ -1351,7 +1351,7 @@ def _strategy_snapshot_panel(snapshot_data, lang, styles):
     return t
 
 
-def _period_returns_table(period_returns_data, lang, styles):
+def _period_returns_table(period_returns_data, lang, styles, benchmark_label=None):
     """Render the 'Performance per Period' table.
     period_returns_data is a list of (label_key, strategy_pct, bench_pct,
     excess_pct) tuples from compute_period_returns(). Any of bench/excess
@@ -1362,7 +1362,8 @@ def _period_returns_table(period_returns_data, lang, styles):
     if not period_returns_data:
         return Spacer(1, 1)
 
-    headers = [S("pr_period"), S("pr_strategy"), S("pr_benchmark"), S("pr_excess")]
+    headers = [S("pr_period"), S("pr_strategy"),
+               (benchmark_label or S("pr_benchmark")), S("pr_excess")]
 
     def _fmt(x):
         if x is None:
@@ -1702,6 +1703,9 @@ def build_tearsheet(
     # --- Per-product overrides (so non-SMI products don't inherit SMI wording) ---
     perf_summary_sub=None,     # optional str: replaces the "Net of fees …35% WHT" subtitle
     disclaimer_paragraphs=None,  # optional list[str]: replaces DISCLAIMER_PARAGRAPHS[lang]
+    benchmark_label=None,      # optional str: benchmark column label in the
+                               # Performance-per-Period table (default: SMI Total Return)
+    universe_sub=None,         # optional str: subtitle above the universe table
 ):
     """Build the PDF and return raw bytes."""
     S = _S(lang)
@@ -1804,7 +1808,8 @@ def build_tearsheet(
             story.append(fl)
         story.append(Paragraph(S("period_returns_sub"), styles["h3"]))
         story.append(Spacer(1, 2))
-        story.append(_period_returns_table(period_returns, lang, styles))
+        story.append(_period_returns_table(period_returns, lang, styles,
+                                           benchmark_label=benchmark_label))
 
     # Monthly Returns heatmap — same CondPageBreak anchoring rationale.
     if monthly_returns:
@@ -1930,7 +1935,7 @@ def build_tearsheet(
         story.append(PageBreak())
         for fl in _section_heading("06", S("universe"), styles, lang):
             story.append(fl)
-        story.append(Paragraph(S("universe_sub"), styles["h3"]))
+        story.append(Paragraph(universe_sub or S("universe_sub"), styles["h3"]))
         story.append(Spacer(1, 3))
         story.append(_universe_sector_table(universe_rows, lang, styles))
 
@@ -2036,6 +2041,10 @@ def build_bilingual_tearsheet(
     perf_summary_sub_en=None,
     disclaimer_paragraphs_de=None,
     disclaimer_paragraphs_en=None,
+    benchmark_label_de=None,
+    benchmark_label_en=None,
+    universe_sub_de=None,
+    universe_sub_en=None,
 ):
     """Build a single PDF with both DE and EN versions concatenated.
 
@@ -2089,6 +2098,8 @@ def build_bilingual_tearsheet(
         lang="de",
         perf_summary_sub=perf_summary_sub_de,
         disclaimer_paragraphs=disclaimer_paragraphs_de,
+        benchmark_label=benchmark_label_de,
+        universe_sub=universe_sub_de,
         **common_kwargs,
     )
     en_pdf = build_tearsheet(
@@ -2098,6 +2109,8 @@ def build_bilingual_tearsheet(
         lang="en",
         perf_summary_sub=perf_summary_sub_en,
         disclaimer_paragraphs=disclaimer_paragraphs_en,
+        benchmark_label=benchmark_label_en,
+        universe_sub=universe_sub_en,
         **common_kwargs,
     )
 

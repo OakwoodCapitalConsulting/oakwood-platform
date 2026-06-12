@@ -2051,6 +2051,16 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             top_drawdowns=identify_top_drawdowns(net),
             perf_summary_sub_de="Nach Gebühren und Transaktionskosten · *Kennzahlen auf geglättetem Bewertungsindex — siehe Hinweise",
             perf_summary_sub_en="Net of fees and transaction costs · *Metrics on a smoothed valuation index — see Disclosures",
+            benchmark_label_de="RE only (gleiches Modell)",
+            benchmark_label_en="RE only (same model)",
+            universe_sub_de=("Drei Sleeves: Schweizer Wohnimmobilien (parametrisch, "
+                             "SNB-Wohnimmobilienpreisindex), eine strukturelle "
+                             "Bitcoin-Allokation (bandgesteuert) und ein unverzinster "
+                             "CHF-Cash-Puffer. Siehe Methodik und Hinweise."),
+            universe_sub_en=("Three sleeves: Swiss residential real estate (parametric, "
+                             "SNB residential price index), a structural band-managed "
+                             "Bitcoin allocation, and an uninvested CHF cash buffer. "
+                             "See Methodology and Disclosures."),
             disclaimer_paragraphs_de=disc_de,
             disclaimer_paragraphs_en=disc_en,
         )
