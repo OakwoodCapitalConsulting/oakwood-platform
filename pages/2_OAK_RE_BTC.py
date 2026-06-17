@@ -2010,31 +2010,45 @@ _monthly_fee_now = _last_aum * (mgmt_fee / 12.0)
 runway = (float(ts["cash"].iloc[-1]) / _monthly_fee_now) if _monthly_fee_now > 0 else float("inf")
 
 s1, s2, s3, s4 = st.columns(4)
-s1.metric("Fees via BTC-Verkauf", fmt_chf(fee_from_btc_total),
-          f"{btc_share:.0f}% aller Gebühren", delta_color="off")
-s2.metric("Erster Zwangsverkauf", first_forced,
-          "BTC zur Fee-Deckung" if len(forced) else "Cushion hat getragen",
-          delta_color="off")
-s3.metric("Tage Cash < Floor", f"{below_floor:,}",
-          f"{below_floor_pct:.0f}% der Laufzeit", delta_color="off")
-s4.metric("Cash-Runway (heute)",
-          ("∞" if runway == float("inf") else f"{runway:.1f} Mte"),
-          "aktuelles Polster ÷ Monatsfee", delta_color="off")
+with s1:
+    st.metric("Fees via BTC-Verkauf", fmt_chf(fee_from_btc_total))
+    st.caption(f"{btc_share:.0f}% aller Gebühren")
+with s2:
+    st.metric("Erster Zwangsverkauf", first_forced)
+    st.caption("BTC zur Fee-Deckung" if len(forced) else "Cushion hat getragen")
+with s3:
+    st.metric("Tage Cash < Floor", f"{below_floor:,}")
+    st.caption(f"{below_floor_pct:.0f}% der Laufzeit")
+with s4:
+    st.metric("Cash-Runway (heute)",
+              ("∞" if runway == float("inf") else f"{runway:.1f} Mte"))
+    st.caption("aktuelles Polster ÷ Monatsfee")
 
 # Fee funding source over time (quarterly stacked: cash vs forced BTC sales)
 _q_cash = ts["fee_from_cash"].groupby([ts.index.year, ts.index.quarter]).sum()
 _q_btc = ts["fee_from_btc"].groupby([ts.index.year, ts.index.quarter]).sum()
 _q_labels = [f"Q{q} {y}" for (y, q) in _q_cash.index]
+st.markdown("##### Gebühren-Finanzierungsquelle je Quartal")
 fig_fund = go.Figure()
 fig_fund.add_trace(go.Bar(x=_q_labels, y=_q_cash.values, name="aus Cash",
                           marker_color=OAK_SAGE))
 fig_fund.add_trace(go.Bar(x=_q_labels, y=_q_btc.values, name="aus BTC-Verkauf",
                           marker_color=OAK_BTC))
-fig_fund.update_layout(barmode="stack", title="Gebühren-Finanzierungsquelle je Quartal")
+fig_fund.update_layout(barmode="stack")
 fig_fund = style_plotly(fig_fund, height=340)
+# Legend below the plot (the section title is markdown above), and show every
+# 4th quarter label upright so the axis isn't overcrowded.
+fig_fund.update_layout(
+    margin=dict(l=60, r=30, t=10, b=70),
+    legend=dict(orientation="h", yanchor="top", y=-0.22, x=0,
+                font=dict(size=11, color=OAK_CREAM_DIM)))
+fig_fund.update_xaxes(tickangle=0, tickmode="array",
+                      tickvals=_q_labels[::4], ticktext=[l.replace(" ", "\n") for l in _q_labels[::4]])
+fig_fund.update_yaxes(tickprefix="CHF ", tickformat=",.0f")
 st.plotly_chart(fig_fund, use_container_width=True)
 
-# Cash vs dynamic floor, with stress shading where cash sits below the floor
+# Cash vs dynamic floor, with stress markers where fees forced a BTC sale
+st.markdown("##### Cash vs. Reserve-Floor (Liquiditätsdruck)")
 fig_liq = go.Figure()
 fig_liq.add_trace(go.Scatter(x=ts.index, y=ts["cash"], name="CHF Cash",
                              line=dict(color=OAK_CREAM_DIM, width=2)))
@@ -2045,9 +2059,19 @@ if len(forced):
         x=forced, y=ts.loc[forced, "cash"], mode="markers",
         name="BTC-Zwangsverkauf",
         marker=dict(symbol="x", size=8, color=OAK_BTC)))
-fig_liq.update_layout(title="Cash vs. Reserve-Floor (Liquiditätsdruck)")
-fig_liq = style_plotly(fig_liq, height=340)
-fig_liq.update_yaxes(tickformat=",.0f")
+fig_liq = style_plotly(fig_liq, height=380)
+fig_liq.update_layout(
+    margin=dict(l=70, r=30, t=10, b=60),
+    legend=dict(orientation="h", yanchor="top", y=-0.18, x=0,
+                font=dict(size=11, color=OAK_CREAM_DIM)))
+# Compact CHF-Mio. ticks (matches the KPI fmt_chf wording), ~6 round steps.
+_cmax = float(max(ts["cash"].max(), ts["cash_floor"].max()))
+if _cmax > 0:
+    _step = max(round(_cmax / 5 / 5e5) * 5e5, 5e5)
+    _tv = list(np.arange(0, _cmax + _step, _step))
+    fig_liq.update_yaxes(tickvals=_tv,
+                         ticktext=[f"CHF {v/1e6:.1f} Mio." if v > 0 else "CHF 0"
+                                   for v in _tv])
 st.plotly_chart(fig_liq, use_container_width=True)
 
 if btc_share >= 25:
