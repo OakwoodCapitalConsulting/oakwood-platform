@@ -1,5 +1,5 @@
 """
-OAK RE/BTC — AMC Backtesting (Wohnimmobilien Schweiz + strukturelle BTC-Allokation)
+OAK Swiss Residential / Bitcoin — AMC Backtesting (Wohnimmobilien CH + strukturelle BTC-Allokation)
 
 Konzept:
   * RE-Sleeve: parametrisches Direktimmobilien-Modell für CH-Wohnliegenschaften.
@@ -7,7 +7,7 @@ Konzept:
         'plimoinchq', quartalsweise, täglich interpoliert) — echte Daten.
       - Netto-Eigenkapitalrendite: eigene Parametrik (Bruttomietrendite,
         Leerstand, Bewirtschaftung, Hypothek LTV/Zins/Amortisation).
-  * BTC-Sleeve: identische Mechanik wie 'SMI Income meets Digital Assets' —
+    * BTC-Sleeve: identische Mechanik wie 'OAK Swiss Blue Chip / Bitcoin' —
       Netto-Mieterträge fliessen monatlich via DCA in BTC; Threshold-Regel
       verkauft auf Zielquote zurück, sobald die BTC-Quote den Cap überschreitet.
       Verkaufserlöse + Über-Cap-Miete sammeln sich als CHF-Cash-Puffer; an
@@ -42,7 +42,7 @@ from pdf_report import (build_bilingual_tearsheet,
                         compute_period_returns, identify_top_drawdowns,
                         get_font_status)
 
-st.set_page_config(page_title="OAK RE/BTC — AMC Backtesting",
+st.set_page_config(page_title="Oakwood Capital — Swiss Residential / Bitcoin",
                    page_icon="🏠", layout="wide")
 
 OAK_GREEN     = "#293624"
@@ -1027,6 +1027,8 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         fee_btc_sold = 0.0
         fee_from_cash = 0.0
         fee_from_btc = 0.0
+        mgmt_paid_row = 0.0   # management fee actually paid on THIS date
+        perf_paid_row = 0.0   # performance fee actually paid on THIS date
 
         is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
         is_qe = is_me and d.month in (3, 6, 9, 12)
@@ -1093,7 +1095,8 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             fee_debt = 0.0
             paid_before = fee_paid
             fee_debt = _pay_from_liquidity(fee_amt)
-            total_mgmt += (fee_paid - paid_before)   # actually-paid this date
+            mgmt_paid_row = fee_paid - paid_before   # actually-paid this date
+            total_mgmt += mgmt_paid_row
 
         # ---- performance fee (real cash outflow) at crystallization dates ---
         is_cryst = is_me and (d.month in cryst_months)
@@ -1114,7 +1117,8 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             if excess > 1e-9:
                 perf_amt = excess * perf_fee
                 _short = _pay_from_liquidity(perf_amt)
-                total_perf += (perf_amt - _short)
+                perf_paid_row = perf_amt - _short
+                total_perf += perf_paid_row
             # update HWM to post-fee NAV high
             nav_after = p_val + b_val + cash + rent_pool
             if nav_after > hwm:
@@ -1146,7 +1150,9 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             "btc_buys": buys,
             "btc_sells": sells,
             "re_reinvest": reinv,
-            "mgmt_fee_paid": fee_paid,
+            "mgmt_fee_paid": fee_paid,      # NOTE: total fees paid (mgmt + perf)
+            "mgmt_fee_only": mgmt_paid_row,  # management fee alone
+            "perf_fee_only": perf_paid_row,  # performance fee alone
             "fee_btc_sold": fee_btc_sold,
             "fee_from_cash": fee_from_cash,
             "fee_from_btc": fee_from_btc,
@@ -1204,7 +1210,7 @@ st.markdown(f"""
 st.markdown(
     f"<h1 style='color:{OAK_CREAM}; font-family:\"Cormorant Garamond\", Georgia, serif; "
     f"font-weight:500; font-size:44px; letter-spacing:-0.01em; margin:8px 0 4px 0; "
-    f"line-height:1.1;'>OAK RE/BTC</h1>",
+    f"line-height:1.1;'>OAK Swiss Residential / Bitcoin</h1>",
     unsafe_allow_html=True
 )
 st.markdown(
@@ -1458,16 +1464,16 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
     total_perf = float(ts.attrs.get("total_perf", 0.0))
     fee_debt_final = float(ts.attrs.get("fee_debt_final", 0.0))
 
-    # Reconstruct a per-period fee table from the engine's paid-fee column so
-    # the fee expander and PDF fee schedule keep working (cash fees per quarter).
-    _fp = ts[["mgmt_fee_paid"]].copy()
-    _fp = _fp[_fp["mgmt_fee_paid"] > 0]
+    # Per-period fee table from the engine's ACTUAL mgmt/perf split (previously
+    # this lumped both into mgmt_fee and hardcoded perf_fee to 0).
+    _fp = ts[["mgmt_fee_only", "perf_fee_only"]].copy()
+    _fp = _fp[(_fp["mgmt_fee_only"] > 0) | (_fp["perf_fee_only"] > 0)]
     if not _fp.empty:
-        _q = _fp["mgmt_fee_paid"].groupby(
-            [_fp.index.year, _fp.index.quarter]).sum()
+        _grp = _fp.groupby([_fp.index.year, _fp.index.quarter]).sum()
         fee_events = pd.DataFrame({
-            "date": [pd.Timestamp(int(y), int(q) * 3, 1) for (y, q) in _q.index],
-            "mgmt_fee": _q.values, "perf_fee": 0.0,
+            "date": [pd.Timestamp(int(y), int(q) * 3, 1) for (y, q) in _grp.index],
+            "mgmt_fee": _grp["mgmt_fee_only"].values,
+            "perf_fee": _grp["perf_fee_only"].values,
         })
     else:
         fee_events = pd.DataFrame()
@@ -2115,7 +2121,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
         excess = net_cagr - re_cagr
 
         line_series = [
-            ("OAK RE/BTC (Net of Fees)", net, "#B8954A", {"lw": 2.2}),
+            ("OAK Swiss Residential / Bitcoin (Net of Fees)", net, "#B8954A", {"lw": 2.2}),
             ("RE only (same model, no BTC)", bench_re, "#7C8978", {"ls": "--", "lw": 1.6}),
         ]
         for _flabel, _fseries, _fcol in fund_benches:
@@ -2263,20 +2269,20 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
         ]
         disc_de = [
             "Dieses Dokument wurde von Oakwood Capital ausschliesslich zu illustrativen und informativen Zwecken erstellt. Es stellt weder eine Anlageberatung, eine Empfehlung, ein Angebot noch eine Aufforderung zum Kauf oder Verkauf eines Finanzinstruments dar.",
-            "OAK RE/BTC ist eine parametrische Simulation und kein marktdatenbasierter Backtest. Die Wertentwicklung des Immobilienteils folgt einem quartalsweise erhobenen Bewertungsindex der SNB-Datenplattform, der für die Simulation linear auf Tagesbasis interpoliert wird. Bewertungsindizes sind geglättet und unterzeichnen die tatsächliche Volatilität und die Drawdowns von Immobilienanlagen erheblich; Volatilität, Sharpe Ratio und Drawdown-Kennzahlen sind deshalb nicht mit marktbasierten Strategien vergleichbar. Die Nettomietrendite ist eine extern vorberechnete Annahme — nach Leerstand, Bewirtschaftung, Unterhalt und Finanzierung — und kein realisierter Wert; eine allfällige Fremdfinanzierung der Liegenschaften ist im Modell nicht abgebildet.",
+            "OAK Swiss Residential / Bitcoin ist eine parametrische Simulation und kein marktdatenbasierter Backtest. Die Wertentwicklung des Immobilienteils folgt einem quartalsweise erhobenen Bewertungsindex der SNB-Datenplattform, der für die Simulation linear auf Tagesbasis interpoliert wird. Bewertungsindizes sind geglättet und unterzeichnen die tatsächliche Volatilität und die Drawdowns von Immobilienanlagen erheblich; Volatilität, Sharpe Ratio und Drawdown-Kennzahlen sind deshalb nicht mit marktbasierten Strategien vergleichbar. Die Nettomietrendite ist eine extern vorberechnete Annahme — nach Leerstand, Bewirtschaftung, Unterhalt und Finanzierung — und kein realisierter Wert; eine allfällige Fremdfinanzierung der Liegenschaften ist im Modell nicht abgebildet.",
             "Der Bitcoin-Anteil basiert auf historischen Marktpreisen (BTC/USD, in Schweizer Franken umgerechnet). Digitale Vermögenswerte sind hochvolatil und können zum Totalverlust des eingesetzten Kapitals führen. Der CHF-Cash-Puffer wird unverzinst gehalten und quartalsweise in festgelegten Blöcken in Immobilien reinvestiert, sobald die Blockgrösse erreicht ist; der verbleibende Cash dämpft die Volatilität zulasten der erwarteten Rendite.",
             "Die simulierte Performance ist hypothetisch, unterliegt dem Vorteil der Rückschau und ist kein verlässlicher Indikator für zukünftige Ergebnisse. Die ausgewiesenen Zahlen verstehen sich nach Abzug der angegebenen Management- und Performance-Gebühren; Steuern — insbesondere Grundstückgewinn-, Liegenschafts- und Einkommenssteuern — sind nicht modelliert.",
             "Dieses Material ist streng vertraulich und ausschliesslich für den Empfänger bestimmt. Es darf ohne vorherige schriftliche Zustimmung von Oakwood Capital weder reproduziert noch verbreitet werden.",
         ]
         disc_en = [
             "This document has been prepared by Oakwood Capital for illustrative and informational purposes only. It does not constitute investment advice, a recommendation, an offer, or a solicitation to buy or sell any financial instrument.",
-            "OAK RE/BTC is a parametric simulation, not a market-data backtest. Capital values of the property sleeve follow a quarterly valuation index from the SNB data portal, linearly interpolated to daily frequency for the simulation. Valuation indices are smoothed and materially understate the true volatility and drawdowns of real estate investments; volatility, Sharpe ratio and drawdown figures are therefore not comparable to market-priced strategies. The net rental yield is an externally pre-computed assumption — after vacancy, operating costs, maintenance and financing — not a realized figure; any debt financing of the properties is not modelled.",
+            "OAK Swiss Residential / Bitcoin is a parametric simulation, not a market-data backtest. Capital values of the property sleeve follow a quarterly valuation index from the SNB data portal, linearly interpolated to daily frequency for the simulation. Valuation indices are smoothed and materially understate the true volatility and drawdowns of real estate investments; volatility, Sharpe ratio and drawdown figures are therefore not comparable to market-priced strategies. The net rental yield is an externally pre-computed assumption — after vacancy, operating costs, maintenance and financing — not a realized figure; any debt financing of the properties is not modelled.",
             "The Bitcoin sleeve is based on historical market prices (BTC/USD converted to CHF). Digital assets are highly volatile and may result in total loss. The CHF cash buffer is held uninvested and reinvested into property quarterly in fixed blocks once the buffer reaches the block size; the remaining cash dampens volatility at the cost of expected return.",
             "Simulated performance is hypothetical, benefits from hindsight, and is not a reliable indicator of future results. Figures are shown net of the stated management and performance fees; taxes — in particular property-gains, property and income taxes — are not modelled.",
             "This material is strictly confidential and intended solely for the recipient. It may not be reproduced or distributed without the prior written consent of Oakwood Capital.",
         ]
         pdf_bytes = build_bilingual_tearsheet(
-            strategy_name="OAK RE/BTC",
+            strategy_name="OAK Swiss Residential / Bitcoin",
             strategy_subtitle_de="Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation, mietertragsfinanziertem DCA und schwellenwertbasiertem Risikomanagement.",
             strategy_subtitle_en="Swiss residential real estate with a structural Bitcoin allocation, rent-funded DCA and threshold-based risk management.",
             period_str=period_str,
@@ -2333,7 +2339,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             disclaimer_paragraphs_en=disc_en,
         )
 
-    fname = f"OAK_RE_BTC_{date.today():%Y%m%d}.pdf"
+    fname = f"OAK_Swiss_Residential_BTC_{date.today():%Y%m%d}.pdf"
     st.download_button("PDF herunterladen", data=pdf_bytes, file_name=fname,
                        mime="application/pdf")
     try:

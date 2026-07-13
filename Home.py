@@ -255,8 +255,8 @@ col1, col2 = st.columns(2, gap="large")
 with col1:
     st.markdown(f"""
 <div class="strategy-card">
-    <span class="strat-tag">Strategy 01 · Broad Index</span>
-    <h3>SMI Income meets Digital Assets</h3>
+    <span class="strat-tag">Strategy 01 · Core: Swiss Blue Chips</span>
+    <h3>OAK Swiss Blue Chip / Bitcoin</h3>
     <p>Full SMI replication with 20 Swiss blue-chip constituents. Dividends harvested
     and reinvested via 12-month DCA into Bitcoin exposure. Threshold-based rebalancing
     caps BTC weight to control risk.</p>
@@ -269,14 +269,14 @@ with col1:
     """, unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     if hasattr(st, "page_link"):
-        st.page_link("pages/1_SMI_Strategy.py", label="Open SMI Strategy →",
+        st.page_link("pages/1_SMI_Strategy.py", label="Open Swiss Blue Chip / Bitcoin →",
                      use_container_width=True)
 
 with col2:
     st.markdown(f"""
 <div class="strategy-card">
-    <span class="strat-tag">Strategy 02 · Real Assets</span>
-    <h3>OAK RE/BTC</h3>
+    <span class="strat-tag">Strategy 02 · Core: Swiss Residential</span>
+    <h3>OAK Swiss Residential / Bitcoin</h3>
     <p>Swiss residential real estate with capital values tracking the SNB
     residential price index. Net rental income flows into Bitcoin via band-based
     rebalancing rules; a growing CHF cash buffer dampens volatility.
@@ -290,7 +290,7 @@ with col2:
     """, unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     if hasattr(st, "page_link"):
-        st.page_link("pages/2_OAK_RE_BTC.py", label="Open OAK RE/BTC →",
+        st.page_link("pages/2_OAK_RE_BTC.py", label="Open Swiss Residential / Bitcoin →",
                      use_container_width=True)
 
 # Footer

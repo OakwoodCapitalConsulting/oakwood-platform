@@ -165,7 +165,7 @@ def style_plotly(fig, height=500):
 # ---------------------------------------------------------------------------
 # Page config + CSS
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Oakwood Capital — SMI/BTC Strategy",
+st.set_page_config(page_title="Oakwood Capital — Swiss Blue Chip / Bitcoin",
                    page_icon="🌳", layout="wide", initial_sidebar_state="expanded")
 
 logo_b64 = load_logo_base64()
@@ -511,7 +511,7 @@ st.markdown(f"""
 st.markdown(
     f"<h1 style='color:{OAK_CREAM}; font-family:\"Cormorant Garamond\", Georgia, serif; "
     f"font-weight:500; font-size:44px; letter-spacing:-0.01em; margin:8px 0 4px 0; "
-    f"line-height:1.1;'>SMI Income meets Digital Assets</h1>",
+    f"line-height:1.1;'>OAK Swiss Blue Chip / Bitcoin</h1>",
     unsafe_allow_html=True
 )
 st.markdown(
@@ -2659,7 +2659,7 @@ if _show_results:
                 _crystallization_en   = _PARAM_DE_EN.get(crystallization_freq, crystallization_freq)
 
                 pdf_bytes = build_bilingual_tearsheet(
-                    strategy_name="SMI Income meets Digital Assets",
+                    strategy_name="OAK Swiss Blue Chip / Bitcoin",
                     strategy_subtitle_de=(
                         "Disziplinierte SMI-Replikation mit struktureller BTC-Allokation, "
                         "dividendenfinanzierter DCA und schwellenwertbasiertem Risikomanagement."
@@ -2725,7 +2725,7 @@ if _show_results:
                 st.download_button(
                     "Download PDF Tearsheet",
                     data=pdf_bytes,
-                    file_name=f"Oakwood_SMI_Strategy_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    file_name=f"OAK_Swiss_BlueChip_BTC_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf",
                 )
                 st.success("PDF generated. Click the download button above.")
