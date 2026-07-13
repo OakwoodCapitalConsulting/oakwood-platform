@@ -526,9 +526,9 @@ st.markdown(
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## Parameters")
+    st.markdown("## Parameter")
 
-    st.markdown("### Stress-Test Scenarios")
+    st.markdown("### Stress-Test-Szenarien")
     st.markdown(
         f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-6px;'>"
         "One-click historical crisis windows. Sets the backtest period below.</p>",
@@ -546,7 +546,7 @@ with st.sidebar:
             st.session_state["scenario_end"] = _e
             st.session_state["smi_has_run"] = True  # auto-show results
 
-    st.markdown("### Backtest Period")
+    st.markdown("### Backtest-Zeitraum")
     _default_start = st.session_state.get("scenario_start", date(2018, 1, 1))
     _default_end = st.session_state.get("scenario_end", date.today())
     start_date = st.date_input("Startdatum", value=_default_start,
@@ -558,7 +558,7 @@ with st.sidebar:
     initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
                                       max_value=10_000_000_000, value=1_000_000, step=10_000)
 
-    st.markdown("### Allocation")
+    st.markdown("### Allokation")
     initial_btc_pct = st.slider("Initial BTC Allokation (%)",
                                 min_value=0, max_value=50, value=15, step=1) / 100.0
     upper_threshold = st.slider("Upper Threshold — Sell-Down Trigger (%)",
@@ -570,24 +570,24 @@ with st.sidebar:
         st.error("Target muss kleiner als Upper Threshold sein.")
         st.stop()
 
-    st.markdown("### Equity Sleeve")
+    st.markdown("### Aktien-Sleeve")
     weighting_method = st.radio("SMI Gewichtung",
         ["Marktkapitalisierung (Approx. + 18% Cap)", "Equal Weight (5 % je Titel)"])
     rebalance_freq = st.selectbox("SMI Rebalancing-Frequenz",
         ["Quartalsweise", "Halbjährlich", "Jährlich", "Keine"], index=0)
 
-    st.markdown("### Dividend Reinvestment")
+    st.markdown("### Dividenden-Wiederanlage")
     dca_months = st.slider("DCA-Zeitraum (Monate)", 1, 24, 12)
     btc_source = st.radio("BTC-Quelle",
         ["BTC-USD (gesamte Historie)", "IBIT ETF (ab Jan 2024)", "BTC-USD bis 2024, dann IBIT"],
         index=2)
 
-    st.markdown("### Risk Analytics")
+    st.markdown("### Risikoanalyse")
     risk_free_rate = st.slider("Risk-Free Rate (%)", min_value=0.0, max_value=5.0,
                                value=1.0, step=0.25,
                                help="Annualisiert. Default ~1% entspricht historischem CHF/SARON-Durchschnitt.") / 100.0
 
-    st.markdown("### Costs & Fees")
+    st.markdown("### Kosten & Gebühren")
     tx_cost_bps = st.slider("Transaction Cost (bps per trade)", min_value=0.0, max_value=50.0,
                             value=10.0, step=1.0,
                             help="Cost in basis points applied to traded notional at each "
@@ -613,7 +613,7 @@ with st.sidebar:
                                          help="How often the performance fee is crystallized against the HWM.")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    run_btn = st.button("Run Backtest", type="primary", use_container_width=True,
+    run_btn = st.button("Backtest starten", type="primary", use_container_width=True,
                         disabled=(target_btc_pct >= upper_threshold))
 
     # Make the backtest "sticky": once run, keep showing results across reruns
@@ -1605,7 +1605,7 @@ if _show_results:
     # =====================================================================
     # KPIs
     # =====================================================================
-    st.markdown("## Performance Summary")
+    st.markdown("## Performance-Übersicht")
 
     # ---- KPI Row 1: Performance vs benchmarks (NET of fees) ----
     smi_final = ts["smi_value"].iloc[-1]
@@ -1624,24 +1624,24 @@ if _show_results:
     fee_drag = strat_gross_cagr - strat_net_cagr
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Strategy (Net of Fees)", fmt_chf(strategy_net),
+    c1.metric("Strategie (netto)", fmt_chf(strategy_net),
               f"{(strategy_net/initial_capital - 1)*100:+.1f}%")
-    c2.metric("Strategy (Gross)", fmt_chf(strategy_gross),
-              f"Fee drag: {fee_drag*100:.2f}% p.a.", delta_color="off")
+    c2.metric("Strategie (brutto)", fmt_chf(strategy_gross),
+              f"Gebührenlast: {fee_drag*100:.2f}% p.a.", delta_color="off")
     c3.metric("SMI Total Return", fmt_chf(smi_tr_final),
               f"{(smi_tr_final/initial_capital - 1)*100:+.1f}%")
-    c4.metric("SMI Price Index", fmt_chf(smi_price_final),
+    c4.metric("SMI Kursindex", fmt_chf(smi_price_final),
               f"{(smi_price_final/initial_capital - 1)*100:+.1f}%")
 
     # ---- KPI Row 2: CAGR comparison + alpha ----
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Net CAGR", f"{strat_net_cagr*100:.2f}%",
-              f"after all fees · {years:.1f} years", delta_color="off")
-    c6.metric("Gross CAGR", f"{strat_gross_cagr*100:.2f}%",
-              f"before fees", delta_color="off")
-    c7.metric("Excess vs SMI TR", f"{excess_vs_tr*100:+.2f}% p.a.",
+    c5.metric("Netto-CAGR", f"{strat_net_cagr*100:.2f}%",
+              f"nach allen Gebühren · {years:.1f} years", delta_color="off")
+    c6.metric("Brutto-CAGR", f"{strat_gross_cagr*100:.2f}%",
+              f"vor Gebühren", delta_color="off")
+    c7.metric("Mehrrendite vs. SMI TR", f"{excess_vs_tr*100:+.2f}% p.a.",
               f"net of fees")
-    c8.metric("Excess vs Price Index", f"{excess_vs_price*100:+.2f}% p.a.",
+    c8.metric("Mehrrendite vs. Kursindex", f"{excess_vs_price*100:+.2f}% p.a.",
               f"net of fees")
 
     # ---- KPI Row 3: Fee breakdown ----
@@ -1653,13 +1653,13 @@ if _show_results:
     n_perf_total_periods = int(len(fee_events_df)) if not fee_events_df.empty else 0
 
     c9, c10, c11, c12 = st.columns(4)
-    c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt_fees),
+    c9.metric("Management-Gebühren", fmt_chf(total_mgmt_fees),
               f"{mgmt_fee_pct*100:.2f}% p.a. on NAV", delta_color="off")
-    c10.metric("Total Perf Fees", fmt_chf(total_perf_fees),
+    c10.metric("Performance-Gebühren", fmt_chf(total_perf_fees),
                f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged", delta_color="off")
-    c11.metric("Transaction Costs", fmt_chf(total_tx_costs),
+    c11.metric("Transaktionskosten", fmt_chf(total_tx_costs),
                f"{tx_cost_bps:.0f} bps per trade", delta_color="off")
-    c12.metric("Total Cost (incl. TX)", fmt_chf(fees_total),
+    c12.metric("Gesamtkosten (inkl. TX)", fmt_chf(fees_total),
                f"{fees_total_pct_initial:.1f}% of initial capital", delta_color="off")
 
     # ---- KPI Row 4: Strategy mechanics ----
@@ -1669,29 +1669,29 @@ if _show_results:
     n_buys = int((txs["type"] == "BUY").sum()) if not txs.empty else 0
 
     c13, c14, c15, c16 = st.columns(4)
-    c13.metric("Threshold Rebalances", f"{n_thresholds}",
+    c13.metric("Threshold-Rebalancings", f"{n_thresholds}",
                f"trigger > {upper_threshold*100:.0f}%")
-    c14.metric("BTC Bought (Total)", f"{ts['btc_held'].iloc[-1] + total_btc_sold:.4f}",
+    c14.metric("BTC gekauft (total)", f"{ts['btc_held'].iloc[-1] + total_btc_sold:.4f}",
                f"{n_buys} transactions")
-    c15.metric("BTC Sold", f"{total_btc_sold:.4f}",
+    c15.metric("BTC verkauft", f"{total_btc_sold:.4f}",
                f"CHF {chf_redeployed:,.0f} to SMI")
-    c16.metric("Equity / BTC (today)",
+    c16.metric("Aktien / BTC (aktuell)",
                f"{smi_final/strategy_gross*100:.0f}% / {btc_final/strategy_gross*100:.0f}%",
                f"BTC: {ts['btc_held'].iloc[-1]:.4f}")
 
     # =====================================================================
     # Portfolio Evolution
     # =====================================================================
-    st.markdown("## Portfolio Evolution vs. Benchmarks")
+    st.markdown("## Portfolioentwicklung vs. Benchmarks")
     fig = make_subplots(specs=[[{"secondary_y": False}]])
     # Net strategy (primary, gold, filled)
     fig.add_trace(go.Scatter(x=ts.index, y=ts["total_value_net"],
-                             name="Strategy (Net of Fees)",
+                             name="Strategie (netto)",
                              line=dict(color=OAK_GOLD, width=3, shape="spline", smoothing=0.5),
                              fill="tozeroy", fillcolor="rgba(201,169,97,0.10)"))
     # Gross strategy (faded dotted)
     fig.add_trace(go.Scatter(x=ts.index, y=ts["total_value"],
-                             name="Strategy (Gross)",
+                             name="Strategie (brutto)",
                              line=dict(color=OAK_GOLD, width=1.2, dash="dot"),
                              opacity=0.55))
     if not bench.empty:
@@ -1699,14 +1699,14 @@ if _show_results:
                                  name="SMI Total Return",
                                  line=dict(color=OAK_SAGE, width=2, dash="dash")))
         fig.add_trace(go.Scatter(x=bench.index, y=bench["smi_price"],
-                                 name="SMI Price Index",
+                                 name="SMI Kursindex",
                                  line=dict(color=OAK_SAGE_DIM, width=1.5, dash="dot")))
     fig.add_trace(go.Scatter(x=ts.index, y=ts["smi_value"],
-                             name="Strategy · Equity Sleeve",
+                             name="Strategie · Aktien-Sleeve",
                              line=dict(color=OAK_CREAM, width=1.2),
                              opacity=0.7))
     fig.add_trace(go.Scatter(x=ts.index, y=ts["btc_value_chf"],
-                             name="Strategy · BTC Sleeve",
+                             name="Strategie · BTC-Sleeve",
                              line=dict(color=OAK_BTC, width=1.2),
                              opacity=0.7))
     # Mark threshold rebalances
@@ -1717,7 +1717,7 @@ if _show_results:
         )
         fig.add_trace(go.Scatter(
             x=evts_with_values["date"], y=evts_with_values["total_at_event"],
-            mode="markers", name="Threshold Rebalance",
+            mode="markers", name="Threshold-Rebalancing",
             marker=dict(symbol="diamond", size=11,
                         color=OAK_RED, line=dict(color=OAK_CREAM, width=1.5)),
         ))
@@ -1727,7 +1727,7 @@ if _show_results:
         if not perf_paid.empty:
             fig.add_trace(go.Scatter(
                 x=perf_paid["date"], y=perf_paid["nav_after_perf"],
-                mode="markers", name="Performance Fee Charged",
+                mode="markers", name="Performance-Gebühr belastet",
                 marker=dict(symbol="triangle-down", size=11,
                             color=OAK_CREAM, line=dict(color=OAK_GOLD, width=1.5)),
             ))
@@ -1761,7 +1761,7 @@ if _show_results:
     # =====================================================================
     # RISK ANALYTICS
     # =====================================================================
-    st.markdown("## Risk Analytics")
+    st.markdown("## Risikoanalyse")
 
     # Compute metrics for all three series — Strategy is NET of fees.
     # All measured against initial_capital so CAGR/Total Return match the KPI boxes.
@@ -1827,9 +1827,9 @@ if _show_results:
     )
 
     # ---- Strategy vs SMI TR benchmark metrics (4 KPI tiles) ----
-    st.markdown("### Strategy vs. SMI Total Return")
+    st.markdown("### Strategie vs. SMI Total Return")
     bc1, bc2, bc3, bc4 = st.columns(4)
-    bc1.metric("Alpha (Jensen, annualized)",
+    bc1.metric("Alpha (Jensen, annualisiert)",
                _fmt_pct(bm_tr.get("alpha")),
                "Excess return adj. for beta")
     bc2.metric("Beta", _fmt_num(bm_tr.get("beta")),
@@ -1842,7 +1842,7 @@ if _show_results:
                "Excess return / TE")
 
     bc5, bc6 = st.columns([1, 3])
-    bc5.metric("Correlation",
+    bc5.metric("Korrelation",
                _fmt_num(bm_tr.get("correlation")),
                f"R² = {_fmt_num(bm_tr.get('r_squared'))}")
     with bc6:
@@ -1869,11 +1869,11 @@ if _show_results:
             )
 
     # ---- Drawdown Chart (Underwater) ----
-    st.markdown("### Drawdown Analysis")
+    st.markdown("### Drawdown-Analyse")
     dd_strat = compute_drawdown(ts["total_value_net"]) * 100
     fig_dd = go.Figure()
     fig_dd.add_trace(go.Scatter(
-        x=dd_strat.index, y=dd_strat.values, name="Strategy (Net)",
+        x=dd_strat.index, y=dd_strat.values, name="Strategie (netto)",
         line=dict(color=OAK_GOLD, width=2),
         fill="tozeroy", fillcolor="rgba(201,169,97,0.2)",
     ))
@@ -1885,7 +1885,7 @@ if _show_results:
         ))
         dd_pr = compute_drawdown(bench["smi_price"]) * 100
         fig_dd.add_trace(go.Scatter(
-            x=dd_pr.index, y=dd_pr.values, name="SMI Price Index",
+            x=dd_pr.index, y=dd_pr.values, name="SMI Kursindex",
             line=dict(color=OAK_SAGE_DIM, width=1, dash="dot"),
         ))
     fig_dd = style_plotly(fig_dd, height=350)
@@ -1893,12 +1893,12 @@ if _show_results:
     st.plotly_chart(fig_dd, use_container_width=True)
 
     # ---- Rolling Volatility Chart ----
-    st.markdown("### Rolling Volatility (60-day window, annualized)")
+    st.markdown("### Rollierende Volatilität (60-Tage-Fenster, annualisiert)")
     strat_ret = ts["total_value_net"].pct_change().dropna()
     roll_strat = strat_ret.rolling(60).std() * np.sqrt(252) * 100
     fig_vol = go.Figure()
     fig_vol.add_trace(go.Scatter(
-        x=roll_strat.index, y=roll_strat.values, name="Strategy (Net)",
+        x=roll_strat.index, y=roll_strat.values, name="Strategie (netto)",
         line=dict(color=OAK_GOLD, width=2),
     ))
     if not bench.empty:
@@ -1913,7 +1913,7 @@ if _show_results:
     st.plotly_chart(fig_vol, use_container_width=True)
 
     # ---- Monthly Returns Heatmap ----
-    st.markdown("### Monthly Returns · Strategy (Net)")
+    st.markdown("### Monatsrenditen · Strategie (netto)")
     matrix = monthly_returns_matrix(ts["total_value_net"])
     if not matrix.empty:
         # Build heatmap with custom colorscale (red → cream → sage/green)
@@ -1952,7 +1952,7 @@ if _show_results:
 
     # ---- Yearly Returns Bar Chart with HWM ----
     if not fee_events_df.empty:
-        st.markdown("### Yearly Performance & High Water Mark")
+        st.markdown("### Jahresperformance & High Water Mark")
         yearly_net = ts["total_value_net"].resample("YE").last()
         yearly_ret = yearly_net.pct_change()
         # First-year return: compute from start
@@ -1967,7 +1967,7 @@ if _show_results:
         fig_yr.add_trace(go.Bar(
             x=years_list, y=rets_pct, marker=dict(color=bar_colors,
                                                    line=dict(color=OAK_GREEN_2, width=1)),
-            name="Strategy Annual Return (Net)",
+            name="Jahresrendite Strategie (netto)",
             text=[f"{r:+.1f}%" for r in rets_pct],
             textposition="outside",
             textfont=dict(color=OAK_CREAM, size=11),
@@ -1987,7 +1987,7 @@ if _show_results:
     # =====================================================================
     # Parameter Sensitivity Analysis (Heatmap)
     # =====================================================================
-    st.markdown("## Parameter Sensitivity")
+    st.markdown("## Parameter-Sensitivität")
     st.markdown(
         f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
         "Robustness check: re-runs the backtest across a grid of initial BTC "
@@ -1998,7 +1998,7 @@ if _show_results:
         unsafe_allow_html=True
     )
 
-    if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
+    if st.button("Sensitivitätsanalyse starten (Grid-Backtest)", key="sens_btn"):
         # Grids: initial BTC weight × upper threshold
         btc_grid = [0.05, 0.10, 0.15, 0.20, 0.25]
         thr_grid = [0.20, 0.25, 0.30, 0.35]
@@ -2067,10 +2067,10 @@ if _show_results:
                 colorscale=[[0, OAK_RED], [0.5, OAK_GREEN_3], [1, OAK_GOLD]],
                 text=[[f"{v:.1f}%" for v in row] for row in cagr_matrix],
                 texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
-                colorbar=dict(title="CAGR %", tickfont=dict(color=OAK_CREAM)),
+                colorbar=dict(title="CAGR (%)", tickfont=dict(color=OAK_CREAM)),
                 hovertemplate="BTC init %{y} · Threshold %{x}<br>Net CAGR %{z:.2f}%<extra></extra>",
             ))
-            fig_cagr.update_layout(title="Net CAGR (%)")
+            fig_cagr.update_layout(title="Netto-CAGR (%)")
             fig_cagr = style_plotly(_mark_current(fig_cagr), height=380)
             fig_cagr.update_xaxes(title_text="Upper Threshold")
             fig_cagr.update_yaxes(title_text="Initial BTC %")
@@ -2082,7 +2082,7 @@ if _show_results:
                 colorscale=[[0, OAK_RED], [1, OAK_GREEN_3]],
                 text=[[f"{v:.1f}%" for v in row] for row in dd_matrix],
                 texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
-                colorbar=dict(title="Max DD %", tickfont=dict(color=OAK_CREAM)),
+                colorbar=dict(title="Max. Drawdown (%)", tickfont=dict(color=OAK_CREAM)),
                 hovertemplate="BTC init %{y} · Threshold %{x}<br>Max Drawdown %{z:.2f}%<extra></extra>",
             ))
             fig_dd.update_layout(title="Maximum Drawdown (%)")
@@ -2102,7 +2102,7 @@ if _show_results:
     # =====================================================================
     # Monte-Carlo Forward Projection
     # =====================================================================
-    st.markdown("## Monte-Carlo Projection")
+    st.markdown("## Monte-Carlo-Projektion")
     st.markdown(
         f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
         "Forward-looking simulation: bootstraps the strategy's historical daily "
@@ -2125,7 +2125,7 @@ if _show_results:
                                       "(keeps fat tails). Normal assumes Gaussian returns "
                                       "with the same mean/volatility.")
 
-    if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
+    if st.button("Monte-Carlo-Simulation starten", key="mc_btn"):
         net_series = ts["total_value_net"]
         daily_ret = net_series.pct_change().dropna().values
         if len(daily_ret) < 30:
@@ -2160,7 +2160,7 @@ if _show_results:
             fig_mc.add_trace(go.Scatter(
                 x=future_idx, y=bands[5], mode="lines", fill="tonexty",
                 fillcolor="rgba(153,167,150,0.15)", line=dict(width=0),
-                name="5th–95th percentile"))
+                name="5.–95. Perzentil"))
             # 25-75 band
             fig_mc.add_trace(go.Scatter(
                 x=future_idx, y=bands[75], mode="lines",
@@ -2168,11 +2168,11 @@ if _show_results:
             fig_mc.add_trace(go.Scatter(
                 x=future_idx, y=bands[25], mode="lines", fill="tonexty",
                 fillcolor="rgba(153,167,150,0.30)", line=dict(width=0),
-                name="25th–75th percentile"))
+                name="25.–75. Perzentil"))
             # Median
             fig_mc.add_trace(go.Scatter(
                 x=future_idx, y=bands[50], mode="lines",
-                line=dict(color=OAK_GOLD, width=2.5), name="Median path"))
+                line=dict(color=OAK_GOLD, width=2.5), name="Median-Pfad"))
             fig_mc = style_plotly(fig_mc, height=420)
             fig_mc.update_xaxes(title_text="Projected Date")
             fig_mc.update_yaxes(title_text="Projected Value (CHF)", tickformat=",.0f")
@@ -2181,11 +2181,11 @@ if _show_results:
             # Summary table of terminal outcomes
             terminal = cum[:, -1]
             t1, t2, t3, t4, t5 = st.columns(5)
-            t1.metric("5th percentile", fmt_chf(np.percentile(terminal,5)))
-            t2.metric("25th percentile", fmt_chf(np.percentile(terminal,25)))
+            t1.metric("5. Perzentil", fmt_chf(np.percentile(terminal,5)))
+            t2.metric("25. Perzentil", fmt_chf(np.percentile(terminal,25)))
             t3.metric("Median", fmt_chf(np.percentile(terminal,50)))
-            t4.metric("75th percentile", fmt_chf(np.percentile(terminal,75)))
-            t5.metric("95th percentile", fmt_chf(np.percentile(terminal,95)))
+            t4.metric("75. Perzentil", fmt_chf(np.percentile(terminal,75)))
+            t5.metric("95. Perzentil", fmt_chf(np.percentile(terminal,95)))
 
             prob_loss = float(np.mean(terminal < start_value)) * 100
             st.markdown(
@@ -2200,7 +2200,7 @@ if _show_results:
             )
 
     # ---- Fee Detail Section ----
-    st.markdown("## Fee Structure & Cost Detail")
+    st.markdown("## Gebührenstruktur & Kostendetail")
     fee_col_a, fee_col_b = st.columns([1, 2])
     with fee_col_a:
         st.markdown(
@@ -2267,10 +2267,10 @@ if _show_results:
     # =====================================================================
     # BTC Weight Over Time
     # =====================================================================
-    st.markdown("## Bitcoin Weight & Threshold")
+    st.markdown("## Bitcoin-Quote & Schwellenwert")
     fig_w = go.Figure()
     fig_w.add_trace(go.Scatter(x=ts.index, y=ts["btc_pct"] * 100,
-                               name="BTC % of Portfolio",
+                               name="BTC in % des Portfolios",
                                line=dict(color=OAK_BTC, width=2.5),
                                fill="tozeroy", fillcolor="rgba(247,147,26,0.1)"))
     # Threshold lines
@@ -2291,7 +2291,7 @@ if _show_results:
         evts2["btc_pct_pct"] = evts2["btc_pct_before"] * 100
         fig_w.add_trace(go.Scatter(
             x=evts2["date"], y=evts2["btc_pct_pct"], mode="markers",
-            name="Sell Trigger",
+            name="Verkaufs-Trigger",
             marker=dict(symbol="diamond", size=12, color=OAK_RED,
                         line=dict(color=OAK_CREAM, width=1.5)),
         ))
@@ -2302,14 +2302,14 @@ if _show_results:
     # =====================================================================
     # BTC Accumulation
     # =====================================================================
-    st.markdown("## Bitcoin Holdings vs. Market Price")
+    st.markdown("## Bitcoin-Bestand vs. Marktpreis")
     fig2 = make_subplots(specs=[[{"secondary_y": True}]])
     fig2.add_trace(go.Scatter(x=ts.index, y=ts["btc_held"],
-                              name="BTC held", line=dict(color=OAK_BTC, width=2.5),
+                              name="BTC-Bestand", line=dict(color=OAK_BTC, width=2.5),
                               fill="tozeroy", fillcolor="rgba(247,147,26,0.12)"),
                    secondary_y=False)
     fig2.add_trace(go.Scatter(x=btc_series.index, y=btc_series.values,
-                              name="BTC price (USD)",
+                              name="BTC-Preis (USD)",
                               line=dict(color=OAK_CREAM, width=1.5, dash="dot")),
                    secondary_y=True)
     fig2 = style_plotly(fig2, height=400)
@@ -2326,7 +2326,7 @@ if _show_results:
     # =====================================================================
     div_cf = ts.attrs.get("dividend_cashflows")
     if div_cf is not None and not div_cf.empty:
-        st.markdown("## Dividend Income by Year")
+        st.markdown("## Dividendenerträge nach Jahr")
         st.markdown(
             f"<p style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:-8px;'>"
             f"Net of {int(WITHHOLDING_TAX*100)}% Swiss withholding tax "
@@ -2384,8 +2384,8 @@ if _show_results:
     # =====================================================================
     # Detail tables
     # =====================================================================
-    st.markdown("## Transaction Detail")
-    with st.expander("BTC Transactions (Buy & Sell)"):
+    st.markdown("## Transaktionsdetails")
+    with st.expander("BTC-Transaktionen (Kauf & Verkauf)"):
         if not txs.empty:
             tx_disp = txs.copy()
             tx_disp["date"] = pd.to_datetime(tx_disp["date"]).dt.strftime("%Y-%m-%d")
@@ -2393,7 +2393,7 @@ if _show_results:
             st.download_button("Download CSV", tx_disp.to_csv(index=False).encode(),
                                "btc_transactions.csv", "text/csv")
 
-    with st.expander("Threshold Rebalance Events"):
+    with st.expander("Threshold-Rebalancing-Ereignisse"):
         if not evts.empty:
             evt_disp = evts.copy()
             evt_disp["date"] = pd.to_datetime(evt_disp["date"]).dt.strftime("%Y-%m-%d")
@@ -2405,13 +2405,13 @@ if _show_results:
         else:
             st.info("No threshold rebalances triggered in this period.")
 
-    with st.expander("Daily Portfolio Time Series"):
+    with st.expander("Tägliche Portfolio-Zeitreihe"):
         df_export = ts.reset_index()
         st.dataframe(df_export.tail(50), use_container_width=True)
         st.download_button("Download Full CSV", df_export.to_csv(index=False).encode(),
                            "portfolio_timeseries.csv", "text/csv")
 
-    with st.expander("Benchmarks · Daily Series (SMI TR & Price)"):
+    with st.expander("Benchmarks · Tagesreihen (SMI TR & Kursindex)"):
         if not bench.empty:
             bench_export = bench.reset_index()
             st.dataframe(bench_export.tail(50), use_container_width=True)

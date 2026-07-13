@@ -175,8 +175,8 @@ st.markdown(f"""
 <div class="oak-bar">
     <div class="oak-logo">{logo_html}</div>
     <div class="oak-tagline">
-        Strategy Research Platform
-        <span class="stamp">Internal · Confidential</span>
+        Strategie-Research-Plattform
+        <span class="stamp">Intern · Vertraulich</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -185,15 +185,15 @@ st.markdown(f"""
 st.markdown(
     f"<h1 style='color:{OAK_CREAM}; font-family:\"Cormorant Garamond\", Georgia, serif; "
     f"font-weight:500; font-size:48px; letter-spacing:-0.01em; margin:8px 0 8px 0; "
-    f"line-height:1.1;'>Quantitative Strategy Backtester</h1>",
+    f"line-height:1.1;'>Quantitativer Strategie-Backtester</h1>",
     unsafe_allow_html=True
 )
 st.markdown(
     f"<p style='color:{OAK_CREAM_DIM}; font-size:16px; margin-top:0; max-width: 760px;'>"
-    "Institutional-grade backtest tooling for systematic strategies that pair "
-    "Swiss income assets — blue-chip equities and residential real estate — with "
-    "structural digital-asset exposure. "
-    "Open a strategy below or use the sidebar navigation."
+    "Backtest-Werkzeuge auf institutionellem Niveau für systematische Strategien, "
+    "die Schweizer Ertragswerte — Blue-Chip-Aktien und Wohnimmobilien — mit einer "
+    "strukturellen Digital-Asset-Allokation verbinden. "
+    "Wählen Sie unten eine Strategie oder nutzen Sie die Navigation in der Seitenleiste."
     "</p>",
     unsafe_allow_html=True
 )
@@ -205,7 +205,7 @@ st.markdown(
     f"<h3 style='color:{OAK_CREAM} !important; font-family:Inter, sans-serif; "
     f"font-size:13px; text-transform:uppercase; letter-spacing:0.12em; "
     f"font-weight:600; padding-bottom:6px; "
-    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>The Framework</h3>",
+    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>Das Framework</h3>",
     unsafe_allow_html=True
 )
 st.markdown(
@@ -221,21 +221,22 @@ st.markdown(
               margin-bottom:14px;">Yield-Funded Allocation</div>
   <p style="color:{OAK_CREAM_DIM}; font-size:15px; line-height:1.65;
             max-width:820px; margin:0 0 16px 0;">
-    A rule-based, forecast-free allocation framework. A Swiss real-asset or
-    blue-chip <strong style="color:{OAK_CREAM};">core</strong> stays untouched and
-    produces an <strong style="color:{OAK_CREAM};">income stream</strong> — rent or
-    dividends. Only that income funds a
-    <strong style="color:{OAK_CREAM};">satellite</strong> allocation, deployed
-    through counter-cyclical bands with a hard cap. No forecasts, no market timing,
-    no optimisation of fitted parameters.
+    Ein regelbasiertes, prognosefreies Allokations-Framework. Ein Schweizer
+    Substanz- oder Blue-Chip-<strong style="color:{OAK_CREAM};">Kern</strong> bleibt
+    unangetastet und produziert einen
+    <strong style="color:{OAK_CREAM};">Ertragsstrom</strong> — Mieten oder Dividenden.
+    Nur dieser Ertrag finanziert eine
+    <strong style="color:{OAK_CREAM};">Satelliten</strong>-Allokation, die über
+    antizyklische Bänder mit hartem Cap gesteuert wird. Keine Prognosen, kein
+    Market-Timing, keine Optimierung gefitteter Parameter.
   </p>
   <div style="color:{OAK_SAGE}; font-family:Inter, sans-serif; font-size:13px;
               line-height:1.9;">
-    <strong style="color:{OAK_CREAM};">Core</strong> → produces income ·
-    <strong style="color:{OAK_CREAM};">Income</strong> → funds the satellite ·
-    <strong style="color:{OAK_CREAM};">Bands</strong> → govern the pace and cap the risk<br>
-    <span style="color:{OAK_CREAM_DIM};">The core capital is never sold.
-    The strategies below are two applications of the same method.</span>
+    <strong style="color:{OAK_CREAM};">Kern</strong> → erzeugt Ertrag ·
+    <strong style="color:{OAK_CREAM};">Ertrag</strong> → finanziert den Satelliten ·
+    <strong style="color:{OAK_CREAM};">Bänder</strong> → steuern das Tempo und begrenzen das Risiko<br>
+    <span style="color:{OAK_CREAM_DIM};">Das Kernkapital wird nie verkauft.
+    Die beiden Strategien unten sind zwei Anwendungen derselben Methode.</span>
   </div>
 </div>
 """,
@@ -246,7 +247,7 @@ st.markdown(
     f"<h3 style='color:{OAK_CREAM} !important; font-family:Inter, sans-serif; "
     f"font-size:13px; text-transform:uppercase; letter-spacing:0.12em; "
     f"font-weight:600; padding-bottom:6px; "
-    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>Strategies</h3>",
+    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>Strategien</h3>",
     unsafe_allow_html=True
 )
 
@@ -255,48 +256,48 @@ col1, col2 = st.columns(2, gap="large")
 with col1:
     st.markdown(f"""
 <div class="strategy-card">
-    <span class="strat-tag">Strategy 01 · Core: Swiss Blue Chips</span>
+    <span class="strat-tag">Strategie 01 · Kern: Schweizer Blue Chips</span>
     <h3>OAK Swiss Blue Chip / Bitcoin</h3>
-    <p>Full SMI replication with 20 Swiss blue-chip constituents. Dividends harvested
-    and reinvested via 12-month DCA into Bitcoin exposure. Threshold-based rebalancing
-    caps BTC weight to control risk.</p>
+    <p>Vollständige SMI-Replikation mit 20 Schweizer Blue Chips. Die Dividenden
+    werden vereinnahmt und über einen 12-Monats-DCA in Bitcoin investiert. Eine
+    Threshold-Regel begrenzt die BTC-Quote zur Risikokontrolle.</p>
     <div class="strat-meta">
-        Universe: <strong>SMI 20</strong> ·
-        Weighting: <strong>Market Cap</strong> ·
-        BTC: <strong>15 % → 25 % cap</strong>
+        Universum: <strong>SMI 20</strong> ·
+        Gewichtung: <strong>Marktkapitalisierung</strong> ·
+        BTC: <strong>15 % → Cap 25 %</strong>
     </div>
 </div>
     """, unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     if hasattr(st, "page_link"):
-        st.page_link("pages/1_SMI_Strategy.py", label="Open Swiss Blue Chip / Bitcoin →",
+        st.page_link("pages/1_SMI_Strategy.py", label="Swiss Blue Chip / Bitcoin öffnen →",
                      use_container_width=True)
 
 with col2:
     st.markdown(f"""
 <div class="strategy-card">
-    <span class="strat-tag">Strategy 02 · Core: Swiss Residential</span>
+    <span class="strat-tag">Strategie 02 · Kern: Schweizer Wohnimmobilien</span>
     <h3>OAK Swiss Residential / Bitcoin</h3>
-    <p>Swiss residential real estate with capital values tracking the SNB
-    residential price index. Net rental income flows into Bitcoin via band-based
-    rebalancing rules; a growing CHF cash buffer dampens volatility.
-    Parametric simulation.</p>
+    <p>Schweizer Wohnimmobilien, deren Kapitalwerte dem SNB-Wohnimmobilien-
+    preisindex folgen. Die Nettomieterträge fliessen über Bandregeln in Bitcoin;
+    ein wachsender CHF-Cash-Puffer dämpft die Volatilität.
+    Parametrische Simulation.</p>
     <div class="strat-meta">
-        Universe: <strong>CH Residential (SNB)</strong> ·
-        Rent Allocation: <strong>Band Rules</strong> ·
-        BTC: <strong>10–25 % Band</strong>
+        Universum: <strong>CH Wohnimmobilien (SNB)</strong> ·
+        Mietallokation: <strong>Bandregeln</strong> ·
+        BTC: <strong>Band 10–25 %</strong>
     </div>
 </div>
     """, unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     if hasattr(st, "page_link"):
-        st.page_link("pages/2_OAK_RE_BTC.py", label="Open Swiss Residential / Bitcoin →",
+        st.page_link("pages/2_OAK_RE_BTC.py", label="Swiss Residential / Bitcoin öffnen →",
                      use_container_width=True)
 
 # Footer
 st.markdown(
     f"""<div class='oak-footer'>
-    For Illustrative Purposes · Not Investment Advice · Past Performance is no Guarantee of Future Results
-    <span class='oak-mark'>Oakwood Capital · Quantitative Research</span>
+    Zu illustrativen Zwecken · Keine Anlageberatung · Vergangene Wertentwicklung ist kein Indikator für zukünftige Ergebnisse
+    <span class='oak-mark'>Oakwood Capital · Quantitatives Research</span>
     </div>""", unsafe_allow_html=True
 )

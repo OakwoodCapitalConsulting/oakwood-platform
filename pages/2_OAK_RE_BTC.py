@@ -1223,9 +1223,9 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.markdown("## Parameters")
+    st.markdown("## Parameter")
 
-    st.markdown("### Stress-Test Scenarios")
+    st.markdown("### Stress-Test-Szenarien")
     st.markdown(
         f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-6px;'>"
         "One-click historical crisis windows. Sets the backtest period below.</p>",
@@ -1243,7 +1243,7 @@ with st.sidebar:
             st.session_state["re_scenario_end"] = _e
             st.session_state["re_btc_has_run"] = True  # auto-show results
 
-    st.markdown("### Backtest Period")
+    st.markdown("### Backtest-Zeitraum")
     _default_start = st.session_state.get("re_scenario_start", date(2018, 1, 1))
     _default_end = st.session_state.get("re_scenario_end", date.today())
     start_date = st.date_input("Startdatum", value=_default_start,
@@ -1255,7 +1255,7 @@ with st.sidebar:
     initial_capital = st.number_input("Anfangskapital (CHF)", min_value=10_000,
                                       max_value=10_000_000_000, value=1_000_000, step=10_000)
 
-    st.markdown("### Allocation")
+    st.markdown("### Allokation")
     initial_btc_pct = st.slider("Initial BTC Allokation (%)", 0, 50, 15, 1) / 100.0
     initial_cash_pct = st.slider("Initiale Cash-Reserve (%)", 0, 25, 5, 1,
                                  help="Liquiditätspolster bei t0, aus dem die "
@@ -1277,7 +1277,7 @@ with st.sidebar:
         st.error("Lower Threshold muss kleiner als Upper Threshold sein.")
         st.stop()
 
-    st.markdown("### Property Sleeve")
+    st.markdown("### Immobilien-Sleeve")
     net_yield = st.slider("Nettomietrendite (% p.a.)", 0.5, 6.0, 3.0, 0.1,
                           help="Extern vorberechnet — nach Leerstand, "
                                "Bewirtschaftung, Unterhalt und Finanzierung. "
@@ -1316,7 +1316,7 @@ with st.sidebar:
     else:
         series_label, snb_q = None, None
 
-    st.markdown("### Rent Allocation")
+    st.markdown("### Mietallokation")
     base_invest_rate = st.slider("Basis-Investitionsrate der Nettomiete (%)",
                                  0, 100, 50, 5) / 100.0
     boost_invest_rate = st.slider("Investitionsrate unter Lower Threshold (%)",
@@ -1340,12 +1340,12 @@ with st.sidebar:
              "Rest bleibt als Cash liegen. 0 = deaktiviert (reiner "
              "Einbahn-Cash-Puffer).")
 
-    st.markdown("### Risk Analytics")
+    st.markdown("### Risikoanalyse")
     risk_free_rate = st.slider("Risk-Free Rate (%)", 0.0, 5.0, 1.0, 0.25,
                                help="Annualisiert. Default ~1% entspricht "
                                     "historischem CHF/SARON-Durchschnitt.") / 100.0
 
-    st.markdown("### Costs & Fees")
+    st.markdown("### Kosten & Gebühren")
     tx_cost_bps = st.slider("Transaction Cost (bps per trade)", 0, 50, 10, 1,
                             help="Auf das gehandelte BTC-Volumen je Trade. "
                                  "10 bps = 0.10%.")
@@ -1369,7 +1369,7 @@ with st.sidebar:
                                         ["Quarterly", "Semi-Annual", "Annual"], index=0)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    run_btn = st.button("Run Backtest", type="primary", use_container_width=True,
+    run_btn = st.button("Backtest starten", type="primary", use_container_width=True,
                         disabled=(lower_threshold >= upper_threshold))
     if run_btn:
         st.session_state["re_btc_has_run"] = True
@@ -1481,7 +1481,7 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
 # --------------------------------------------------------------------------
 # KPIs & charts — section structure mirrors 1_SMI_Strategy.py
 # --------------------------------------------------------------------------
-st.markdown("## Performance Summary")
+st.markdown("## Performance-Übersicht")
 
 gross = net + (ts["mgmt_fee_paid"].cumsum()
                if "mgmt_fee_paid" in ts else 0.0)
@@ -1515,45 +1515,45 @@ siat_m = (compute_risk_metrics(siat_series, risk_free_rate, base_value=initial_c
           if siat_series is not None else {})
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Strategy (Net of Fees)", fmt_chf(net.iloc[-1]),
+c1.metric("Strategie (netto)", fmt_chf(net.iloc[-1]),
           f"{(net.iloc[-1]/initial_capital - 1)*100:+.1f}%")
-c2.metric("Strategy (Gross)", fmt_chf(gross.iloc[-1]),
-          f"Fee drag: {fee_drag*100:.2f}% p.a.", delta_color="off")
-c3.metric("RE only (same model)", fmt_chf(bench_re.iloc[-1]),
+c2.metric("Strategie (brutto)", fmt_chf(gross.iloc[-1]),
+          f"Gebührenlast: {fee_drag*100:.2f}% p.a.", delta_color="off")
+c3.metric("Nur Immobilien (gleiches Modell)", fmt_chf(bench_re.iloc[-1]),
           f"{(bench_re.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 if siat_series is not None:
-    c4.metric("UBS «Siat» (residential fund)", fmt_chf(siat_series.iloc[-1]),
+    c4.metric("UBS «Siat» (Wohnfonds)", fmt_chf(siat_series.iloc[-1]),
               f"{(siat_series.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 else:
-    c4.metric("UBS «Siat» (residential fund)", "n/a", "Yahoo-Daten nicht verfügbar")
+    c4.metric("UBS «Siat» (Wohnfonds)", "n/a", "Yahoo-Daten nicht verfügbar")
 
 c5, c6, c7, c8 = st.columns(4)
-c5.metric("Net CAGR", f"{net_cagr*100:.2f}%", f"after all fees · {years:.1f} years", delta_color="off")
-c6.metric("Gross CAGR", f"{gross_cagr*100:.2f}%", "before fees", delta_color="off")
-c7.metric("Excess vs RE only", f"{excess*100:+.2f}% p.a.", "net of fees")
-c8.metric("BTC / Cash (today)", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%",
+c5.metric("Netto-CAGR", f"{net_cagr*100:.2f}%", f"nach allen Gebühren · {years:.1f} years", delta_color="off")
+c6.metric("Brutto-CAGR", f"{gross_cagr*100:.2f}%", "vor Gebühren", delta_color="off")
+c7.metric("Mehrrendite vs. nur Immobilien", f"{excess*100:+.2f}% p.a.", "nach Gebühren")
+c8.metric("BTC / Cash (aktuell)", f"{w_btc*100:.1f}% / {w_cash*100:.1f}%",
           f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%", delta_color="off")
 
 c9, c10, c11, c12 = st.columns(4)
-c9.metric("Total Mgmt Fees", fmt_chf(total_mgmt), f"{mgmt_fee*100:.2f}% p.a. on NAV", delta_color="off")
-c10.metric("Total Perf Fees", fmt_chf(total_perf), f"{perf_fee*100:.0f}% × excess", delta_color="off")
-c11.metric("Total Fees", fmt_chf(total_mgmt + total_perf),
+c9.metric("Management-Gebühren", fmt_chf(total_mgmt), f"{mgmt_fee*100:.2f}% p.a. on NAV", delta_color="off")
+c10.metric("Performance-Gebühren", fmt_chf(total_perf), f"{perf_fee*100:.0f}% × excess", delta_color="off")
+c11.metric("Gebühren total", fmt_chf(total_mgmt + total_perf),
            f"{(total_mgmt+total_perf)/initial_capital*100:.1f}% of initial capital", delta_color="off")
-c12.metric("Net Rental Yield (input)", f"{net_yield*100:.1f}% p.a.",
-           "pre-computed, on invested capital", delta_color="off")
+c12.metric("Nettomietrendite (Input)", f"{net_yield*100:.1f}% p.a.",
+           "vorberechnet, auf investiertes Kapital", delta_color="off")
 
 # =====================================================================
 # Portfolio Evolution vs. Benchmarks
 # =====================================================================
-st.markdown("## Portfolio Evolution vs. Benchmarks")
+st.markdown("## Portfolioentwicklung vs. Benchmarks")
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=net.index, y=net.values, name="Strategy (Net of Fees)",
+fig.add_trace(go.Scatter(x=net.index, y=net.values, name="Strategie (netto)",
                          line=dict(color=OAK_GOLD, width=3),
                          fill="tozeroy", fillcolor="rgba(201,169,97,0.10)"))
-fig.add_trace(go.Scatter(x=gross.index, y=gross.values, name="Strategy (Gross)",
+fig.add_trace(go.Scatter(x=gross.index, y=gross.values, name="Strategie (brutto)",
                          line=dict(color=OAK_GOLD, width=1.2, dash="dot"), opacity=0.55))
 fig.add_trace(go.Scatter(x=bench_re.index, y=bench_re.values,
-                         name="RE only (same model, no BTC)",
+                         name="Nur Immobilien (gleiches Modell, ohne BTC)",
                          line=dict(color=OAK_SAGE, width=2, dash="dash")))
 for _flabel, _fseries, _fcol in fund_benches:
     fig.add_trace(go.Scatter(x=_fseries.index, y=_fseries.values, name=_flabel,
@@ -1588,7 +1588,7 @@ st.plotly_chart(fig, use_container_width=True)
 # =====================================================================
 # Sleeve Development — property, BTC, cash (point: cash/btc/EK Entwicklung)
 # =====================================================================
-st.markdown("## Sleeve Development")
+st.markdown("## Sleeve-Entwicklung")
 fig_sl = go.Figure()
 fig_sl.add_trace(go.Scatter(x=ts.index, y=ts["property_value"],
                             name="Immobilienwert", line=dict(color=OAK_SAGE, width=2)))
@@ -1609,7 +1609,7 @@ fig_sl = style_plotly(fig_sl, height=380)
 fig_sl.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
 st.plotly_chart(fig_sl, use_container_width=True)
 
-st.markdown("### Asset Allocation Over Time (quarter-end values)")
+st.markdown("### Asset-Allokation im Zeitverlauf (Quartalsendwerte)")
 q_end = ts[["property_value", "btc_value", "cash"]].resample("QE").last().dropna()
 q_labels = [f"Q{d.quarter} {d.year}" for d in q_end.index]
 fig_alloc = go.Figure()
@@ -1628,14 +1628,14 @@ fig_alloc.update_yaxes(title_text="Value (CHF)", tickformat=",.0f")
 fig_alloc.update_xaxes(tickangle=-45)
 st.plotly_chart(fig_alloc, use_container_width=True)
 
-st.markdown("### BTC & Cash Weight vs. Thresholds")
+st.markdown("### BTC- & Cash-Quote vs. Schwellenwerte")
 w_btc_series = (ts["btc_value"] / ts["total_value"]) * 100
 w_cash_series = (ts["cash"] / ts["total_value"]) * 100
 fig_w = go.Figure()
-fig_w.add_trace(go.Scatter(x=ts.index, y=w_btc_series, name="BTC % of NAV",
+fig_w.add_trace(go.Scatter(x=ts.index, y=w_btc_series, name="BTC in % des NAV",
                            line=dict(color=OAK_BTC, width=2.5),
                            fill="tozeroy", fillcolor="rgba(247,147,26,0.1)"))
-fig_w.add_trace(go.Scatter(x=ts.index, y=w_cash_series, name="Cash % of NAV",
+fig_w.add_trace(go.Scatter(x=ts.index, y=w_cash_series, name="Cash in % des NAV",
                            line=dict(color=OAK_CREAM_DIM, width=1.8, dash="dot")))
 fig_w.add_hline(y=upper_threshold * 100, line=dict(color=OAK_RED, width=2, dash="dash"),
                 annotation_text=f"Upper {upper_threshold*100:.0f}%",
@@ -1649,7 +1649,7 @@ sell_days = ts.index[ts["btc_sells"] > 0]
 if len(sell_days):
     fig_w.add_trace(go.Scatter(
         x=sell_days, y=w_btc_series.loc[sell_days] + 0.7, mode="markers",
-        name="Sell → Cash",
+        name="Verkauf → Cash",
         marker=dict(symbol="diamond", size=11, color=OAK_RED,
                     line=dict(color=OAK_CREAM, width=1.5))))
 fig_w = style_plotly(fig_w, height=380)
@@ -1659,7 +1659,7 @@ st.plotly_chart(fig_w, use_container_width=True)
 # =====================================================================
 # Risk Analytics
 # =====================================================================
-st.markdown("## Risk Analytics")
+st.markdown("## Risikoanalyse")
 strat_m = m
 re_m = compute_risk_metrics(bench_re, risk_free_rate, base_value=initial_capital)
 bm_re = compute_benchmark_metrics(net, bench_re, risk_free_rate)
@@ -1716,9 +1716,9 @@ st.markdown(
 bm_bench = (compute_benchmark_metrics(net, siat_series, risk_free_rate)
             if siat_series is not None else bm_re)
 _bench_name = "UBS «Siat»" if siat_series is not None else "RE only"
-st.markdown(f"### Strategy vs. {_bench_name}")
+st.markdown(f"### Strategie vs. {_bench_name}")
 bc1, bc2, bc3, bc4 = st.columns(4)
-bc1.metric("Alpha (Jensen, annualized)", _fmt_pct(bm_bench.get("alpha")),
+bc1.metric("Alpha (Jensen, annualisiert)", _fmt_pct(bm_bench.get("alpha")),
            "Excess return adj. for beta")
 bc2.metric("Beta", _fmt_num(bm_bench.get("beta")), f"Sensitivity to {_bench_name}")
 bc3.metric("Tracking Error", _fmt_pct(bm_bench.get("tracking_error")),
@@ -1727,7 +1727,7 @@ bc4.metric("Information Ratio", _fmt_num(bm_bench.get("information_ratio")),
            "Excess return / TE")
 
 bc5, bc6 = st.columns([1, 3])
-bc5.metric("Correlation", _fmt_num(bm_bench.get("correlation")),
+bc5.metric("Korrelation", _fmt_num(bm_bench.get("correlation")),
            f"R² = {_fmt_num(bm_bench.get('r_squared'))}")
 with bc6:
     if strat_m.get("dd_peak") and strat_m.get("dd_trough"):
@@ -1751,34 +1751,34 @@ with bc6:
             f"Duration: <strong style='color:{OAK_CREAM};'>{days} days</strong>"
             f"</div></div>", unsafe_allow_html=True)
 
-st.markdown("### Drawdown Analysis")
+st.markdown("### Drawdown-Analyse")
 dd_strat = compute_drawdown(net) * 100
 dd_re = compute_drawdown(bench_re) * 100
 fig_dd = go.Figure()
-fig_dd.add_trace(go.Scatter(x=dd_strat.index, y=dd_strat.values, name="Strategy (Net)",
+fig_dd.add_trace(go.Scatter(x=dd_strat.index, y=dd_strat.values, name="Strategie (netto)",
                             line=dict(color=OAK_GOLD, width=2),
                             fill="tozeroy", fillcolor="rgba(201,169,97,0.2)"))
-fig_dd.add_trace(go.Scatter(x=dd_re.index, y=dd_re.values, name="RE only",
+fig_dd.add_trace(go.Scatter(x=dd_re.index, y=dd_re.values, name="Nur Immobilien",
                             line=dict(color=OAK_SAGE, width=1.5, dash="dash")))
 fig_dd = style_plotly(fig_dd, height=340)
 fig_dd.update_yaxes(title_text="Drawdown", ticksuffix="%")
 st.plotly_chart(fig_dd, use_container_width=True)
 
-st.markdown("### Rolling Volatility (90-day window, annualized)")
+st.markdown("### Rollierende Volatilität (90-Tage-Fenster, annualisiert)")
 # 90 calendar days ≈ 3 months on this 365-day series (mirrors the SMI page's
 # 60 trading days); annualized with √365 to match the daily BTC/RE calendar.
 roll_s = net.pct_change().dropna().rolling(90).std() * np.sqrt(365) * 100
 roll_b = bench_re.pct_change().dropna().rolling(90).std() * np.sqrt(365) * 100
 fig_vol = go.Figure()
-fig_vol.add_trace(go.Scatter(x=roll_s.index, y=roll_s.values, name="Strategy (Net)",
+fig_vol.add_trace(go.Scatter(x=roll_s.index, y=roll_s.values, name="Strategie (netto)",
                              line=dict(color=OAK_GOLD, width=2)))
-fig_vol.add_trace(go.Scatter(x=roll_b.index, y=roll_b.values, name="RE only",
+fig_vol.add_trace(go.Scatter(x=roll_b.index, y=roll_b.values, name="Nur Immobilien",
                              line=dict(color=OAK_SAGE, width=1.5, dash="dash")))
 fig_vol = style_plotly(fig_vol, height=320)
 fig_vol.update_yaxes(title_text="Annualized Volatility", ticksuffix="%")
 st.plotly_chart(fig_vol, use_container_width=True)
 
-st.markdown("### Monthly Returns · Strategy (Net)")
+st.markdown("### Monatsrenditen · Strategie (netto)")
 matrix = monthly_returns_matrix(net)
 if not matrix.empty:
     z = matrix.values.astype(float) * 100
@@ -1801,7 +1801,7 @@ if not matrix.empty:
     fig_hm.update_yaxes(showgrid=False, ticks="", autorange="reversed")
     st.plotly_chart(fig_hm, use_container_width=True)
 
-st.markdown("### Yearly Performance & High Water Mark")
+st.markdown("### Jahresperformance & High Water Mark")
 yearly_net = net.resample("YE").last()
 yearly_ret = yearly_net.pct_change()
 yearly_ret.iloc[0] = yearly_net.iloc[0] / initial_capital - 1
@@ -1812,7 +1812,7 @@ fig_yr.add_trace(go.Bar(
     x=years_list, y=rets_pct,
     marker=dict(color=[OAK_SAGE if r >= 0 else OAK_RED for r in rets_pct],
                 line=dict(color=OAK_GREEN_2, width=1)),
-    name="Strategy Annual Return (Net)",
+    name="Jahresrendite Strategie (netto)",
     text=[f"{r:+.1f}%" for r in rets_pct], textposition="outside",
     textfont=dict(color=OAK_CREAM, size=11)))
 fig_yr.add_hline(y=hurdle * 100, line=dict(color=OAK_GOLD, width=1.5, dash="dash"),
@@ -1830,7 +1830,7 @@ st.plotly_chart(fig_yr, use_container_width=True)
 # =====================================================================# =====================================================================
 # Parameter Sensitivity (grid backtest, like the SMI page)
 # =====================================================================
-st.markdown("## Parameter Sensitivity")
+st.markdown("## Parameter-Sensitivität")
 st.markdown(
     f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
     "Robustness check: re-runs the backtest across a grid of initial BTC "
@@ -1839,7 +1839,7 @@ st.markdown(
     "upper threshold). A single strong path means little if nearby parameters "
     "collapse.</p>", unsafe_allow_html=True)
 
-if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
+if st.button("Sensitivitätsanalyse starten (Grid-Backtest)", key="sens_btn"):
     btc_grid = [0.05, 0.10, 0.15, 0.20, 0.25]
     thr_grid = [0.20, 0.25, 0.30, 0.35]
     cagr_matrix, dd_matrix = [], []
@@ -1895,9 +1895,9 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
             colorscale=[[0, OAK_RED], [0.5, OAK_GREEN_3], [1, OAK_GOLD]],
             text=[[f"{v:.1f}%" for v in row] for row in cagr_matrix],
             texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
-            colorbar=dict(title="CAGR %", tickfont=dict(color=OAK_CREAM)),
+            colorbar=dict(title="CAGR (%)", tickfont=dict(color=OAK_CREAM)),
             hovertemplate="BTC init %{y} · Upper %{x}<br>Net CAGR %{z:.2f}%<extra></extra>"))
-        fig_cagr.update_layout(title="Net CAGR (%)")
+        fig_cagr.update_layout(title="Netto-CAGR (%)")
         fig_cagr = style_plotly(_mark_current(fig_cagr), height=380)
         fig_cagr.update_xaxes(title_text="Upper Threshold")
         fig_cagr.update_yaxes(title_text="Initial BTC %")
@@ -1908,7 +1908,7 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
             colorscale=[[0, OAK_RED], [1, OAK_GREEN_3]],
             text=[[f"{v:.1f}%" for v in row] for row in dd_matrix],
             texttemplate="%{text}", textfont=dict(size=11, color=OAK_CREAM),
-            colorbar=dict(title="Max DD %", tickfont=dict(color=OAK_CREAM)),
+            colorbar=dict(title="Max. Drawdown (%)", tickfont=dict(color=OAK_CREAM)),
             hovertemplate="BTC init %{y} · Upper %{x}<br>Max Drawdown %{z:.2f}%<extra></extra>"))
         fig_ddh.update_layout(title="Maximum Drawdown (%)")
         fig_ddh = style_plotly(_mark_current(fig_ddh), height=380)
@@ -1919,7 +1919,7 @@ if st.button("Run Sensitivity Analysis (grid backtest)", key="sens_btn"):
 # =====================================================================
 # Monte-Carlo Forward Projection (like the SMI page)
 # =====================================================================
-st.markdown("## Monte-Carlo Projection")
+st.markdown("## Monte-Carlo-Projektion")
 st.markdown(
     f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
     "Forward-looking simulation: bootstraps the strategy's historical daily net "
@@ -1942,7 +1942,7 @@ with mc3:
                                   "(keeps fat tails). Normal assumes Gaussian returns "
                                   "with the same mean/volatility.")
 
-if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
+if st.button("Monte-Carlo-Simulation starten", key="mc_btn"):
     daily_ret = net.pct_change().dropna().values
     if len(daily_ret) < 30:
         st.warning("Not enough history for a meaningful projection.")
@@ -1965,14 +1965,14 @@ if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
                                     line=dict(width=0), showlegend=False, hoverinfo="skip"))
         fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[5], mode="lines", fill="tonexty",
                                     fillcolor="rgba(153,167,150,0.15)", line=dict(width=0),
-                                    name="5th–95th percentile"))
+                                    name="5.–95. Perzentil"))
         fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[75], mode="lines",
                                     line=dict(width=0), showlegend=False, hoverinfo="skip"))
         fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[25], mode="lines", fill="tonexty",
                                     fillcolor="rgba(153,167,150,0.30)", line=dict(width=0),
-                                    name="25th–75th percentile"))
+                                    name="25.–75. Perzentil"))
         fig_mc.add_trace(go.Scatter(x=future_idx, y=bands[50], mode="lines",
-                                    line=dict(color=OAK_GOLD, width=2.5), name="Median path"))
+                                    line=dict(color=OAK_GOLD, width=2.5), name="Median-Pfad"))
         fig_mc = style_plotly(fig_mc, height=420)
         fig_mc.update_xaxes(title_text="Projected Date")
         fig_mc.update_yaxes(title_text="Projected Value (CHF)", tickformat=",.0f")
@@ -1980,11 +1980,11 @@ if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
 
         terminal = cum[:, -1]
         t1, t2, t3, t4, t5 = st.columns(5)
-        t1.metric("5th percentile", fmt_chf(np.percentile(terminal,5)))
-        t2.metric("25th percentile", fmt_chf(np.percentile(terminal,25)))
+        t1.metric("5. Perzentil", fmt_chf(np.percentile(terminal,5)))
+        t2.metric("25. Perzentil", fmt_chf(np.percentile(terminal,25)))
         t3.metric("Median", fmt_chf(np.percentile(terminal,50)))
-        t4.metric("75th percentile", fmt_chf(np.percentile(terminal,75)))
-        t5.metric("95th percentile", fmt_chf(np.percentile(terminal,95)))
+        t4.metric("75. Perzentil", fmt_chf(np.percentile(terminal,75)))
+        t5.metric("95. Perzentil", fmt_chf(np.percentile(terminal,95)))
         prob_loss = float(np.mean(terminal < start_value)) * 100
         st.markdown(
             f"<p style='color:{OAK_SAGE_DIM}; font-size:12px;'>"
@@ -2000,7 +2000,7 @@ if st.button("Run Monte-Carlo Simulation", key="mc_btn"):
 # in a flat/bear BTC regime the cash buffer dries up (no sell-downs, boost
 # pulls rent into BTC) and fees increasingly force BTC liquidation.
 # ==========================================================================
-st.markdown("## Fee Funding & Liquidity Stress")
+st.markdown("## Gebührenfinanzierung & Liquiditätsstress")
 st.markdown(
     "<p style='color:#A9B5A4;margin-top:-6px'>Woher die Gebühren real bezahlt "
     "wurden — und wie nah das Konstrukt an Liquiditätsdruck kam. Im Bull-Case "
@@ -2024,7 +2024,7 @@ runway = (float(ts["cash"].iloc[-1]) / _monthly_fee_now) if _monthly_fee_now > 0
 
 s1, s2, s3, s4 = st.columns(4)
 with s1:
-    st.metric("Fees via BTC-Verkauf", fmt_chf(fee_from_btc_total))
+    st.metric("Gebühren via BTC-Verkauf", fmt_chf(fee_from_btc_total))
     st.caption(f"{btc_share:.0f}% aller Gebühren")
 with s2:
     st.metric("Erster Zwangsverkauf", first_forced)
