@@ -2101,8 +2101,10 @@ with st.expander("Gebühren-Aufstellung je Periode"):
 st.markdown("---")
 if st.button("PDF-Tearsheet generieren (DE+EN)"):
     with st.spinner("Erzeuge PDF…"):
-        gross = ts["total_value"]
-        fee_drag = ((gross.iloc[-1] / initial_capital) ** (1 / years) - 1) - net_cagr
+        # NOTE: do NOT recompute `gross`/`fee_drag` here. Fees are charged inside
+        # run_re_btc as real cash outflows, so ts["total_value"] is ALREADY net —
+        # using it as "gross" made fee_drag collapse to 0.00%. The correct values
+        # are computed once in the Performance Summary block above.
         excess = net_cagr - re_cagr
 
         line_series = [
