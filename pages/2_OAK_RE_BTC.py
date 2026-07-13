@@ -500,6 +500,12 @@ def _clean_index(obj):
     if obj is None:
         return obj
     if hasattr(obj, "empty") and obj.empty:
+        # An empty Series/DataFrame defaults to a RangeIndex; returning it as-is
+        # makes later `index <= timestamp` comparisons raise TypeError under
+        # pandas 3.x. Give it an empty DatetimeIndex so comparisons stay safe.
+        if not isinstance(obj.index, pd.DatetimeIndex):
+            obj = obj.copy()
+            obj.index = pd.DatetimeIndex([])
         return obj
     if hasattr(obj.index, "tz") and obj.index.tz is not None:
         obj.index = obj.index.tz_localize(None)
@@ -522,7 +528,8 @@ def fetch_series(ticker, start, end):
     df = yf.download(ticker, start=start, end=end, progress=False,
                      auto_adjust=False, threads=False)
     if df is None or df.empty:
-        return pd.Series(dtype=float)
+        # Empty but DATE-indexed, so downstream `index <= d` comparisons are safe.
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     if isinstance(df.columns, pd.MultiIndex):
         col = ("Adj Close", ticker) if ("Adj Close", ticker) in df.columns else df.columns[0]
         s = df[col]

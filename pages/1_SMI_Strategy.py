@@ -90,6 +90,14 @@ def _clean_index(obj):
     if obj is None:
         return obj
     if hasattr(obj, "empty") and obj.empty:
+        # IMPORTANT: an empty Series/DataFrame defaults to a RangeIndex. Returning
+        # it unchanged makes every later `index <= timestamp` comparison raise a
+        # TypeError (int index vs Timestamp) under pandas 3.x. Give it an empty
+        # DatetimeIndex so downstream comparisons stay type-safe and simply
+        # yield empty results.
+        if not isinstance(obj.index, pd.DatetimeIndex):
+            obj = obj.copy()
+            obj.index = pd.DatetimeIndex([])
         return obj
     if hasattr(obj.index, "tz") and obj.index.tz is not None:
         obj.index = obj.index.tz_localize(None)
@@ -764,7 +772,8 @@ def fetch_series(ticker, start, end):
     df = yf.download(ticker, start=start, end=end, progress=False,
                      auto_adjust=False, threads=False)
     if df is None or df.empty:
-        return pd.Series(dtype=float)
+        # Empty but DATE-indexed, so downstream `index <= d` comparisons are safe.
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     if isinstance(df.columns, pd.MultiIndex):
         col = ("Adj Close", ticker) if ("Adj Close", ticker) in df.columns else df.columns[0]
         s = df[col]
@@ -1527,6 +1536,22 @@ if _show_results:
 
     if prices.empty:
         st.error("No price data received.")
+        st.stop()
+
+    # BTC and FX are mandatory for this strategy — without them the simulation is
+    # meaningless. Fail with a clear message instead of crashing deeper down.
+    _missing_feeds = []
+    if btc_series is None or btc_series.empty:
+        _missing_feeds.append("Bitcoin (BTC-USD)")
+    if fx is None or fx.empty:
+        _missing_feeds.append("FX (USDCHF=X)")
+    if _missing_feeds:
+        st.error(
+            "⚠️ Keine Daten für: " + ", ".join(_missing_feeds) + ". "
+            "Die Simulation braucht beide Reihen. Das ist meist eine temporäre "
+            "Yahoo-Finance-Störung oder ein Rate-Limit — bitte in ein paar Minuten "
+            "erneut versuchen (ggf. Cache leeren)."
+        )
         st.stop()
 
     # Handle tickers that failed to load (delisted, ticker change, data outage)
