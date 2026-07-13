@@ -2235,6 +2235,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                     ("sn_frequency", "Daily")]
 
         params_summary = [
+            ("Allocation Framework", "OAK Yield Bridge — core capital untouched; "
+                                     "only the income stream funds the satellite"),
             ("Initial Capital", f"CHF {initial_capital:,.0f}"),
             ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Residential RE / {initial_btc_pct*100:.0f}% BTC"),
             ("Capital-Value Source", f"SNB index '{series_label[:48]}' (quarterly, interpolated)"),

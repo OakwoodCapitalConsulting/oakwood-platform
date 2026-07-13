@@ -199,6 +199,49 @@ st.markdown(
 )
 
 st.markdown("<br>", unsafe_allow_html=True)
+
+# ---- The framework: one method, several applications -----------------------
+st.markdown(
+    f"<h3 style='color:{OAK_CREAM} !important; font-family:Inter, sans-serif; "
+    f"font-size:13px; text-transform:uppercase; letter-spacing:0.12em; "
+    f"font-weight:600; padding-bottom:6px; "
+    f"border-bottom:1px solid {OAK_GREEN_3}; margin-bottom:20px;'>The Framework</h3>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    f"""
+<div style="border:1px solid {OAK_BORDER}; border-left:3px solid {OAK_GOLD};
+            border-radius:6px; padding:22px 26px; margin-bottom:34px;
+            background:{OAK_GREEN_2};">
+  <div style="font-family:'Cormorant Garamond', Georgia, serif; color:{OAK_CREAM};
+              font-size:30px; font-weight:500; letter-spacing:-0.01em;
+              margin-bottom:6px;">OAK Yield Bridge</div>
+  <div style="color:{OAK_GOLD}; font-family:Inter, sans-serif; font-size:11px;
+              text-transform:uppercase; letter-spacing:0.12em; font-weight:600;
+              margin-bottom:14px;">Yield-Funded Allocation</div>
+  <p style="color:{OAK_CREAM_DIM}; font-size:15px; line-height:1.65;
+            max-width:820px; margin:0 0 16px 0;">
+    A rule-based, forecast-free allocation framework. A Swiss real-asset or
+    blue-chip <strong style="color:{OAK_CREAM};">core</strong> stays untouched and
+    produces an <strong style="color:{OAK_CREAM};">income stream</strong> — rent or
+    dividends. Only that income funds a
+    <strong style="color:{OAK_CREAM};">satellite</strong> allocation, deployed
+    through counter-cyclical bands with a hard cap. No forecasts, no market timing,
+    no optimisation of fitted parameters.
+  </p>
+  <div style="color:{OAK_SAGE}; font-family:Inter, sans-serif; font-size:13px;
+              line-height:1.9;">
+    <strong style="color:{OAK_CREAM};">Core</strong> → produces income ·
+    <strong style="color:{OAK_CREAM};">Income</strong> → funds the satellite ·
+    <strong style="color:{OAK_CREAM};">Bands</strong> → govern the pace and cap the risk<br>
+    <span style="color:{OAK_CREAM_DIM};">The core capital is never sold.
+    The strategies below are two applications of the same method.</span>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True
+)
+
 st.markdown(
     f"<h3 style='color:{OAK_CREAM} !important; font-family:Inter, sans-serif; "
     f"font-size:13px; text-transform:uppercase; letter-spacing:0.12em; "

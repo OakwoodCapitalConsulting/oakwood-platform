@@ -2693,6 +2693,9 @@ if _show_results:
                     fee_table_rows=fee_rows,
                     figures=pdf_figures,
                     params_summary=[
+                        ("Allocation Framework", "OAK Yield Bridge — core capital "
+                                                 "untouched; only the income stream "
+                                                 "funds the satellite"),
                         ("Initial Capital", f"CHF {initial_capital:,.0f}"),
                         ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Equity / {initial_btc_pct*100:.0f}% BTC"),
                         ("BTC Upper Threshold", f"{upper_threshold*100:.0f}%"),
