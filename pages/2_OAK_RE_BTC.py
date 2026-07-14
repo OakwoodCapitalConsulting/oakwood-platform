@@ -981,6 +981,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     rent_total = 0.0                # all net rent collected
     reinvest_total = 0.0            # cash swept back into property
     cash_drag = 0.0                 # interest foregone on the uninvested buffer
+    cash_interest_total = 0.0       # interest actually credited to the buffer
 
     prop0 = cap - btc_chf0 - cash0                  # rest goes into property
     prop_units = prop0 / pidx.iloc[0]
@@ -993,7 +994,8 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     fee_floor = cash0 # min cash protected from the block reinvest (the cushion)
     fee_debt = 0.0    # accrued mgmt fee that could not be funded (should ~never)
 
-    rf_cash = float(params.get("cash_rate", 0.0))   # SARON-like rate for the drag memo
+    rf_cash = float(params.get("cash_rate", 0.0))   # SARON-like rate ACTUALLY paid on cash
+    rf_opp = float(params.get("risk_free_rate", 0.0))  # reference rate for the drag memo
     ny = float(params["net_yield"])
     lo = float(params["lower_threshold"])
     up = float(params["upper_threshold"])
@@ -1055,8 +1057,17 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
         is_qe = is_me and d.month in (3, 6, 9, 12)
 
-        # opportunity cost of holding the buffer uninvested (memo item, not P&L)
-        cash_drag += (cash + rent_pool) * (rf_cash / 365.0)
+        # ---- cash interest (REAL, part of the P&L) ------------------------
+        # The buffer earns cash_rate (SARON-like). Previously this rate was only
+        # used for a memo and never credited — the buffer sat at 0% regardless.
+        if rf_cash > 0 and cash > 0:
+            _int = cash * (rf_cash / 365.0)
+            cash += _int
+            cash_interest_total += _int
+        # Opportunity cost MEMO: what the buffer forgoes versus the risk-free
+        # rate. Zero when the cash is already remunerated at the risk-free rate.
+        _spread = max(rf_opp - rf_cash, 0.0)
+        cash_drag += (cash + rent_pool) * (_spread / 365.0)
 
         # ---- month-end: net rent accrues into the rent pool ----------------
         if is_me:
@@ -1231,13 +1242,14 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     nav_end = float(out["total_value"].iloc[-1])
     pnl = nav_end - cap
     recon = (prop_appreciation + rent_total + btc_init_gain + btc_dca_gain
-             - fees_total)
+             + cash_interest_total - fees_total)
 
     out.attrs["attribution"] = {
         "prop_appreciation": prop_appreciation,   # SNB index on the property held
         "rent_income": rent_total,                # net rent collected
         "btc_initial_gain": btc_init_gain,        # day-1 lump sum, isolated
         "btc_dca_gain": btc_dca_gain,             # rent-funded purchases, isolated
+        "cash_interest": cash_interest_total,     # interest credited to the buffer
         "fees": -fees_total,                      # negative by construction
         "total_pnl": pnl,
         "reconciliation_error": recon - pnl,      # must be ~0
@@ -1530,7 +1542,7 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
                   crystallization_freq=crystallization_freq,
                   initial_cash_pct=initial_cash_pct,
                   reinvest_floor_pct=reinvest_floor_pct,
-                  cash_rate=cash_rate,
+                  cash_rate=cash_rate, risk_free_rate=risk_free_rate,
                   tx_cost_bps=tx_cost_bps)
 
     ts = run_re_btc(prop_daily, btc_chf, params)
@@ -1658,6 +1670,7 @@ if _att:
         ("Mieterträge (netto)",                            _att["rent_income"]),
         ("Bitcoin — Startallokation (Tag 1)",              _att["btc_initial_gain"]),
         ("Bitcoin — mietertragsfinanzierter DCA",          _att["btc_dca_gain"]),
+        ("Cash-Zins (Puffer)",                             _att.get("cash_interest", 0.0)),
         ("Gebühren",                                       _att["fees"]),
     ]
     _html = ["<table class='oak-metrics-table'><thead><tr>"
@@ -1704,8 +1717,9 @@ if _att:
                 "Mietertragsmechanismus trägt den Bitcoin-Beitrag substanziell.")
 
     st.caption(
-        f"Memo · Cash-Drag (entgangener Zins auf dem unverzinsten Puffer bei "
-        f"{risk_free_rate*100:.2f}% p.a.): {fmt_chf(_att['cash_drag'])} — "
+        f"Memo · Cash-Drag (Opportunitätskosten: Puffer verzinst zu "
+        f"{cash_rate*100:.2f}% statt {risk_free_rate*100:.2f}% p.a.): "
+        f"{fmt_chf(_att['cash_drag'])} — "
         f"Opportunitätskosten, nicht Teil der P&L. · "
         f"Abstimmdifferenz der Zerlegung: {_att['reconciliation_error']:+.2f} CHF.")
 
