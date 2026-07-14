@@ -33,7 +33,7 @@ def load_logo_base64():
 
 
 st.set_page_config(
-    page_title="Oakwood Capital — Strategy Platform",
+    page_title="Oakwood Capital — Strategie-Plattform",
     page_icon="🌳",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -292,6 +292,27 @@ with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     if hasattr(st, "page_link"):
         st.page_link("pages/2_OAK_RE_BTC.py", label="Swiss Residential / Bitcoin öffnen →",
+                     use_container_width=True)
+
+with st.container():
+    st.markdown(f"""
+<div class="strategy-card">
+    <span class="strat-tag">Strategie 03 · Kern: Schweizer Private Debt</span>
+    <h3>OAK Swiss Private Debt / Bitcoin</h3>
+    <p>Diversifiziertes, immobilienbesichertes Schweizer Kreditbuch. Der
+    thesaurierende Ertrag wird monatlich geerntet — es wird nur der NAV-Zuwachs
+    redimiert, nie das eingesetzte Kapital — und über Bandregeln in Bitcoin
+    investiert. Wachstum über neue Zeichnungen. Parametrische Simulation.</p>
+    <div class="strat-meta">
+        Universum: <strong>CH Hypothekarkredite</strong> ·
+        Ertrag: <strong>Ernte statt Coupon</strong> ·
+        BTC: <strong>Band 10–25 %</strong>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+    if hasattr(st, "page_link"):
+        st.page_link("pages/3_OAK_Private_Debt_BTC.py",
+                     label="Swiss Private Debt / Bitcoin öffnen →",
                      use_container_width=True)
 
 # Footer
