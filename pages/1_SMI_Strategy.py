@@ -889,6 +889,13 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     smi_shares = {t: 0.0 for t in available}
     transactions = []
+    # --- Attribution ------------------------------------------------------
+    att_btc_init_invested = initial_capital * initial_btc_pct   # brutto CHF, Tag 1
+    att_btc_dca_invested = 0.0        # brutto CHF via Dividenden-DCA
+    att_sold_gross_init = 0.0         # Brutto-Verkaufswert aus dem Start-Lot
+    att_sold_gross_dca = 0.0          # Brutto-Verkaufswert aus dem DCA-Lot
+    att_div_income = 0.0              # vereinnahmte Netto-Dividenden
+    att_equity_invested = initial_capital * (1 - initial_btc_pct)  # brutto in Aktien
     # Per-event log of the actual net dividend cash harvested on the *live*
     # (evolving) share counts — this is the real cash that funds the BTC DCA,
     # as opposed to a frozen initial-share approximation.
@@ -902,6 +909,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         for t in active_t0:
             smi_shares[t] = (investable * w_t0[t]) / prices_clean.loc[first_day, t]
         btc_held = 0.0
+        btc_u_init = 0.0
+        btc_u_dca = 0.0
     else:
         # Cost charged on both equity and BTC legs of the initial allocation
         cost = initial_capital * tx_cost
@@ -912,6 +921,10 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         btc_invest = initial_btc_chf - initial_btc_chf * tx_cost
         usd_0 = btc_invest / fx_0
         btc_held = usd_0 / btc_price_0
+        # ATTRIBUTION: zwei getrennte Lots — Startallokation (Tag 1) vs.
+        # dividendenfinanzierter DCA. Verkäufe reduzieren sie PRO RATA.
+        btc_u_init = btc_held
+        btc_u_dca = 0.0
         transactions.append({
             "date": first_day, "type": "BUY", "reason": "INITIAL",
             "btc_amount": btc_held, "chf_amount": initial_btc_chf,
@@ -952,6 +965,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     # cash is already net (×0.65); back out the 35% withheld
                     total_wht += cash * (WITHHOLDING_TAX / DIVIDEND_NET_FACTOR)
                     dividend_cash += cash
+                    att_div_income += cash
                     pending_dca.append({"remaining": dca_months,
                                         "monthly_chf": cash / dca_months,
                                         "ticker": t})
@@ -977,6 +991,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                 usd = net_dca_chf / fx_d
                 btc_bought = usd / btc_price_d
                 btc_held += btc_bought
+                btc_u_dca += btc_bought              # DCA-Lot
+                att_btc_dca_invested += total_dca_chf  # brutto (inkl. tx)
                 transactions.append({
                     "date": d, "type": "BUY", "reason": "DCA",
                     "btc_amount": btc_bought, "chf_amount": total_dca_chf,
@@ -996,6 +1012,15 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     sell_usd = sell_chf / fx_d
                     sell_btc = sell_usd / btc_price_d
                     btc_held -= sell_btc
+                    # PRO RATA (nie FIFO — sonst verzerrt die Verkaufsreihenfolge
+                    # die Attribution)
+                    _tot_u = btc_u_init + btc_u_dca
+                    _f_init = (btc_u_init / _tot_u) if _tot_u > 0 else 0.0
+                    btc_u_init -= sell_btc * _f_init
+                    btc_u_dca -= sell_btc * (1 - _f_init)
+                    att_sold_gross_init += sell_chf * _f_init
+                    att_sold_gross_dca += sell_chf * (1 - _f_init)
+                    att_equity_invested += sell_chf   # Erlös geht in Aktien
 
                     # Transaction cost on the BTC sale and the equity re-purchase
                     # (two legs: selling BTC, buying equity with the proceeds)
@@ -1066,6 +1091,50 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     evts = pd.DataFrame(threshold_events) if threshold_events else pd.DataFrame()
     ts.attrs["total_tx_costs"] = total_tx_costs
     ts.attrs["total_wht"] = total_wht
+
+    # ================= RENDITEZERLEGUNG (ATTRIBUTION) =====================
+    # Zerlegt die BRUTTO-P&L (vor Management-/Performance-Gebühren, die
+    # nachgelagert in apply_fees anfallen). Herleitung: die Verkaufserlöse
+    # fliessen in die Aktien, deshalb heben sich die Brutto-Verkaufswerte
+    # zwischen Aktien-Basis und BTC-Lots exakt auf:
+    #
+    #   NAV_end − Startkapital = Aktien + Dividenden + BTC(Start) + BTC(DCA)
+    #
+    # Sämtliche Transaktionskosten werden dabei von der jeweiligen Position
+    # absorbiert (Aktien-Legs in der Aktienposition, BTC-Legs in den Lots).
+    _last = ts.index[-1]
+    _row_last = prices_clean.loc[_last] if _last in prices_clean.index else None
+    _smi_end = float(ts["smi_value"].iloc[-1])
+    _btc_px = get_btc_price(_last)
+    _fx_px = get_fx(_last)
+    _pxchf = (_btc_px * _fx_px) if (_btc_px and _fx_px) else 0.0
+
+    _btc_init_end = btc_u_init * _pxchf
+    _btc_dca_end = btc_u_dca * _pxchf
+
+    equity_gain = _smi_end - att_equity_invested
+    btc_init_gain = (_btc_init_end + att_sold_gross_init) - att_btc_init_invested
+    btc_dca_gain = (_btc_dca_end + att_sold_gross_dca) - att_btc_dca_invested
+
+    _btc_tot = btc_init_gain + btc_dca_gain
+    _dca_share = (btc_dca_gain / _btc_tot) if abs(_btc_tot) > 1e-9 else float("nan")
+
+    _nav_end = float(ts["total_value"].iloc[-1])
+    _pnl_gross = _nav_end - initial_capital
+    _recon = equity_gain + att_div_income + btc_init_gain + btc_dca_gain
+
+    ts.attrs["attribution"] = {
+        "equity_gain": equity_gain,             # Aktien inkl. aller Aktien-Trading-Kosten
+        "dividend_income": att_div_income,      # netto nach 35% Verrechnungssteuer
+        "btc_initial_gain": btc_init_gain,      # Lump Sum Tag 1, isoliert
+        "btc_dca_gain": btc_dca_gain,           # dividendenfinanziert, isoliert
+        "total_pnl_gross": _pnl_gross,          # vor Mgmt-/Perf-Gebühren
+        "reconciliation_error": _recon - _pnl_gross,   # muss ~0 sein
+        "dca_share": _dca_share,                # DIE Zahl
+        "btc_initial_invested": att_btc_init_invested,
+        "btc_dca_invested": att_btc_dca_invested,
+        "years": max((ts.index[-1] - ts.index[0]).days / 365.25, 1e-9),
+    }
     ts.attrs["dividend_cashflows"] = (
         pd.DataFrame(dividend_cashflows)
         if dividend_cashflows
@@ -1682,6 +1751,84 @@ if _show_results:
     # =====================================================================
     # Portfolio Evolution
     # =====================================================================
+    # =====================================================================
+    # RENDITEZERLEGUNG (ATTRIBUTION) — die zentrale Ehrlichkeits-Kennzahl.
+    # Zeigt, wie viel der Rendite wirklich aus dem dividendenfinanzierten DCA
+    # stammt und wie viel aus der Bitcoin-Startallokation vom Tag 1.
+    # =====================================================================
+    st.markdown("## Renditezerlegung")
+    _att = ts.attrs.get("attribution", {})
+    if _att:
+        _yrs = _att["years"]
+
+        def _pp(chf):
+            return (chf / initial_capital) / _yrs * 100
+
+        st.markdown(
+            "<p style='color:#A9B5A4;margin-top:-6px'>Zerlegung der Brutto-P&amp;L "
+            "in ihre Quellen (vor Management- und Performance-Gebühren). Die "
+            "Positionen summieren sich exakt auf die Gesamt-P&amp;L; sämtliche "
+            "Transaktionskosten sind in den jeweiligen Positionen enthalten.</p>",
+            unsafe_allow_html=True)
+
+        _rows = [
+            ("Aktien-Kapitalwertentwicklung (SMI)", _att["equity_gain"]),
+            ("Dividendenerträge (netto, nach 35% VSt)", _att["dividend_income"]),
+            ("Bitcoin — Startallokation (Tag 1)", _att["btc_initial_gain"]),
+            ("Bitcoin — dividendenfinanzierter DCA", _att["btc_dca_gain"]),
+        ]
+        _html = ["<table class='oak-metrics-table'><thead><tr>"
+                 "<th>Beitrag</th><th>CHF</th><th>%-Punkte p.a.</th></tr></thead><tbody>"]
+        for _lab, _v in _rows:
+            _col = OAK_GOLD if "DCA" in _lab else OAK_CREAM
+            _html.append(
+                f"<tr><td class='metric-label'>{_lab}</td>"
+                f"<td class='strategy-col' style='color:{_col}'>{_v:+,.0f}</td>"
+                f"<td style='color:{_col}'>{_pp(_v):+.2f}</td></tr>")
+        _html.append(
+            f"<tr class='oak-section'><td>Total brutto (= NAV − Startkapital)</td>"
+            f"<td>{_att['total_pnl_gross']:+,.0f}</td>"
+            f"<td>{_pp(_att['total_pnl_gross']):+.2f}</td></tr>")
+        _html.append("</tbody></table>")
+        st.markdown("".join(_html), unsafe_allow_html=True)
+
+        _dca = _att["dca_share"]
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            st.metric("DCA-Anteil am BTC-Gewinn",
+                      "n/a" if _dca != _dca else f"{_dca*100:.1f}%")
+            st.caption("DCA / (DCA + Startallokation)")
+        with b2:
+            st.metric("BTC Startallokation", fmt_chf(_att["btc_initial_invested"]))
+            st.caption("am Tag 1 investiert")
+        with b3:
+            st.metric("BTC via Dividenden investiert", fmt_chf(_att["btc_dca_invested"]))
+            st.caption("über die gesamte Laufzeit")
+
+        if _dca == _dca:
+            if _dca < 0.30:
+                st.warning(
+                    f"⚠️ **Der DCA-Anteil liegt bei {_dca*100:.1f}%.** Der weit "
+                    "überwiegende Teil des Bitcoin-Gewinns stammt aus der "
+                    "Startallokation vom ersten Tag, nicht aus dem "
+                    "dividendenfinanzierten DCA. Unterhalb von ~30% beschreibt "
+                    "«dividendenfinanzierte BTC-Allokation» eher das Etikett als "
+                    "den Mechanismus. Wichtig zur Einordnung: der DCA-Anteil ist "
+                    "**invers zum Einstiegsglück** — je schlechter der "
+                    "Einstiegszeitpunkt, desto grösser der Beitrag des DCA. Ein "
+                    "tiefer Wert bedeutet hier vor allem, dass der Backtest-"
+                    "Zeitraum für die Startallokation günstig lag.")
+            else:
+                st.success(
+                    f"✅ Der DCA-Anteil liegt bei {_dca*100:.1f}% — der "
+                    "Dividendenmechanismus trägt den Bitcoin-Beitrag substanziell.")
+
+        st.caption(
+            f"Abstimmdifferenz der Zerlegung: "
+            f"{_att['reconciliation_error']:+.2f} CHF · Gebühren "
+            f"({fmt_chf(total_mgmt_fees + total_perf_fees)}) werden nachgelagert "
+            "auf die Brutto-Kurve angewandt und sind hier nicht enthalten.")
+
     st.markdown("## Portfolioentwicklung vs. Benchmarks")
     fig = make_subplots(specs=[[{"secondary_y": False}]])
     # Net strategy (primary, gold, filled)
@@ -1987,6 +2134,200 @@ if _show_results:
     # =====================================================================
     # Parameter Sensitivity Analysis (Heatmap)
     # =====================================================================
+    # ======================================================================
+    # ROBUSTHEIT — vereinfachtes Grid + Startdatum-Sensitivität
+    #
+    # Trick: die SMI-Engine ist GEBÜHRENUNABHÄNGIG (Fees werden nachgelagert
+    # via apply_fees auf die Brutto-Kurve gelegt und beeinflussen weder die
+    # BTC-Lots noch das Rebalancing). Also läuft die teure Engine nur einmal
+    # je (Startallokation × Fenster); die vier Fee-Stufen werden danach quasi
+    # gratis daraufgelegt. Das viertelt die Laufzeit.
+    #
+    # Folge daraus: der DCA-Anteil ist beim SMI per Konstruktion fee-unabhängig
+    # — deshalb hier eine Balkengrafik statt einer Heatmap.
+    # ======================================================================
+    st.markdown("## Robustheit — Grid & Startdatum")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Ein einzelnes Startdatum ist "
+        "keine Evidenz. Die Engine läuft über mehrere Startallokationen und viele "
+        "rollierende Startzeitpunkte — ausgewiesen wird die Verteilung, nicht der "
+        "Bestwert.</p>", unsafe_allow_html=True)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_smi_robustness(_prices, _divs, _btc, _fx, _weights, cap,
+                               allocs, fees, upper, target, dca_m, txbps,
+                               win_years, step_months, cryst, hurdle_t, hurdle_r,
+                               perf_rate):
+        """Engine EINMAL je (alloc, window); Fees danach analytisch drauf."""
+        full = _prices.index
+        if len(full) < 400:
+            return pd.DataFrame()
+        starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                               freq=f"{step_months}MS")
+        rows = []
+        for alloc in allocs:
+            for s in starts:
+                e = s + pd.DateOffset(years=win_years)
+                w = full[(full >= s) & (full <= e)]
+                if len(w) < 300:
+                    continue
+                try:
+                    _ts, _, _ = run_strategy(
+                        _prices.loc[w], _divs, _btc, _fx,
+                        initial_capital=cap, weights=_weights,
+                        initial_btc_pct=alloc, upper_threshold=upper,
+                        target_btc_pct=min(target, upper - 0.01),
+                        rebalance_dates_set=set(), dca_months=dca_m,
+                        tx_cost_bps=txbps)
+                except Exception:
+                    continue
+                if _ts.empty:
+                    continue
+                _gross = _ts["total_value"]
+                _att = _ts.attrs.get("attribution", {})
+                _yrs = max((_gross.index[-1] - _gross.index[0]).days / 365.25, 1e-9)
+                for f in fees:   # billig: nur die Fee-Schicht
+                    _net, _, _, _ = apply_fees(
+                        _gross, cap, mgmt_fee_annual=f, perf_fee_rate=perf_rate,
+                        hwm_hurdle=hurdle_r, crystallization_freq=cryst,
+                        hurdle_type=hurdle_t)
+                    _cagr = (_net.iloc[-1] / cap) ** (1 / _yrs) - 1
+                    rows.append({"alloc": alloc, "fee": f, "start": s,
+                                 "net_cagr": _cagr,
+                                 "dca_share": _att.get("dca_share", np.nan)})
+        return pd.DataFrame(rows)
+
+    _s1, _s2, _s3 = st.columns(3)
+    with _s1:
+        _sw = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0, key="smi_rb_win")
+    with _s2:
+        _sstep = st.selectbox("Fenster-Schritt", ["halbjährlich", "quartalsweise"],
+                              index=0, key="smi_rb_step",
+                              help="Quartalsweise ist gründlicher, dauert aber "
+                                   "rund doppelt so lange.")
+    with _s3:
+        st.caption("")
+        _sgo = st.button("Robustheitsanalyse starten", key="smi_rb_go")
+
+    if _sgo:
+        st.session_state["smi_rb_has_run"] = True
+
+    if st.session_state.get("smi_rb_has_run"):
+        _sallocs = [0.0, 0.05, 0.10, 0.20]
+        _sfees = [0.0200, 0.0150, 0.0100, 0.0075]
+        _sm = 6 if _sstep == "halbjährlich" else 3
+
+        with st.spinner("Rechne Grid über alle rollierenden Fenster…"):
+            sgrid = compute_smi_robustness(
+                prices, divs, btc_series, fx, weights, initial_capital,
+                _sallocs, _sfees, upper_threshold, target_btc_pct, dca_months,
+                tx_cost_bps, _sw, _sm, crystallization_freq, hurdle_type,
+                hwm_hurdle_pct, perf_fee_pct)
+
+        if sgrid.empty:
+            st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
+        else:
+            _nw = sgrid["start"].nunique()
+            st.caption(
+                f"{sgrid['alloc'].nunique() * _nw:,} Engine-Läufe · {_nw} rollierende "
+                f"{_sw}-Jahres-Fenster · Gebühren nachgelagert aufgelegt (die Engine "
+                f"ist gebührenunabhängig)")
+
+            # ---- 1) Netto-CAGR: Startallokation × Fee ----------------------
+            st.markdown("##### Netto-CAGR (Median über alle Fenster) — Startallokation × Management Fee")
+            spiv = (sgrid.groupby(["alloc", "fee"])["net_cagr"].median().unstack() * 100)
+            figs = go.Figure(data=go.Heatmap(
+                z=spiv.values,
+                x=[f"{f*100:.2f}%" for f in spiv.columns],
+                y=[f"{a*100:.0f}%" for a in spiv.index],
+                colorscale=[[0, OAK_GREEN_2], [0.5, OAK_SAGE], [1, OAK_GOLD]],
+                text=[[f"{v:.1f}%" for v in r] for r in spiv.values],
+                texttemplate="%{text}", showscale=False))
+            figs.update_xaxes(title_text="Management Fee (p.a.)", type="category")
+            figs.update_yaxes(title_text="Startallokation BTC", type="category")
+            figs = style_plotly(figs, height=320)
+            st.plotly_chart(figs, use_container_width=True)
+
+            # ---- 2) DCA-Anteil (fee-unabhängig -> Balken statt Heatmap) ----
+            st.markdown("##### DCA-Anteil am BTC-Gewinn (Median) — hält der Name, was er verspricht?")
+            sd = sgrid.groupby("alloc")["dca_share"].median() * 100
+            figd = go.Figure(go.Bar(
+                x=[f"{a*100:.0f}%" for a in sd.index], y=sd.values,
+                marker_color=[OAK_GOLD if v >= 30 else "#8C3A2B" for v in sd.values],
+                text=[f"{v:.0f}%" for v in sd.values], textposition="outside"))
+            figd.add_hline(y=30, line=dict(color=OAK_SAGE, dash="dot"),
+                           annotation_text="30%-Schwelle",
+                           annotation_font=dict(color=OAK_SAGE, size=10))
+            figd.update_xaxes(title_text="Startallokation BTC", type="category")
+            figd.update_yaxes(title_text="DCA-Anteil (%)")
+            figd = style_plotly(figd, height=320)
+            st.plotly_chart(figd, use_container_width=True)
+            st.caption(
+                "Der DCA-Anteil ist beim SMI **fee-unabhängig** (die Gebühren werden "
+                "auf die Brutto-Kurve gelegt und treffen beide BTC-Lots gleich). "
+                "Wichtig: er ist **invers zum Einstiegsglück** — ein tiefer Wert heisst "
+                "vor allem, dass der Zeitraum für die Startallokation günstig lag.")
+
+            # ---- 3) Verteilung + Streuung ---------------------------------
+            st.markdown("##### Verteilung der Netto-CAGR je Startallokation")
+            figb = go.Figure()
+            for a in _sallocs:
+                v = sgrid.loc[sgrid["alloc"] == a, "net_cagr"] * 100
+                figb.add_trace(go.Box(y=v, name=f"{a*100:.0f}%", marker_color=OAK_GOLD,
+                                      line_color=OAK_SAGE, boxmean=True))
+            figb.update_xaxes(title_text="Startallokation BTC", type="category")
+            figb.update_yaxes(title_text="Netto-CAGR (%)")
+            figb = style_plotly(figb, height=360)
+            figb.update_layout(showlegend=False)
+            st.plotly_chart(figb, use_container_width=True)
+
+            sdist = (sgrid.groupby("alloc")["net_cagr"]
+                     .agg(Minimum="min", P25=lambda s: s.quantile(.25), Median="median",
+                          P75=lambda s: s.quantile(.75), Maximum="max") * 100).round(2)
+            sdist["Streuung"] = (sdist["Maximum"] - sdist["Minimum"]).round(2)
+            sdist.index = [f"{a*100:.0f}%" for a in sdist.index]
+            sdist.index.name = "Startallokation"
+            st.dataframe(sdist.style.format("{:.2f}%"), use_container_width=True)
+            st.caption(
+                "⚠️ **Das Minimum ist kein Risikomass** — die Datenreihe enthält kein "
+                "3-Jahres-Fenster mit einem Bitcoin-Kollaps ohne Erholung. Das "
+                "belastbare Signal ist die **Streuung**: sie misst, wie stark das "
+                "Ergebnis vom Einstiegszeitpunkt abhängt.")
+
+            # ---- 4) Worst-Entry -------------------------------------------
+            st.markdown("##### Worst-Entry — der Investor mit dem schlechtesten Einstieg")
+            _cur = min(_sallocs, key=lambda a: abs(a - initial_btc_pct))
+            _sg = sgrid[(sgrid["alloc"] == _cur)
+                        & (np.isclose(sgrid["fee"], mgmt_fee_pct))]
+            if _sg.empty:
+                _sg = sgrid[sgrid["alloc"] == _cur]
+            if not _sg.empty:
+                _wst = _sg.loc[_sg["net_cagr"].idxmin()]
+                w1, w2, w3, w4 = st.columns(4)
+                with w1:
+                    st.metric("Schlechtestes Fenster", f"{_wst['net_cagr']*100:.1f}% p.a.")
+                    st.caption(f"Einstieg {_wst['start']:%b %Y}")
+                with w2:
+                    _wd = _wst["dca_share"]
+                    st.metric("DCA-Anteil dort",
+                              "n/a" if _wd != _wd else f"{_wd*100:.0f}%")
+                    st.caption("Mechanismus im Stressfall")
+                with w3:
+                    st.metric("Median", f"{_sg['net_cagr'].median()*100:.1f}% p.a.")
+                    st.caption("mittleres Fenster")
+                with w4:
+                    _sp = (_sg["net_cagr"].max() - _sg["net_cagr"].min()) * 100
+                    st.metric("Streuung", f"{_sp:.0f} pp")
+                    st.caption("Max − Min über alle Fenster")
+                st.caption(
+                    f"Bei {_cur*100:.0f}% Startallokation und {mgmt_fee_pct*100:.2f}% Fee. "
+                    "Je schlechter der Einstieg, desto wichtiger wird der "
+                    "dividendenfinanzierte DCA — er kauft antizyklisch nach, während "
+                    "der Aktienkern unangetastet weiterläuft.")
+
+            st.session_state["smi_rb_dist"] = sdist
+
+
     st.markdown("## Parameter-Sensitivität")
     st.markdown(
         f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
@@ -2658,6 +2999,91 @@ if _show_results:
                 _rebalance_freq_en    = _PARAM_DE_EN.get(rebalance_freq,   rebalance_freq)
                 _crystallization_en   = _PARAM_DE_EN.get(crystallization_freq, crystallization_freq)
 
+                # ---- Renditezerlegung als PDF-Sektion ---------------------
+                def _xtabs_smi(lang):
+                    de = (lang == "de")
+                    _a = ts.attrs.get("attribution", {})
+                    if not _a:
+                        return []
+                    _yy = _a["years"]
+                    def _pp(v):
+                        return f"{(v / initial_capital) / _yy * 100:+.2f}"
+                    labels = ([("Aktien-Kapitalwertentwicklung (SMI)", "equity_gain"),
+                               ("Dividendenerträge (netto, nach 35% VSt)", "dividend_income"),
+                               ("Bitcoin — Startallokation (Tag 1)", "btc_initial_gain"),
+                               ("Bitcoin — dividendenfinanzierter DCA", "btc_dca_gain")]
+                              if de else
+                              [("Equity capital appreciation (SMI)", "equity_gain"),
+                               ("Dividend income (net of 35% WHT)", "dividend_income"),
+                               ("Bitcoin — initial allocation (day 1)", "btc_initial_gain"),
+                               ("Bitcoin — dividend-funded DCA", "btc_dca_gain")])
+                    rows = [[lab, f"{_a.get(k, 0.0):+,.0f}", _pp(_a.get(k, 0.0))]
+                            for lab, k in labels]
+                    rows.append([("Total brutto (= NAV − Startkapital)" if de else
+                                  "Total gross (= NAV − initial capital)"),
+                                 f"{_a['total_pnl_gross']:+,.0f}",
+                                 _pp(_a["total_pnl_gross"])])
+                    _ds = _a.get("dca_share")
+                    _dstxt = "n/a" if _ds != _ds else f"{_ds*100:.1f}%"
+                    _out = [{
+                        "eyebrow": "08",
+                        "title": "Renditezerlegung" if de else "Return Attribution",
+                        "subtitle": (
+                            f"DCA-Anteil am BTC-Gewinn: {_dstxt} — der Rest stammt aus der "
+                            f"Startallokation vom ersten Tag. Vor Management- und "
+                            f"Performance-Gebühren; Transaktionskosten sind in den "
+                            f"jeweiligen Positionen enthalten."
+                            if de else
+                            f"DCA share of the BTC gain: {_dstxt} — the remainder comes from "
+                            f"the day-1 initial allocation. Before management and performance "
+                            f"fees; transaction costs are absorbed by the respective lines."),
+                        "headers": (["Beitrag", "CHF", "%-Punkte p.a."] if de else
+                                    ["Contribution", "CHF", "pp p.a."]),
+                        "rows": rows,
+                        "note": (
+                            "Der DCA-Anteil misst, wie viel des Bitcoin-Gewinns aus dem "
+                            "dividendenfinanzierten Mechanismus stammt und wie viel aus der "
+                            "Startallokation. Er ist invers zum Einstiegsglück: je schlechter "
+                            "der Einstiegszeitpunkt, desto grösser der Beitrag des DCA. Ein "
+                            "tiefer Wert zeigt daher primär an, dass der Backtest-Zeitraum "
+                            "für die Startallokation günstig lag."
+                            if de else
+                            "The DCA share measures how much of the Bitcoin gain came from the "
+                            "dividend-funded mechanism versus the initial allocation. It is "
+                            "inverse to entry luck: the worse the entry point, the larger the "
+                            "DCA contribution. A low value therefore mainly indicates that the "
+                            "backtest period was favourable for the initial allocation."),
+                    }]
+                    _sd = st.session_state.get("smi_rb_dist")
+                    if _sd is not None and not _sd.empty:
+                        _out.append({
+                            "eyebrow": "09",
+                            "title": ("Robustheit — Verteilung über rollierende Fenster"
+                                      if de else
+                                      "Robustness — Distribution across rolling windows"),
+                            "subtitle": (
+                                "Netto-CAGR je Startallokation über alle rollierenden "
+                                "Fenster und alle Gebührenstufen."
+                                if de else
+                                "Net CAGR by initial allocation across all rolling windows "
+                                "and all fee levels."),
+                            "headers": ([("Startallokation" if de else "Initial allocation")]
+                                        + list(_sd.columns)),
+                            "rows": [[str(i)] + [f"{v:.2f}%" for v in _sd.loc[i].tolist()]
+                                     for i in _sd.index],
+                            "note": (
+                                "Das Minimum ist KEIN Risikomass — die Datenreihe enthält kein "
+                                "Fenster mit einem Bitcoin-Kollaps ohne Erholung. Das belastbare "
+                                "Signal ist die Streuung: sie misst, wie stark das Ergebnis vom "
+                                "Einstiegszeitpunkt abhängt."
+                                if de else
+                                "The minimum is NOT a risk measure — the sample contains no "
+                                "window with a Bitcoin collapse without recovery. The meaningful "
+                                "signal is the spread: it measures how strongly the outcome "
+                                "depends on the entry point."),
+                        })
+                    return _out
+
                 pdf_bytes = build_bilingual_tearsheet(
                     strategy_name="OAK Swiss Blue Chip / Bitcoin",
                     strategy_subtitle_de=(
@@ -2693,9 +3119,18 @@ if _show_results:
                     fee_table_rows=fee_rows,
                     figures=pdf_figures,
                     params_summary=[
-                        ("Allocation Framework", "OAK Yield Bridge — core capital "
-                                                 "untouched; only the income stream "
-                                                 "funds the satellite"),
+                        ("Allocation Framework",
+                         ("OAK Yield Bridge (pure) — the satellite is funded exclusively "
+                          "by net dividend income; the equity core is never sold"
+                          if initial_btc_pct <= 0 else
+                          f"OAK Yield Bridge with strategic initial allocation — "
+                          f"{initial_btc_pct*100:.0f}% of capital is allocated to Bitcoin "
+                          f"on day 1; net dividend income funds all further purchases")),
+                        ("DCA Share of BTC Gain",
+                         ("n/a" if ts.attrs.get("attribution", {}).get("dca_share")
+                          != ts.attrs.get("attribution", {}).get("dca_share")
+                          else f"{ts.attrs['attribution']['dca_share']*100:.1f}% "
+                               f"(dividend-funded vs. day-1 lump sum)")),
                         ("Initial Capital", f"CHF {initial_capital:,.0f}"),
                         ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Equity / {initial_btc_pct*100:.0f}% BTC"),
                         ("BTC Upper Threshold", f"{upper_threshold*100:.0f}%"),
@@ -2720,6 +3155,8 @@ if _show_results:
                     snapshot_data=snapshot_data,
                     period_returns=pdf_period_returns,
                     top_drawdowns=pdf_top_drawdowns,
+                    extra_tables_de=_xtabs_smi("de"),
+                    extra_tables_en=_xtabs_smi("en"),
                 )
 
                 st.download_button(

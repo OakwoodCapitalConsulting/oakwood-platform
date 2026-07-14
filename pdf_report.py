@@ -1706,6 +1706,9 @@ def build_tearsheet(
     benchmark_label=None,      # optional str: benchmark column label in the
                                # Performance-per-Period table (default: SMI Total Return)
     universe_sub=None,         # optional str: subtitle above the universe table
+    extra_tables=None,         # optional list of dicts, each rendered as its own
+                               # section: {"eyebrow","title","subtitle","headers",
+                               # "rows","note"}. Backward-compatible: None = nothing.
 ):
     """Build the PDF and return raw bytes."""
     S = _S(lang)
@@ -1864,6 +1867,28 @@ def build_tearsheet(
                 Spacer(1, 2),
                 sc_img,
             ]))
+
+    # ===== Optional extra sections (e.g. return attribution, robustness) =====
+    # Rendered before the detailed-risk page so the attribution — the number that
+    # decides whether the product does what its name claims — is not buried.
+    for _xt in (extra_tables or []):
+        story.append(PageBreak())
+        for fl in _section_heading(_xt.get("eyebrow", ""), _xt.get("title", ""),
+                                   styles, lang):
+            story.append(fl)
+        if _xt.get("subtitle"):
+            story.append(Paragraph(_xt["subtitle"], styles["h3"]))
+            story.append(Spacer(1, 4))
+        _rws = _xt.get("rows") or []
+        if _rws:
+            _ncol = len(_xt.get("headers") or _rws[0])
+            _w = [170 * mm / max(_ncol, 1)] * _ncol
+            story.append(_data_table(_xt.get("headers"), _rws, styles,
+                                     col_widths=_w))
+        if _xt.get("note"):
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(_xt["note"], styles["small"]))
+        story.append(Spacer(1, 12))
 
     # ===== PAGE 5: Detailed Risk Metrics + Top Drawdowns =====
     # Detailed Risk + Top Drawdowns can naturally flow across pages; we only
@@ -2045,6 +2070,8 @@ def build_bilingual_tearsheet(
     benchmark_label_en=None,
     universe_sub_de=None,
     universe_sub_en=None,
+    extra_tables_de=None,
+    extra_tables_en=None,
 ):
     """Build a single PDF with both DE and EN versions concatenated.
 
@@ -2100,6 +2127,7 @@ def build_bilingual_tearsheet(
         disclaimer_paragraphs=disclaimer_paragraphs_de,
         benchmark_label=benchmark_label_de,
         universe_sub=universe_sub_de,
+        extra_tables=extra_tables_de,
         **common_kwargs,
     )
     en_pdf = build_tearsheet(
@@ -2111,6 +2139,7 @@ def build_bilingual_tearsheet(
         disclaimer_paragraphs=disclaimer_paragraphs_en,
         benchmark_label=benchmark_label_en,
         universe_sub=universe_sub_en,
+        extra_tables=extra_tables_en,
         **common_kwargs,
     )
 

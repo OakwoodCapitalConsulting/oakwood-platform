@@ -2213,8 +2213,10 @@ if st.session_state.get("rb_has_run"):
             colorscale=[[0, OAK_GREEN_2], [0.5, OAK_SAGE], [1, OAK_GOLD]],
             text=[[f"{v:.1f}%" for v in r] for r in piv.values],
             texttemplate="%{text}", showscale=False))
-        fig_g.update_xaxes(title_text="Management Fee (p.a.)")
-        fig_g.update_yaxes(title_text="Startallokation BTC")
+        # Achsen MÜSSEN kategorial sein: sonst interpretiert Plotly "0.75%"/"1.00%"
+        # als Zahlen und rendert ungleich breite Zellen.
+        fig_g.update_xaxes(title_text="Management Fee (p.a.)", type="category")
+        fig_g.update_yaxes(title_text="Startallokation BTC", type="category")
         fig_g = style_plotly(fig_g, height=340)
         st.plotly_chart(fig_g, use_container_width=True)
 
@@ -2228,8 +2230,8 @@ if st.session_state.get("rb_has_run"):
             colorscale=[[0, "#8C3A2B"], [0.3, OAK_GREEN_3], [1, OAK_GOLD]],
             text=[[("n/a" if v != v else f"{v:.0f}%") for v in r] for r in pivd.values],
             texttemplate="%{text}", showscale=False, zmin=0, zmax=100))
-        fig_d.update_xaxes(title_text="Management Fee (p.a.)")
-        fig_d.update_yaxes(title_text="Startallokation BTC")
+        fig_d.update_xaxes(title_text="Management Fee (p.a.)", type="category")
+        fig_d.update_yaxes(title_text="Startallokation BTC", type="category")
         fig_d = style_plotly(fig_d, height=340)
         st.plotly_chart(fig_d, use_container_width=True)
         st.caption("Unter ~30% ist die «Yield Bridge» ein Etikett: der Bitcoin-Gewinn "
@@ -2244,7 +2246,7 @@ if st.session_state.get("rb_has_run"):
                                    marker_color=OAK_GOLD, line_color=OAK_SAGE,
                                    boxmean=True))
         fig_b.update_yaxes(title_text="Netto-CAGR (%)")
-        fig_b.update_xaxes(title_text="Startallokation BTC")
+        fig_b.update_xaxes(title_text="Startallokation BTC", type="category")
         fig_b = style_plotly(fig_b, height=380)
         fig_b.update_layout(showlegend=False)
         st.plotly_chart(fig_b, use_container_width=True)
@@ -2252,9 +2254,52 @@ if st.session_state.get("rb_has_run"):
         dist = (grid.groupby("alloc")["net_cagr"]
                 .agg(Minimum="min", P25=lambda s: s.quantile(.25), Median="median",
                      P75=lambda s: s.quantile(.75), Maximum="max") * 100).round(2)
+        dist["Streuung"] = (dist["Maximum"] - dist["Minimum"]).round(2)
         dist.index = [f"{a*100:.1f}%" for a in dist.index]
         dist.index.name = "Startallokation"
         st.dataframe(dist.style.format("{:.2f}%"), use_container_width=True)
+
+        st.caption(
+            "⚠️ **Das Minimum ist kein Risikomass.** Es steigt mit der "
+            "Startallokation, weil in den Daten seit 2015 kein einziges "
+            "3-Jahres-Fenster mit einem Bitcoin-Kollaps ohne Erholung liegt — "
+            "die Stichprobe enthält das Risiko schlicht nicht. Das belastbare "
+            "Signal ist die **Streuung**: sie misst, wie stark das Ergebnis vom "
+            "Einstiegszeitpunkt abhängt.")
+
+        # ---- Worst-Entry: die Zahl, mit der man vor einen Investor treten kann
+        st.markdown("##### Worst-Entry — was passiert dem Investor mit dem schlechtesten Einstieg?")
+        _cur = min(_allocs, key=lambda a: abs(a - initial_btc_pct))
+        _g = grid[(grid["alloc"] == _cur) & (np.isclose(grid["fee"], mgmt_fee))]
+        if _g.empty:
+            _g = grid[grid["alloc"] == _cur]
+        if not _g.empty:
+            _worst = _g.loc[_g["net_cagr"].idxmin()]
+            _w1, _w2, _w3, _w4 = st.columns(4)
+            with _w1:
+                st.metric("Schlechtestes Fenster", f"{_worst['net_cagr']*100:.1f}% p.a.")
+                st.caption(f"Einstieg {_worst['start']:%b %Y}")
+            with _w2:
+                st.metric("DCA-Anteil dort", 
+                          "n/a" if _worst["dca_share"] != _worst["dca_share"]
+                          else f"{_worst['dca_share']*100:.0f}%")
+                st.caption("Yield Bridge im Stressfall")
+            with _w3:
+                st.metric("Median", f"{_g['net_cagr'].median()*100:.1f}% p.a.")
+                st.caption("mittleres Fenster")
+            with _w4:
+                _spr = (_g["net_cagr"].max() - _g["net_cagr"].min()) * 100
+                st.metric("Streuung", f"{_spr:.0f} pp")
+                st.caption("Max − Min über alle Fenster")
+            st.caption(
+                f"Bei {_cur*100:.1f}% Startallokation und {mgmt_fee*100:.2f}% Fee. "
+                "Je schlechter der Einstieg, desto WICHTIGER wird der "
+                "mietertragsfinanzierte DCA — er kauft antizyklisch nach, während "
+                "der Immobilienkern unangetastet weiterläuft.")
+
+        # für den PDF-Export vorhalten
+        st.session_state["rb_dist"] = dist
+        st.session_state["rb_fixed"] = None
 
         # ---- 4) Feste Startdaten (die Stresspunkte) ------------------------
         st.markdown("##### Feste Startzeitpunkte — Zyklushoch vs. Zyklustief")
@@ -2283,6 +2328,7 @@ if st.session_state.get("rb_has_run"):
         fdf = pd.DataFrame(frows).set_index("Startzeitpunkt")
         st.dataframe(fdf.style.format("{:.1f}%", na_rep="n/a"),
                      use_container_width=True)
+        st.session_state["rb_fixed"] = fdf
         st.caption(f"Mit der aktuellen Startallokation ({initial_btc_pct*100:.0f}%) und "
                    "daraus abgeleiteten Schwellen. Die Spreizung zwischen den "
                    "Startzeitpunkten zeigt, wie stark das Ergebnis vom Einstieg abhängt.")
@@ -2690,6 +2736,113 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             "Simulated performance is hypothetical, benefits from hindsight, and is not a reliable indicator of future results. Figures are shown net of the stated management and performance fees; taxes — in particular property-gains, property and income taxes — are not modelled.",
             "This material is strictly confidential and intended solely for the recipient. It may not be reproduced or distributed without the prior written consent of Oakwood Capital.",
         ]
+
+        # ---- Attribution + Robustheit als eigene PDF-Sektionen --------------
+        def _xtabs(lang):
+            de = (lang == "de")
+            out = []
+            _a = ts.attrs.get("attribution", {})
+            if _a:
+                _yy = _a["years"]
+                def _pp(v):
+                    return f"{(v / initial_capital) / _yy * 100:+.2f}"
+                labels = ([("Immobilien-Kapitalwertentwicklung (SNB-Index)", "prop_appreciation"),
+                           ("Mieterträge (netto)", "rent_income"),
+                           ("Bitcoin — Startallokation (Tag 1)", "btc_initial_gain"),
+                           ("Bitcoin — mietertragsfinanzierter DCA", "btc_dca_gain"),
+                           ("Cash-Zins (Puffer)", "cash_interest"),
+                           ("Gebühren", "fees")] if de else
+                          [("Property capital appreciation (SNB index)", "prop_appreciation"),
+                           ("Net rental income", "rent_income"),
+                           ("Bitcoin — initial allocation (day 1)", "btc_initial_gain"),
+                           ("Bitcoin — rent-funded DCA", "btc_dca_gain"),
+                           ("Cash interest (buffer)", "cash_interest"),
+                           ("Fees", "fees")])
+                rows = [[lab, f"{_a.get(k, 0.0):+,.0f}", _pp(_a.get(k, 0.0))]
+                        for lab, k in labels]
+                rows.append([("Total (= NAV − Startkapital)" if de else
+                              "Total (= NAV − initial capital)"),
+                             f"{_a['total_pnl']:+,.0f}", _pp(_a["total_pnl"])])
+                _ds = _a.get("dca_share")
+                _dstxt = "n/a" if _ds != _ds else f"{_ds*100:.1f}%"
+                out.append({
+                    "eyebrow": "08",
+                    "title": "Renditezerlegung" if de else "Return Attribution",
+                    "subtitle": (f"DCA-Anteil am BTC-Gewinn: {_dstxt} — der Rest stammt aus der "
+                                 f"Startallokation vom ersten Tag. Die Positionen summieren sich "
+                                 f"exakt auf die Gesamt-P&L."
+                                 if de else
+                                 f"DCA share of the BTC gain: {_dstxt} — the remainder comes from "
+                                 f"the day-1 initial allocation. The lines reconcile exactly to "
+                                 f"total P&L."),
+                    "headers": (["Beitrag", "CHF", "%-Punkte p.a."] if de else
+                                ["Contribution", "CHF", "pp p.a."]),
+                    "rows": rows,
+                    "note": (("Der DCA-Anteil misst, wie viel des Bitcoin-Gewinns aus dem "
+                              "mietertragsfinanzierten Mechanismus stammt und wie viel aus der "
+                              "Startallokation. Er ist invers zum Einstiegsglück: je schlechter "
+                              "der Einstiegszeitpunkt, desto grösser der Beitrag des DCA.")
+                             if de else
+                             ("The DCA share measures how much of the Bitcoin gain came from the "
+                              "rent-funded mechanism versus the initial allocation. It is inverse "
+                              "to entry luck: the worse the entry point, the larger the DCA "
+                              "contribution.")),
+                })
+
+            _dist = st.session_state.get("rb_dist")
+            if _dist is not None and not _dist.empty:
+                rows = [[str(i)] + [f"{v:.2f}%" for v in _dist.loc[i].tolist()]
+                        for i in _dist.index]
+                out.append({
+                    "eyebrow": "09",
+                    "title": ("Robustheit — Verteilung über rollierende Fenster"
+                              if de else
+                              "Robustness — Distribution across rolling windows"),
+                    "subtitle": (("Netto-CAGR je Startallokation über alle rollierenden "
+                                  "3-Jahres-Fenster und alle Gebührenstufen.")
+                                 if de else
+                                 ("Net CAGR by initial allocation across all rolling 3-year "
+                                  "windows and all fee levels.")),
+                    "headers": ([("Startallokation")] + list(_dist.columns) if de else
+                                ["Initial allocation"] + list(_dist.columns)),
+                    "rows": rows,
+                    "note": (("Das Minimum ist KEIN Risikomass — die Datenreihe enthält kein "
+                              "3-Jahres-Fenster mit einem Bitcoin-Kollaps ohne Erholung. Das "
+                              "belastbare Signal ist die Streuung: sie misst, wie stark das "
+                              "Ergebnis vom Einstiegszeitpunkt abhängt.")
+                             if de else
+                             ("The minimum is NOT a risk measure — the sample contains no 3-year "
+                              "window with a Bitcoin collapse without recovery. The meaningful "
+                              "signal is the spread: it measures how strongly the outcome depends "
+                              "on the entry point.")),
+                })
+
+            _fx = st.session_state.get("rb_fixed")
+            if _fx is not None and not _fx.empty:
+                rows = [[str(i)] + [("n/a" if v != v else f"{v:.1f}%")
+                                    for v in _fx.loc[i].tolist()] for i in _fx.index]
+                out.append({
+                    "eyebrow": "10",
+                    "title": ("Feste Startzeitpunkte — Zyklushoch vs. Zyklustief"
+                              if de else
+                              "Fixed entry points — cycle peak vs. trough"),
+                    "subtitle": (("Wie stark das Ergebnis vom Einstieg abhängt.")
+                                 if de else
+                                 ("How strongly the outcome depends on the entry point.")),
+                    "headers": (["Startzeitpunkt", "Netto-CAGR", "DCA-Anteil"] if de else
+                                ["Entry point", "Net CAGR", "DCA share"]),
+                    "rows": rows,
+                    "note": (("Beim schlechtesten Einstieg (Zyklushoch) trägt der DCA den "
+                              "grössten Teil des Bitcoin-Beitrags — die Yield Bridge wirkt "
+                              "dort als Einstiegszeitpunkt-Versicherung, nicht als "
+                              "Renditemotor.")
+                             if de else
+                             ("At the worst entry (cycle peak) the DCA carries most of the "
+                              "Bitcoin contribution — the Yield Bridge acts as entry-timing "
+                              "insurance rather than a return engine.")),
+                })
+            return out
+
         pdf_bytes = build_bilingual_tearsheet(
             strategy_name="OAK Swiss Residential / Bitcoin",
             strategy_subtitle_de="Schweizer Wohnimmobilien mit struktureller Bitcoin-Allokation, mietertragsfinanziertem DCA und schwellenwertbasiertem Risikomanagement.",
@@ -2746,6 +2899,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                              "See Methodology and Disclosures."),
             disclaimer_paragraphs_de=disc_de,
             disclaimer_paragraphs_en=disc_en,
+            extra_tables_de=_xtabs("de"),
+            extra_tables_en=_xtabs("en"),
         )
 
     fname = f"OAK_Swiss_Residential_BTC_{date.today():%Y%m%d}.pdf"
