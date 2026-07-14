@@ -967,7 +967,21 @@ def run_re_btc(prop_index_daily, btc_chf, params):
 
     btc_chf0 = cap * float(params["initial_btc_pct"])
     cash0 = cap * float(params.get("initial_cash_pct", 0.0))   # fee-reserve cushion
-    btc_units = (btc_chf0 * (1 - tx)) / btc.iloc[0] if btc_chf0 > 0 else 0.0
+
+    # ---- ATTRIBUTION: BTC is held as TWO separate lots so we can prove how much
+    #      of the return really came from the rent-funded Yield Bridge vs. from
+    #      the day-1 lump sum. Sales reduce both lots PRO RATA (never FIFO — that
+    #      would let the sell order distort the attribution).
+    btc_u_init = (btc_chf0 * (1 - tx)) / btc.iloc[0] if btc_chf0 > 0 else 0.0
+    btc_u_dca = 0.0                 # units bought with net rent
+    btc_init_invested = btc_chf0    # CHF put in at t0 (gross, incl. tx)
+    btc_dca_invested = 0.0          # CHF of net rent sent into BTC (gross, incl. tx)
+    btc_init_realized = 0.0         # net proceeds from selling initial-lot units
+    btc_dca_realized = 0.0          # net proceeds from selling DCA-lot units
+    rent_total = 0.0                # all net rent collected
+    reinvest_total = 0.0            # cash swept back into property
+    cash_drag = 0.0                 # interest foregone on the uninvested buffer
+
     prop0 = cap - btc_chf0 - cash0                  # rest goes into property
     prop_units = prop0 / pidx.iloc[0]
     prop_value_0 = prop0            # initial property capital invested at t0
@@ -979,6 +993,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     fee_floor = cash0 # min cash protected from the block reinvest (the cushion)
     fee_debt = 0.0    # accrued mgmt fee that could not be funded (should ~never)
 
+    rf_cash = float(params.get("cash_rate", 0.0))   # SARON-like rate for the drag memo
     ny = float(params["net_yield"])
     lo = float(params["lower_threshold"])
     up = float(params["upper_threshold"])
@@ -1016,9 +1031,16 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     rows = []
     # observations per year on this (≈365) calendar, for monthly/quarterly fee
     _spanyr = max((idx[-1] - idx[0]).days / 365.25, 1e-9)
+    # PERF: positional numpy lookups instead of .loc[d] in the hot loop — the
+    # grid/rolling-window analysis runs the engine >1000 times, and label-based
+    # lookups dominated the runtime. Values are identical (same aligned index).
+    _pidx_v = pidx.reindex(idx).to_numpy(dtype=float)
+    _btc_v = btc.reindex(idx).to_numpy(dtype=float)
     for i, d in enumerate(idx):
-        p_val = prop_units * pidx.loc[d]
-        b_val = btc_units * btc.loc[d]
+        _px_p = _pidx_v[i]      # property index level today
+        _px_b = _btc_v[i]       # BTC price today (CHF)
+        p_val = prop_units * _px_p
+        b_val = (btc_u_init + btc_u_dca) * _px_b
         net_cf = np.nan
         buys = 0.0
         sells = 0.0
@@ -1033,10 +1055,14 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
         is_qe = is_me and d.month in (3, 6, 9, 12)
 
+        # opportunity cost of holding the buffer uninvested (memo item, not P&L)
+        cash_drag += (cash + rent_pool) * (rf_cash / 365.0)
+
         # ---- month-end: net rent accrues into the rent pool ----------------
         if is_me:
             net_cf = ny / 12.0 * prop_cost_basis
             rent_pool += net_cf
+            rent_total += net_cf
 
         # ---- DCA date: allocate accumulated rent per the zone rule ---------
         if (is_me and f_dca == "M") or (is_qe and f_dca == "Q"):
@@ -1045,27 +1071,35 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             rate = boost_r if w < lo else (0.0 if w > up else base_r)
             invest = rate * rent_pool
             if invest > 0:
-                btc_units += (invest * (1 - tx)) / btc.loc[d]
+                btc_u_dca += (invest * (1 - tx)) / _px_b   # DCA lot only
+                btc_dca_invested += invest
                 buys = invest
             cash += rent_pool - invest
             rent_pool = 0.0
-            b_val = btc_units * btc.loc[d]
+            b_val = (btc_u_init + btc_u_dca) * _px_b
 
         # ---- sell-rule date: trim BTC back to the upper threshold ----------
         if sell_on and ((is_me and f_sell == "M") or (is_qe and f_sell == "Q")):
             nav = p_val + b_val + cash + rent_pool
             if nav > 0 and b_val / nav > up:
                 sell_chf = b_val - up * nav
-                btc_units -= sell_chf / btc.loc[d]
-                cash += sell_chf * (1 - tx)
+                _proceeds = sell_chf * (1 - tx)
+                _u_sell = sell_chf / _px_b
+                _tot_u = btc_u_init + btc_u_dca
+                _f_init = (btc_u_init / _tot_u) if _tot_u > 0 else 0.0
+                btc_u_init -= _u_sell * _f_init          # pro rata, never FIFO
+                btc_u_dca -= _u_sell * (1 - _f_init)
+                btc_init_realized += _proceeds * _f_init
+                btc_dca_realized += _proceeds * (1 - _f_init)
+                cash += _proceeds
                 sells = sell_chf
-                b_val = btc_units * btc.loc[d]
+                b_val = (btc_u_init + btc_u_dca) * _px_b
 
         # ---- fee waterfall helper: pay `amount` from cash, then by selling
         #      BTC (net of tx); property is never sold. Returns unpaid shortfall.
         def _pay_from_liquidity(amount):
-            nonlocal cash, btc_units, b_val, fee_paid, fee_btc_sold
-            nonlocal fee_from_cash, fee_from_btc
+            nonlocal cash, btc_u_init, btc_u_dca, b_val, fee_paid, fee_btc_sold
+            nonlocal fee_from_cash, fee_from_btc, btc_init_realized, btc_dca_realized
             if amount <= 1e-9:
                 return 0.0
             from_cash = min(cash, amount)
@@ -1075,13 +1109,20 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             short = amount - from_cash
             if short > 1e-9 and b_val > 0:
                 gross_sell = min(b_val, short / (1 - tx))
-                btc_units -= gross_sell / btc.loc[d]
-                fee_btc_sold += gross_sell
                 proceeds = gross_sell * (1 - tx)
+                # fee-funded BTC sales also reduce both lots PRO RATA
+                _u_sell = gross_sell / _px_b
+                _tot_u = btc_u_init + btc_u_dca
+                _f_init = (btc_u_init / _tot_u) if _tot_u > 0 else 0.0
+                btc_u_init -= _u_sell * _f_init
+                btc_u_dca -= _u_sell * (1 - _f_init)
+                btc_init_realized += proceeds * _f_init
+                btc_dca_realized += proceeds * (1 - _f_init)
+                fee_btc_sold += gross_sell
                 fee_paid += proceeds
                 fee_from_btc += proceeds
                 short -= proceeds
-                b_val = btc_units * btc.loc[d]
+                b_val = (btc_u_init + btc_u_dca) * _px_b
             return max(short, 0.0)
 
         # ---- management fee (real cash outflow): monthly or quarterly -------
@@ -1131,13 +1172,14 @@ def run_re_btc(prop_index_daily, btc_chf, params):
         _aum_now = p_val + b_val + cash + rent_pool
         dyn_floor = max(fee_floor, floor_pct * _aum_now)
         investable = cash - dyn_floor
-        if is_qe and reinv_blk > 0 and investable >= reinv_blk and pidx.loc[d] > 0:
+        if is_qe and reinv_blk > 0 and investable >= reinv_blk and _px_p > 0:
             n_blk = int(investable // reinv_blk)
             reinv = n_blk * reinv_blk
-            prop_units += reinv / pidx.loc[d]
+            prop_units += reinv / _px_p
             cash -= reinv
             prop_cost_basis += reinv      # more property -> higher net rent
-            p_val = prop_units * pidx.loc[d]
+            reinvest_total += reinv
+            p_val = prop_units * _px_p
 
         rows.append({
             "date": d,
@@ -1164,6 +1206,47 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     out.attrs["total_mgmt"] = total_mgmt
     out.attrs["total_perf"] = total_perf
     out.attrs["fee_debt_final"] = fee_debt
+
+    # ================= RETURN ATTRIBUTION =================================
+    # Decomposes the ENTIRE P&L so the parts sum exactly to (NAV_end - capital).
+    # NOTE: the rent income itself is its own line. Without it the decomposition
+    # does not reconcile — rent is not merely "fuel" for the DCA, it is a return
+    # contributor in its own right (the part kept in cash or ploughed back into
+    # property). Transaction costs are embedded in each BTC lot's gain.
+    _p_end = float(btc.loc[idx[-1]])
+    prop_invested = prop0 + reinvest_total
+    prop_appreciation = float(prop_units * pidx.loc[idx[-1]]) - prop_invested
+
+    btc_init_value_end = btc_u_init * _p_end
+    btc_dca_value_end = btc_u_dca * _p_end
+    btc_init_gain = (btc_init_value_end + btc_init_realized) - btc_init_invested
+    btc_dca_gain = (btc_dca_value_end + btc_dca_realized) - btc_dca_invested
+    fees_total = total_mgmt + total_perf
+
+    # The headline number: how much of the BTC gain actually came from the
+    # rent-funded Yield Bridge, as opposed to the day-1 lump sum.
+    _btc_total_gain = btc_init_gain + btc_dca_gain
+    dca_share = (btc_dca_gain / _btc_total_gain) if abs(_btc_total_gain) > 1e-9 else float("nan")
+
+    nav_end = float(out["total_value"].iloc[-1])
+    pnl = nav_end - cap
+    recon = (prop_appreciation + rent_total + btc_init_gain + btc_dca_gain
+             - fees_total)
+
+    out.attrs["attribution"] = {
+        "prop_appreciation": prop_appreciation,   # SNB index on the property held
+        "rent_income": rent_total,                # net rent collected
+        "btc_initial_gain": btc_init_gain,        # day-1 lump sum, isolated
+        "btc_dca_gain": btc_dca_gain,             # rent-funded purchases, isolated
+        "fees": -fees_total,                      # negative by construction
+        "total_pnl": pnl,
+        "reconciliation_error": recon - pnl,      # must be ~0
+        "dca_share": dca_share,                   # THE number
+        "btc_initial_invested": btc_init_invested,
+        "btc_dca_invested": btc_dca_invested,
+        "cash_drag": -cash_drag,                  # memo: interest foregone (not in P&L)
+        "years": max((idx[-1] - idx[0]).days / 365.25, 1e-9),
+    }
     return out
 
 
@@ -1268,8 +1351,12 @@ with st.sidebar:
                                         "AuM, der vom 3.0-Mio-Block-Reinvest "
                                         "ausgenommen bleibt — das Fee-Polster "
                                         "wächst so mit dem Portfolio mit.") / 100.0
-    lower_threshold = st.slider("Lower BTC Threshold (%)", 0, 40, 10, 1) / 100.0
-    upper_threshold = st.slider("Upper BTC Threshold (%)", 5, 75, 25, 1) / 100.0
+    cash_rate = st.slider("Cash-Verzinsung (% p.a., SARON-nah)", 0.0, 3.0, 0.0, 0.05,
+                          help="Verzinsung des CHF-Puffers. Wird aktuell nur als "
+                               "Memo-Position ausgewiesen (entgangener Zins = "
+                               "Cash-Drag), nicht dem NAV gutgeschrieben.") / 100.0
+    lower_threshold = st.slider("Untere BTC-Schwelle (%)", 0, 40, 10, 1) / 100.0
+    upper_threshold = st.slider("Obere BTC-Schwelle (%)", 5, 75, 25, 1) / 100.0
     if initial_btc_pct + initial_cash_pct >= 1.0:
         st.error("Initial BTC + Cash muss < 100% sein (Rest geht in Immobilien).")
         st.stop()
@@ -1333,7 +1420,7 @@ with st.sidebar:
              "reinvestiert.")
     cash_reinvest_block = st.number_input(
         "Cash → Immobilien Reinvest-Block (CHF)",
-        min_value=0, value=3_000_000, step=100_000,
+        min_value=0, value=500_000, step=50_000,
         help="Quartalsweise geprüft: erreicht der Cash-Puffer am Quartalsende "
              "diese Blockgrösse, wird ein ganzer Block (oder mehrere) in "
              "Immobilien reinvestiert (kostenlos, parametrisches Modell); der "
@@ -1443,6 +1530,7 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
                   crystallization_freq=crystallization_freq,
                   initial_cash_pct=initial_cash_pct,
                   reinvest_floor_pct=reinvest_floor_pct,
+                  cash_rate=cash_rate,
                   tx_cost_bps=tx_cost_bps)
 
     ts = run_re_btc(prop_daily, btc_chf, params)
@@ -1545,6 +1633,82 @@ c12.metric("Nettomietrendite (Input)", f"{net_yield*100:.1f}% p.a.",
 # =====================================================================
 # Portfolio Evolution vs. Benchmarks
 # =====================================================================
+# ==========================================================================
+# RENDITEZERLEGUNG (ATTRIBUTION) — die zentrale Ehrlichkeits-Kennzahl.
+# Zeigt, wie viel der Rendite wirklich aus der mietertragsfinanzierten Yield
+# Bridge stammt und wie viel aus der Bitcoin-Startallokation vom Tag 1.
+# ==========================================================================
+st.markdown("## Renditezerlegung")
+_att = ts.attrs.get("attribution", {})
+if _att:
+    _yrs = _att["years"]
+
+    def _pp(chf):
+        """Beitrag in Prozentpunkten p.a., bezogen auf das Startkapital."""
+        return (chf / initial_capital) / _yrs * 100
+
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Zerlegung des gesamten "
+        "Ergebnisses in seine Quellen. Die Positionen summieren sich exakt auf "
+        "die Gesamt-P&amp;L — der Mietertrag ist dabei eine eigene Position und "
+        "nicht bloss Treibstoff für den DCA.</p>", unsafe_allow_html=True)
+
+    _rows = [
+        ("Immobilien-Kapitalwertentwicklung (SNB-Index)", _att["prop_appreciation"]),
+        ("Mieterträge (netto)",                            _att["rent_income"]),
+        ("Bitcoin — Startallokation (Tag 1)",              _att["btc_initial_gain"]),
+        ("Bitcoin — mietertragsfinanzierter DCA",          _att["btc_dca_gain"]),
+        ("Gebühren",                                       _att["fees"]),
+    ]
+    _html = ["<table class='oak-metrics-table'><thead><tr>"
+             "<th>Beitrag</th><th>CHF</th><th>%-Punkte p.a.</th></tr></thead><tbody>"]
+    for _lab, _v in _rows:
+        _col = OAK_GOLD if "DCA" in _lab else OAK_CREAM
+        _html.append(
+            f"<tr><td class='metric-label'>{_lab}</td>"
+            f"<td class='strategy-col' style='color:{_col}'>{_v:+,.0f}</td>"
+            f"<td style='color:{_col}'>{_pp(_v):+.2f}</td></tr>")
+    _html.append(
+        f"<tr class='oak-section'><td>Total (= NAV − Startkapital)</td>"
+        f"<td>{_att['total_pnl']:+,.0f}</td><td>{_pp(_att['total_pnl']):+.2f}</td></tr>")
+    _html.append("</tbody></table>")
+    st.markdown("".join(_html), unsafe_allow_html=True)
+
+    _dca = _att["dca_share"]
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        st.metric("DCA-Anteil am BTC-Gewinn",
+                  "n/a" if _dca != _dca else f"{_dca*100:.1f}%")
+        st.caption("DCA / (DCA + Startallokation)")
+    with a2:
+        st.metric("BTC Startallokation", fmt_chf(_att["btc_initial_invested"]))
+        st.caption("am Tag 1 investiert")
+    with a3:
+        st.metric("BTC via Miete investiert", fmt_chf(_att["btc_dca_invested"]))
+        st.caption("über die gesamte Laufzeit")
+
+    if _dca == _dca:  # not NaN
+        if _dca < 0.30:
+            st.warning(
+                f"⚠️ **Der DCA-Anteil liegt bei {_dca*100:.1f}%.** Der weit "
+                f"überwiegende Teil des Bitcoin-Gewinns stammt aus der "
+                f"Startallokation vom ersten Tag, nicht aus dem "
+                f"mietertragsfinanzierten DCA. Unterhalb von ~30% ist die "
+                "«Yield Bridge» ein Etikett und kein Mechanismus — das Produkt "
+                "muss dann entweder anders positioniert oder mit einer tieferen "
+                "(idealerweise null) Startallokation gefahren werden, damit die "
+                "Miete die Position wirklich aufbaut.")
+        else:
+            st.success(
+                f"✅ Der DCA-Anteil liegt bei {_dca*100:.1f}% — der "
+                "Mietertragsmechanismus trägt den Bitcoin-Beitrag substanziell.")
+
+    st.caption(
+        f"Memo · Cash-Drag (entgangener Zins auf dem unverzinsten Puffer bei "
+        f"{risk_free_rate*100:.2f}% p.a.): {fmt_chf(_att['cash_drag'])} — "
+        f"Opportunitätskosten, nicht Teil der P&L. · "
+        f"Abstimmdifferenz der Zerlegung: {_att['reconciliation_error']:+.2f} CHF.")
+
 st.markdown("## Portfolioentwicklung vs. Benchmarks")
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=net.index, y=net.values, name="Strategie (netto)",
@@ -1665,11 +1829,17 @@ re_m = compute_risk_metrics(bench_re, risk_free_rate, base_value=initial_capital
 bm_re = compute_benchmark_metrics(net, bench_re, risk_free_rate)
 
 
-def _row(label, key, fmt="pct", hint=""):
+def _row(label, key, fmt="pct", hint="", re_na=False):
+    """re_na=True suppresses the RE-only column: risk figures derived from a
+    smoothed quarterly valuation index are meaningless (they produce Sharpe
+    ratios of 6+ and drawdowns of -0.7%, which is physically impossible for
+    real estate). Total return and CAGR remain — those are unaffected."""
     if fmt == "pct":
         s, b1, b2 = _fmt_pct(strat_m.get(key)), _fmt_pct(re_m.get(key)), _fmt_pct(siat_m.get(key))
     else:
         s, b1, b2 = _fmt_num(strat_m.get(key)), _fmt_num(re_m.get(key)), _fmt_num(siat_m.get(key))
+    if re_na:
+        b1 = "<span style='opacity:.45'>n/a¹</span>"
     hint_html = f"<span class='hint'>{hint}</span>" if hint else ""
     return (f"<tr><td class='metric-label'>{label}{hint_html}</td>"
             f"<td class='strategy-col'>{s}</td><td>{b1}</td><td>{b2}</td></tr>")
@@ -1682,36 +1852,40 @@ def _section(title):
 st.markdown(f"""
 <table class="oak-metrics-table">
     <thead>
-        <tr><th>Metric</th><th>Strategy (Net)</th><th>RE only</th><th>UBS «Siat»</th></tr>
+        <tr><th>Kennzahl</th><th>Strategie (netto)</th><th>Nur Immobilien</th><th>UBS «Siat»</th></tr>
     </thead>
     <tbody>
-        {_section("Return")}
-        {_row("Total Return", "total_return")}
-        {_row("Annualized Return (CAGR)", "cagr")}
-        {_section("Risk · smoothed valuation index — see note")}
-        {_row("Annualized Volatility", "vol_ann", hint="Std. dev. of daily returns × √252")}
-        {_row("Downside Deviation", "downside_vol", hint="Volatility of negative returns only")}
-        {_row("Maximum Drawdown", "max_drawdown", hint="Largest peak-to-trough loss")}
-        {_section("Risk-Adjusted Performance")}
-        {_row("Sharpe Ratio", "sharpe", "num", "(CAGR − Rf) / Volatility")}
-        {_row("Sortino Ratio", "sortino", "num", "(CAGR − Rf) / Downside Vol")}
-        {_row("Calmar Ratio", "calmar", "num", "CAGR / |Max DD|")}
-        {_section("Tail Risk · Monthly")}
-        {_row("Value at Risk (95%)", "var_95_monthly", hint="5th-percentile monthly return")}
-        {_row("Expected Shortfall (95%)", "cvar_95_monthly", hint="Avg. return in worst 5% of months")}
-        {_row("Worst Month", "worst_month")}
-        {_section("Consistency")}
-        {_row("Best Month", "best_month")}
-        {_row("Positive Months", "pct_positive_months", hint="% of months with positive return")}
+        {_section("Rendite")}
+        {_row("Gesamtrendite", "total_return")}
+        {_row("Annualisierte Rendite (CAGR)", "cagr")}
+        {_section("Risiko")}
+        {_row("Annualisierte Volatilität", "vol_ann", hint="Std.-Abw. der Tagesrenditen × √365", re_na=True)}
+        {_row("Downside Deviation", "downside_vol", hint="Volatilität nur negativer Renditen", re_na=True)}
+        {_row("Maximaler Drawdown", "max_drawdown", hint="Grösster Peak-to-Trough-Verlust", re_na=True)}
+        {_section("Risikoadjustierte Performance")}
+        {_row("Sharpe Ratio", "sharpe", "num", "(CAGR − Rf) / Volatilität", re_na=True)}
+        {_row("Sortino Ratio", "sortino", "num", "(CAGR − Rf) / Downside-Vol", re_na=True)}
+        {_row("Calmar Ratio", "calmar", "num", "CAGR / |Max DD|", re_na=True)}
+        {_section("Tail-Risiko · monatlich")}
+        {_row("Value at Risk (95%)", "var_95_monthly", hint="5.-Perzentil-Monatsrendite", re_na=True)}
+        {_row("Expected Shortfall (95%)", "cvar_95_monthly", hint="Ø Rendite der schlechtesten 5% Monate", re_na=True)}
+        {_row("Schlechtester Monat", "worst_month", re_na=True)}
+        {_section("Konsistenz")}
+        {_row("Bester Monat", "best_month", re_na=True)}
+        {_row("Positive Monate", "pct_positive_months", hint="% Monate mit positiver Rendite", re_na=True)}
     </tbody>
 </table>
 """, unsafe_allow_html=True)
 st.markdown(
     f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-8px;'>"
-    f"Risk-free rate: {risk_free_rate*100:.2f}% p.a. · Property sleeve rests on a "
-    f"smoothed quarterly valuation index — volatility and drawdowns of all three "
-    f"columns are structurally understated and not comparable to market-priced "
-    f"strategies.</p>", unsafe_allow_html=True)
+    f"¹ Risikokennzahlen für den Immobilienteil werden nicht ausgewiesen — der "
+    f"zugrundeliegende SNB-Bewertungsindex ist geglättet und würde sie systematisch "
+    f"verzerren (er erzeugt Sharpe Ratios über 6 und Drawdowns von unter 1%, was für "
+    f"Immobilien physikalisch unmöglich ist). Gesamtrendite und CAGR sind davon nicht "
+    f"betroffen und bleiben ausgewiesen. Auch die Kennzahlen der Gesamtstrategie sind "
+    f"durch den geglätteten Immobilienteil nach unten verzerrt und nicht direkt mit "
+    f"marktbewerteten Strategien vergleichbar. · Risikoloser Zins: "
+    f"{risk_free_rate*100:.2f}% p.a.</p>", unsafe_allow_html=True)
 
 bm_bench = (compute_benchmark_metrics(net, siat_series, risk_free_rate)
             if siat_series is not None else bm_re)
@@ -1919,6 +2093,215 @@ if st.button("Sensitivitätsanalyse starten (Grid-Backtest)", key="sens_btn"):
 # =====================================================================
 # Monte-Carlo Forward Projection (like the SMI page)
 # =====================================================================
+# ==========================================================================
+# ROBUSTHEIT — Parameter-Grid, Startdatum-Sensitivität, Break-even-Fee
+#
+# Beantwortet die drei Fragen, die über die Positionierung entscheiden:
+#   1. Welche Startallokation?   2. Welche Management Fee?
+#   3. Wie viel der Überrendite kommt wirklich aus dem Mietertrag (DCA-Anteil)?
+#
+# Bewusst KEIN Bestwert-Cherrypicking: über rollierende Fenster wird die
+# VERTEILUNG der Netto-CAGR gezeigt (Median, Quartile, Min/Max).
+# ==========================================================================
+st.markdown("## Robustheit — Grid, Startdatum & Break-even")
+st.markdown(
+    "<p style='color:#A9B5A4;margin-top:-6px'>Ein einzelnes Startdatum ist keine "
+    "Evidenz. Hier läuft die Engine über ein Parameter-Gitter und über viele "
+    "rollierende Startzeitpunkte — ausgewiesen wird die Verteilung, nicht der "
+    "Bestwert.</p>", unsafe_allow_html=True)
+
+
+def _derive_band(alloc):
+    """Schwellen skalieren mit der Startallokation (fixe 20/30% wären bei
+    kleiner Startallokation sinnlos: die Strategie läge dauerhaft unter der
+    unteren Schwelle und der Boost-Modus liefe permanent).
+      untere Schwelle = Startallokation × 2   (Minimum 5%, sonst degeneriert
+                        die Bandlogik bei Startallokation 0%)
+      obere Schwelle  = untere + 10pp
+    """
+    lo = max(alloc * 2.0, 0.05)
+    return lo, lo + 0.10
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_robustness_grid(_pidx, _btc, base, allocs, fees, win_years, step_months):
+    """Grid × rollierende Fenster. Gibt eine lange Tabelle zurück:
+    (alloc, fee, start) -> net_cagr, dca_share."""
+    full = _pidx.index.intersection(_btc.index)
+    if len(full) < 400:
+        return pd.DataFrame()
+    starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                           freq=f"{step_months}MS")
+    rows = []
+    for alloc in allocs:
+        lo, up = _derive_band(alloc)
+        for fee in fees:
+            for s in starts:
+                e = s + pd.DateOffset(years=win_years)
+                w = full[(full >= s) & (full <= e)]
+                if len(w) < 300:
+                    continue
+                p = dict(base)
+                p.update(initial_btc_pct=alloc, lower_threshold=lo,
+                         upper_threshold=up, mgmt_fee=fee)
+                t = run_re_btc(_pidx.loc[w], _btc.loc[w], p)
+                if t.empty:
+                    continue
+                yrs = max((t.index[-1] - t.index[0]).days / 365.25, 1e-9)
+                cagr = (t["total_value"].iloc[-1] / p["initial_capital"]) ** (1 / yrs) - 1
+                a = t.attrs.get("attribution", {})
+                rows.append({"alloc": alloc, "fee": fee, "start": s,
+                             "net_cagr": cagr, "dca_share": a.get("dca_share", np.nan)})
+    return pd.DataFrame(rows)
+
+
+_rb1, _rb2, _rb3 = st.columns([1, 1, 1])
+with _rb1:
+    _win_years = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0,
+                              key="rb_win")
+with _rb2:
+    _step_label = st.selectbox("Fenster-Schritt", ["quartalsweise", "monatlich"],
+                               index=0, key="rb_step",
+                               help="Monatlich ist gründlicher, dauert aber "
+                                    "deutlich länger (mehr Läufe).")
+with _rb3:
+    st.caption("")
+    _run_rb = st.button("Robustheitsanalyse starten", key="rb_go")
+
+if _run_rb:
+    st.session_state["rb_has_run"] = True
+
+if st.session_state.get("rb_has_run"):
+    _allocs = [0.0, 0.05, 0.075, 0.10, 0.20]
+    _fees = [0.0200, 0.0150, 0.0100, 0.0075]
+    _step = 3 if _step_label == "quartalsweise" else 1
+
+    _base = dict(params)   # aktuelle Sidebar-Parameter als Basis
+    with st.spinner("Rechne Grid über alle rollierenden Fenster…"):
+        grid = compute_robustness_grid(prop_daily, btc_chf, _base, _allocs,
+                                       _fees, _win_years, _step)
+
+    if grid.empty:
+        st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
+    else:
+        _n_win = grid["start"].nunique()
+        st.caption(f"{len(grid):,} Engine-Läufe · {_n_win} rollierende "
+                   f"{_win_years}-Jahres-Fenster · Schwellen skalieren mit der "
+                   f"Startallokation (untere = Start × 2, min. 5%; obere = untere + 10pp)")
+
+        # ---- 1) Grid-Matrix: Startallokation × Fee -> Median Netto-CAGR -----
+        st.markdown("##### Netto-CAGR (Median über alle Fenster) — Startallokation × Management Fee")
+        piv = (grid.groupby(["alloc", "fee"])["net_cagr"].median().unstack() * 100)
+        fig_g = go.Figure(data=go.Heatmap(
+            z=piv.values,
+            x=[f"{f*100:.2f}%" for f in piv.columns],
+            y=[f"{a*100:.1f}%" for a in piv.index],
+            colorscale=[[0, OAK_GREEN_2], [0.5, OAK_SAGE], [1, OAK_GOLD]],
+            text=[[f"{v:.1f}%" for v in r] for r in piv.values],
+            texttemplate="%{text}", showscale=False))
+        fig_g.update_xaxes(title_text="Management Fee (p.a.)")
+        fig_g.update_yaxes(title_text="Startallokation BTC")
+        fig_g = style_plotly(fig_g, height=340)
+        st.plotly_chart(fig_g, use_container_width=True)
+
+        # ---- 2) DCA-Anteil-Matrix — die eigentlich entscheidende Karte ------
+        st.markdown("##### DCA-Anteil am BTC-Gewinn (Median) — hält der Name, was er verspricht?")
+        pivd = (grid.groupby(["alloc", "fee"])["dca_share"].median().unstack() * 100)
+        fig_d = go.Figure(data=go.Heatmap(
+            z=pivd.values,
+            x=[f"{f*100:.2f}%" for f in pivd.columns],
+            y=[f"{a*100:.1f}%" for a in pivd.index],
+            colorscale=[[0, "#8C3A2B"], [0.3, OAK_GREEN_3], [1, OAK_GOLD]],
+            text=[[("n/a" if v != v else f"{v:.0f}%") for v in r] for r in pivd.values],
+            texttemplate="%{text}", showscale=False, zmin=0, zmax=100))
+        fig_d.update_xaxes(title_text="Management Fee (p.a.)")
+        fig_d.update_yaxes(title_text="Startallokation BTC")
+        fig_d = style_plotly(fig_d, height=340)
+        st.plotly_chart(fig_d, use_container_width=True)
+        st.caption("Unter ~30% ist die «Yield Bridge» ein Etikett: der Bitcoin-Gewinn "
+                   "stammt dann überwiegend aus der Startallokation vom ersten Tag.")
+
+        # ---- 3) Verteilung der Netto-CAGR je Startallokation ----------------
+        st.markdown("##### Verteilung der Netto-CAGR je Startallokation (alle Fenster, alle Fees)")
+        fig_b = go.Figure()
+        for a in _allocs:
+            v = grid.loc[grid["alloc"] == a, "net_cagr"] * 100
+            fig_b.add_trace(go.Box(y=v, name=f"{a*100:.1f}%",
+                                   marker_color=OAK_GOLD, line_color=OAK_SAGE,
+                                   boxmean=True))
+        fig_b.update_yaxes(title_text="Netto-CAGR (%)")
+        fig_b.update_xaxes(title_text="Startallokation BTC")
+        fig_b = style_plotly(fig_b, height=380)
+        fig_b.update_layout(showlegend=False)
+        st.plotly_chart(fig_b, use_container_width=True)
+
+        dist = (grid.groupby("alloc")["net_cagr"]
+                .agg(Minimum="min", P25=lambda s: s.quantile(.25), Median="median",
+                     P75=lambda s: s.quantile(.75), Maximum="max") * 100).round(2)
+        dist.index = [f"{a*100:.1f}%" for a in dist.index]
+        dist.index.name = "Startallokation"
+        st.dataframe(dist.style.format("{:.2f}%"), use_container_width=True)
+
+        # ---- 4) Feste Startdaten (die Stresspunkte) ------------------------
+        st.markdown("##### Feste Startzeitpunkte — Zyklushoch vs. Zyklustief")
+        fixed = {"2018-01-01 (BTC nahe Zyklushoch)": "2018-01-01",
+                 "2019-01-01 (nahe Bärenmarkt-Tief)": "2019-01-01",
+                 "2021-11-01 (Zyklushoch)": "2021-11-01",
+                 "2022-06-01 (Zyklustief)": "2022-06-01"}
+        frows = []
+        _full = prop_daily.index.intersection(btc_chf.index)
+        for lab, s in fixed.items():
+            s = pd.Timestamp(s)
+            w = _full[_full >= s]
+            if len(w) < 300:
+                frows.append({"Startzeitpunkt": lab, "Netto-CAGR": np.nan,
+                              "DCA-Anteil": np.nan})
+                continue
+            p = dict(params)
+            _lo, _up = _derive_band(initial_btc_pct)
+            p.update(lower_threshold=_lo, upper_threshold=_up)
+            t = run_re_btc(prop_daily.loc[w], btc_chf.loc[w], p)
+            yrs = max((t.index[-1] - t.index[0]).days / 365.25, 1e-9)
+            cg = (t["total_value"].iloc[-1] / initial_capital) ** (1 / yrs) - 1
+            ds = t.attrs.get("attribution", {}).get("dca_share", np.nan)
+            frows.append({"Startzeitpunkt": lab, "Netto-CAGR": cg * 100,
+                          "DCA-Anteil": ds * 100})
+        fdf = pd.DataFrame(frows).set_index("Startzeitpunkt")
+        st.dataframe(fdf.style.format("{:.1f}%", na_rep="n/a"),
+                     use_container_width=True)
+        st.caption(f"Mit der aktuellen Startallokation ({initial_btc_pct*100:.0f}%) und "
+                   "daraus abgeleiteten Schwellen. Die Spreizung zwischen den "
+                   "Startzeitpunkten zeigt, wie stark das Ergebnis vom Einstieg abhängt.")
+
+# ---- 5) Break-even-Fee: ab wann frisst die Gebühr den ganzen Mietertrag? ---
+st.markdown("##### Break-even Management Fee — ab wann bleibt für den DCA nichts mehr?")
+_prop_share = max(1.0 - initial_btc_pct - initial_cash_pct, 1e-9)
+_be_fee = net_yield * _prop_share
+_bc1, _bc2, _bc3 = st.columns(3)
+with _bc1:
+    st.metric("Break-even Fee", f"{_be_fee*100:.2f}% p.a.")
+    st.caption("Nettomietrendite × Immobilienanteil am AuM")
+with _bc2:
+    st.metric("Aktuelle Fee", f"{mgmt_fee*100:.2f}% p.a.")
+    st.caption("Management Fee laut Sidebar")
+with _bc3:
+    _head = _be_fee - mgmt_fee
+    st.metric("Verbleibt für den DCA", f"{_head*100:+.2f}% p.a.")
+    st.caption("Mietertrag minus Gebühr, in % des AuM")
+
+if mgmt_fee >= _be_fee:
+    st.error(
+        f"⚠️ **Die Management Fee ({mgmt_fee*100:.2f}%) übersteigt den Mietertrag "
+        f"({_be_fee*100:.2f}% des AuM).** Der gesamte Nettomietertrag geht für "
+        "Gebühren drauf — für den mietertragsfinanzierten DCA bleibt nichts, und "
+        "Bitcoin muss zur Gebührendeckung verkauft werden. Die Yield Bridge kann "
+        "unter diesen Bedingungen mechanisch nicht funktionieren.")
+elif _head < 0.005:
+    st.warning(
+        f"Nach Gebühren bleiben nur {_head*100:.2f}% p.a. des AuM für den DCA. "
+        "Der Mietmechanismus ist damit rechnerisch marginal.")
+
+
 st.markdown("## Monte-Carlo-Projektion")
 st.markdown(
     f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
@@ -2241,8 +2624,20 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                     ("sn_frequency", "Daily")]
 
         params_summary = [
-            ("Allocation Framework", "OAK Yield Bridge — core capital untouched; "
-                                     "only the income stream funds the satellite"),
+            # HONEST framing: with an initial BTC allocation the satellite is NOT
+            # funded by income alone — say so instead of claiming otherwise.
+            ("Allocation Framework",
+             ("OAK Yield Bridge (pure) — the satellite is funded exclusively by "
+              "net rental income; the property core is never sold"
+              if initial_btc_pct <= 0 else
+              f"OAK Yield Bridge with strategic initial allocation — "
+              f"{initial_btc_pct*100:.0f}% of capital is allocated to Bitcoin on "
+              f"day 1; net rental income funds all further purchases. The "
+              f"property core is never sold.")),
+            ("DCA Share of BTC Gain",
+             ("n/a" if ts.attrs.get("attribution", {}).get("dca_share") != ts.attrs.get("attribution", {}).get("dca_share")
+              else f"{ts.attrs['attribution']['dca_share']*100:.1f}% "
+                   f"(rent-funded vs. day-1 lump sum)")),
             ("Initial Capital", f"CHF {initial_capital:,.0f}"),
             ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Residential RE / {initial_btc_pct*100:.0f}% BTC"),
             ("Capital-Value Source", f"SNB index '{series_label[:48]}' (quarterly, interpolated)"),
