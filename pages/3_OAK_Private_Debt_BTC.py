@@ -843,10 +843,33 @@ def run_pd_btc(btc_chf, idx, params):
     # ---- ATTRIBUTION: zwei getrennte BTC-Lots, Verkäufe PRO RATA ------------
     btc_u_init = (btc_chf0 * (1 - tx)) / btc.iloc[0] if btc_chf0 > 0 else 0.0
     btc_u_dca = 0.0
+    btc_u_subs = 0.0                # DRITTES LOT: zeichnungsfinanziertes BTC
     btc_init_invested = btc_chf0
     btc_dca_invested = 0.0
+    btc_subs_invested = 0.0
     btc_init_realized = 0.0
     btc_dca_realized = 0.0
+    btc_subs_realized = 0.0
+    # ZEICHNUNGS-ALLOKATION (Open-End!): neue Gelder MÜSSEN pro-rata zu den
+    # AKTUELLEN Portfoliogewichten investiert werden. Alles andere verwässert
+    # die Bestandsinvestoren: flösse alles ins Kreditbuch, sänke die BTC-Quote
+    # mit jeder Zeichnung — die Strategie würde von Mittelzuflüssen gesteuert
+    # statt von ihren Regeln.
+    sub_mode = params.get("subscription_mode", "prorata")   # prorata|debt|target
+    cash_floor_pct = float(params.get("cash_floor_pct", 0.05))  # Zielquote Puffer
+    cash_topup_total = 0.0
+    # INVESTOREN-RÜCKNAHMEN (Open-End). Liquiditäts-Wasserfall:
+    #   Cash -> BTC (NUR bis zur unteren Bandgrenze!) -> Kreditbuch (best effort)
+    #   -> Rest wird GEGATED (anteilig ausgesetzt).
+    # Bitcoin ist der Liquiditäts-Sleeve, wird aber nicht geplündert: sonst
+    # entsteht ein First-Mover-Vorteil und die Bleibenden halten den illiquiden
+    # Rest. Genau daran sind offene Immobilienfonds gescheitert.
+    principal_redeem_r = float(params.get("principal_redeem_rate", 1.0))
+    out_pct = float(params.get("outflow_pct", 0.0))       # je Termin, % des NAV
+    out_freq = params.get("outflow_freq", "N")            # M|Q|A|N
+    outflow_paid = 0.0
+    outflow_gated = 0.0
+    n_gates = 0
 
     # ---- Debt-Sleeve (rein parametrisch, kein Marktdaten-Index) ------------
     debt_cost_basis = cap - btc_chf0 - cash0   # tatsächlich eingesetztes Kapital
@@ -857,7 +880,7 @@ def run_pd_btc(btc_chf, idx, params):
     subs_total = 0.0                           # neue Zeichnungen
 
     cash = cash0
-    harvest_pool = 0.0     # geerntet, aber noch nicht in BTC/Cash alloziert
+    pending_dca = 0.0      # geerntet, noch nicht investiert — TEIL DES NAV
     fee_floor = cash0
     fee_debt = 0.0
     cash_interest_total = 0.0
@@ -866,6 +889,24 @@ def run_pd_btc(btc_chf, idx, params):
     ny = float(params["net_yield"])
     loss_r = float(params.get("credit_loss_rate", 0.0))
     redeem_r = float(params.get("redemption_rate", 1.0))
+    # ERNTE-RHYTHMUS: Das Underlying schüttet nicht aus. Monatliche Rücknahmen
+    # wären operativ unsinnig und teuer. Stattdessen wird EINMAL PRO PERIODE
+    # (Default: jährlich im Januar) der über das Vorjahr aufgelaufene Ertrag
+    # redimiert und anschliessend ROLLIEREND über dca_months in BTC investiert.
+    # KREDITSCHOCK: einmaliger Wertverlust des Kreditbuchs (Immobilienabschwung).
+    # Anders als der laufende Ausfall-Tropfen frisst er in die KAPITALSUBSTANZ:
+    # debt_accrued wird negativ -> der Buchwert fällt UNTER die Kostenbasis.
+    # Folge (gewollt): solange debt_accrued < 0, gibt es NICHTS zu ernten — der
+    # DCA pausiert, bis der Ertrag den Verlust wieder aufgeholt hat.
+    shock_pct = float(params.get("credit_shock_pct", 0.0))
+    shock_date = params.get("credit_shock_date", None)
+    shock_date = pd.Timestamp(shock_date).normalize() if shock_date else None
+    shock_amount = 0.0
+    harvest_freq = params.get("harvest_freq", "A")     # "A" | "S" | "Q"
+    harvest_month = int(params.get("harvest_month", 1))  # Erntemonat bei "A"
+    dca_months = int(params.get("dca_months", 12))     # Streckung der Ernte
+    dca_queue = []          # [{"remaining": n, "monthly": chf}]
+    n_redemptions = 0       # Anzahl Rücknahme-Vorgänge (Kostentransparenz)
     sub_amt = float(params.get("subscription_amount", 0.0))
     sub_freq = params.get("subscription_freq", "N")
 
@@ -899,12 +940,13 @@ def run_pd_btc(btc_chf, idx, params):
     for i, d in enumerate(idx):
         px = _btc_v[i]
         debt_val = debt_cost_basis + debt_accrued
-        b_val = (btc_u_init + btc_u_dca) * px
+        b_val = (btc_u_init + btc_u_dca + btc_u_subs) * px
 
         harvest = 0.0
         buys = 0.0
         sells = 0.0
         subs = 0.0
+        outflow = 0.0
         fee_paid = 0.0
         fee_btc_sold = 0.0
         fee_from_cash = 0.0
@@ -923,46 +965,109 @@ def run_pd_btc(btc_chf, idx, params):
         debt_accrued += _accr - _loss
         accrued_total += _accr
         loss_total += _loss
+        # WICHTIG: debt_val nach der Zuschreibung neu berechnen — sonst wird der
+        # Ertragsanfall des laufenden Tages nicht im NAV geführt (Off-by-one, der
+        # die Abstimmung der Zerlegung um genau einen Tagesertrag verfehlt).
+        debt_val = debt_cost_basis + debt_accrued
+
+        # ---- Kreditschock (einmalig) ---------------------------------------
+        if shock_pct > 0 and shock_date is not None and d == shock_date and debt_val > 0:
+            _sh = debt_val * shock_pct
+            debt_accrued -= _sh            # frisst Ertrag, dann Substanz
+            loss_total += _sh
+            shock_amount = _sh
+            debt_val = debt_cost_basis + debt_accrued
 
         # ---- Cash-Verzinsung (real) + Drag-Memo ----------------------------
         if rf_cash > 0 and cash > 0:
             _int = cash * (rf_cash / 365.0)
             cash += _int
             cash_interest_total += _int
-        cash_drag += (cash + harvest_pool) * (max(rf_opp - rf_cash, 0.0) / 365.0)
+        cash_drag += (cash + pending_dca) * (max(rf_opp - rf_cash, 0.0) / 365.0)
 
         # ---- Neue Zeichnungen: wachsen den KERN, nie den Satelliten ---------
         if sub_amt > 0 and (
                 (sub_freq == "M" and is_me) or (sub_freq == "Q" and is_qe)
                 or (sub_freq == "A" and is_ye)):
             subs = sub_amt
-            debt_cost_basis += subs      # frisches Kapital -> Kreditbuch
             subs_total += subs
+            _nav = debt_val + b_val + cash + pending_dca
+            if sub_mode == "debt" or _nav <= 0:
+                # Reine Yield-Bridge-Lesart: alles ins Kreditbuch. ACHTUNG:
+                # verwässert die BTC-Quote der Bestandsinvestoren.
+                debt_cost_basis += subs
+            else:
+                if sub_mode == "target":
+                    w_btc = float(params["initial_btc_pct"])
+                    w_cash = float(params.get("initial_cash_pct", 0.0))
+                else:   # prorata — der faire Fondsstandard
+                    w_btc = b_val / _nav
+                    w_cash = (cash + pending_dca) / _nav
+                w_btc = min(max(w_btc, 0.0), 1.0)
+                w_cash = min(max(w_cash, 0.0), 1.0 - w_btc)
+                _to_btc = subs * w_btc
+                _to_cash = subs * w_cash
+                _to_debt = subs - _to_btc - _to_cash
+                debt_cost_basis += _to_debt
+                cash += _to_cash
+                if _to_btc > 0 and px > 0:
+                    btc_u_subs += (_to_btc * (1 - tx)) / px
+                    btc_subs_invested += _to_btc
+                    b_val = (btc_u_init + btc_u_dca + btc_u_subs) * px
             debt_val = debt_cost_basis + debt_accrued
 
-        # ---- ERTRAable-ERNTE (monatlich): nur der Zuwachs, nie das Kapital --
-        if is_me and debt_accrued > 0:
+        # ---- ERTRAGS-ERNTE (periodisch, Default jährlich) -------------------
+        #      EIN Rücknahme-Vorgang realisiert den seit der letzten Ernte
+        #      aufgelaufenen Zuwachs — nie das Kapital. Das Geld verlässt das
+        #      Zertifikat und liegt ab sofort als `pending_dca` im Produkt
+        #      (Teil des NAV!). Von dort wird es gestreckt investiert.
+        is_harvest = (
+            (harvest_freq == "A" and is_me and d.month == harvest_month)
+            or (harvest_freq == "S" and is_me
+                and d.month in (harvest_month, (harvest_month + 5) % 12 + 1))
+            or (harvest_freq == "Q" and is_qe))
+        if is_harvest and debt_accrued > 0:
             target = debt_accrued
-            harvest = target * redeem_r         # best-effort: Rest bleibt drin
-            debt_accrued -= harvest             # und verzinst sich weiter
-            harvest_pool += harvest
+            harvest = target * redeem_r      # best-effort: Rest bleibt drin
+            debt_accrued -= harvest          # und verzinst sich weiter
             harvest_total += harvest
+            n_redemptions += 1
+            pending_dca += harvest           # ab jetzt Cash im Produkt
+            if harvest > 0 and dca_months > 0:
+                dca_queue.append({"remaining": dca_months,
+                                  "monthly": harvest / dca_months})
             debt_val = debt_cost_basis + debt_accrued
 
-        # ---- Bandlogik: geernteter Ertrag -> BTC ---------------------------
-        is_dca = (is_me if h_freq == "M" else is_qe)
-        if is_dca and harvest_pool > 0:
-            tot = debt_val + b_val + cash + harvest_pool
-            w = (b_val / tot) if tot > 0 else 0.0
-            rate = boost_rate if w < lo else (0.0 if w > up else base_rate)
-            invest = harvest_pool * rate
-            if invest > 0 and px > 0:
-                btc_u_dca += (invest * (1 - tx)) / px
-                btc_dca_invested += invest
-                buys = invest
-            cash += harvest_pool - invest
-            harvest_pool = 0.0
-            b_val = (btc_u_init + btc_u_dca) * px
+        # ---- Rollierender DCA: monatlich eine Tranche durch die Bandlogik ---
+        if is_me and dca_queue and pending_dca > 0:
+            tranche = min(sum(e["monthly"] for e in dca_queue if e["remaining"] > 0),
+                          pending_dca)
+            for e in dca_queue:
+                if e["remaining"] > 0:
+                    e["remaining"] -= 1
+            dca_queue = [e for e in dca_queue if e["remaining"] > 0]
+            if tranche > 0:
+                _tranche0 = tranche          # WICHTIG: Originalgrösse merken —
+                                             # pending_dca muss um DIESE sinken.
+                tot = debt_val + b_val + cash + pending_dca
+                # CASH-AUFFÜLLUNG ZUERST: Der Puffer zahlt die Gebühren. Er muss
+                # auf die Zielquote gebracht werden, BEVOR alloziert wird —
+                # sonst zwingt die nächste Fee zu einem BTC-Verkauf.
+                _cash_target = cash_floor_pct * tot
+                _topup = min(max(_cash_target - cash, 0.0), tranche)
+                cash += _topup
+                tranche -= _topup
+                cash_topup_total += _topup
+                w = (b_val / tot) if tot > 0 else 0.0
+                rate = boost_rate if w < lo else (0.0 if w > up else base_rate)
+                invest = tranche * rate
+                if invest > 0 and px > 0:
+                    btc_u_dca += (invest * (1 - tx)) / px
+                    btc_dca_invested += invest
+                    buys = invest
+                cash += tranche - invest     # Rest der Tranche bleibt Cash
+                pending_dca -= _tranche0     # Auffüllung + Rest + Invest
+                b_val = (btc_u_init + btc_u_dca + btc_u_subs) * px
 
         # ---- Sell-Regel: BTC über Cap -> zurück auf exakt Cap --------------
         is_sell = (is_me if c_freq == "M" else is_qe)
@@ -972,22 +1077,87 @@ def run_pd_btc(btc_chf, idx, params):
                 target_b = up * (debt_val + cash) / (1 - up) if up < 1 else b_val
                 excess = max(b_val - target_b, 0.0)
                 if excess > 0:
-                    _u = btc_u_init + btc_u_dca
-                    _f = (btc_u_init / _u) if _u > 0 else 0.0
+                    _u = btc_u_init + btc_u_dca + btc_u_subs
+                    _fi = (btc_u_init / _u) if _u > 0 else 0.0
+                    _fd = (btc_u_dca / _u) if _u > 0 else 0.0
+                    _fs = 1.0 - _fi - _fd
                     _sold_u = excess / px
-                    btc_u_init -= _sold_u * _f
-                    btc_u_dca -= _sold_u * (1 - _f)
+                    btc_u_init -= _sold_u * _fi
+                    btc_u_dca -= _sold_u * _fd
+                    btc_u_subs -= _sold_u * _fs
                     _net = excess * (1 - tx)
-                    btc_init_realized += _net * _f
-                    btc_dca_realized += _net * (1 - _f)
+                    btc_init_realized += _net * _fi
+                    btc_dca_realized += _net * _fd
+                    btc_subs_realized += _net * _fs
                     cash += _net
                     sells = excess
-                    b_val = (btc_u_init + btc_u_dca) * px
+                    b_val = (btc_u_init + btc_u_dca + btc_u_subs) * px
+
+        # ---- INVESTOREN-RÜCKNAHMEN (Liquiditäts-Wasserfall mit Gate) --------
+        is_out = ((out_freq == "M" and is_me) or (out_freq == "Q" and is_qe)
+                  or (out_freq == "A" and is_ye))
+        if is_out and out_pct > 0:
+            _nav = debt_val + b_val + cash + pending_dca
+            _want = _nav * out_pct
+            _paid = 0.0
+
+            # (1) Cash — aber der Gebührenpuffer bleibt geschützt
+            _cash_keep = cash_floor_pct * max(_nav - _want, 0.0)
+            _from_cash = min(max(cash - _cash_keep, 0.0), _want)
+            cash -= _from_cash
+            _paid += _from_cash
+
+            # (2) BTC — NUR bis zur unteren Bandgrenze. Nicht darüber hinaus:
+            #     sonst plündert der Aussteiger den liquiden Sleeve.
+            _rest = _want - _paid
+            if _rest > 1e-9 and b_val > 0 and px > 0:
+                _nav_after = _nav - _want
+                _btc_min = lo * max(_nav_after, 0.0)   # Bandgrenze halten
+                _sellable = max(b_val - _btc_min, 0.0)
+                _gross = min(_sellable, _rest / (1 - tx))
+                if _gross > 0:
+                    _u = btc_u_init + btc_u_dca + btc_u_subs
+                    _fi = (btc_u_init / _u) if _u > 0 else 0.0
+                    _fd = (btc_u_dca / _u) if _u > 0 else 0.0
+                    _fs = 1.0 - _fi - _fd
+                    _su = _gross / px
+                    btc_u_init -= _su * _fi
+                    btc_u_dca -= _su * _fd
+                    btc_u_subs -= _su * _fs
+                    _pr = _gross * (1 - tx)
+                    btc_init_realized += _pr * _fi
+                    btc_dca_realized += _pr * _fd
+                    btc_subs_realized += _pr * _fs
+                    _paid += _pr
+                    b_val = (btc_u_init + btc_u_dca + btc_u_subs) * px
+
+            # (3) Kreditbuch — best effort. EIGENER Parameter: eine Kapital-
+            #     rücknahme ist ein grosses Ticket und deutlich schwerer zu
+            #     platzieren als die kleine jährliche Ertrags-Ernte.
+            _rest = _want - _paid
+            if _rest > 1e-9 and debt_val > 0:
+                _fill = min(_rest * principal_redeem_r, _rest)
+                if _fill > 0:
+                    _fb = _fill * (debt_cost_basis / debt_val) if debt_val > 0 else 0.0
+                    _fa = _fill - _fb
+                    debt_cost_basis -= _fb
+                    debt_accrued -= _fa
+                    debt_val = debt_cost_basis + debt_accrued
+                    _paid += _fill
+
+            # (4) GATE: was nicht liquidiert werden konnte, wird ausgesetzt
+            _gap = _want - _paid
+            if _gap > 1e-6:
+                outflow_gated += _gap
+                n_gates += 1
+            outflow_paid += _paid
+            outflow = _paid
 
         # ---- Gebühren-Wasserfall: Cash -> BTC. Das KREDITBUCH NIE. ---------
         def _pay(amount):
-            nonlocal cash, btc_u_init, btc_u_dca, b_val, fee_paid, fee_btc_sold
-            nonlocal fee_from_cash, fee_from_btc, btc_init_realized, btc_dca_realized
+            nonlocal cash, btc_u_init, btc_u_dca, btc_u_subs, b_val, fee_paid
+            nonlocal fee_btc_sold, fee_from_cash, fee_from_btc
+            nonlocal btc_init_realized, btc_dca_realized, btc_subs_realized
             if amount <= 1e-9:
                 return 0.0
             from_cash = min(cash, amount)
@@ -997,25 +1167,29 @@ def run_pd_btc(btc_chf, idx, params):
             short = amount - from_cash
             if short > 1e-9 and b_val > 0 and px > 0:
                 gross = min(b_val, short / (1 - tx))
-                _u = btc_u_init + btc_u_dca
-                _f = (btc_u_init / _u) if _u > 0 else 0.0
+                _u = btc_u_init + btc_u_dca + btc_u_subs
+                _fi = (btc_u_init / _u) if _u > 0 else 0.0
+                _fd = (btc_u_dca / _u) if _u > 0 else 0.0
+                _fs = 1.0 - _fi - _fd
                 _su = gross / px
-                btc_u_init -= _su * _f
-                btc_u_dca -= _su * (1 - _f)
+                btc_u_init -= _su * _fi
+                btc_u_dca -= _su * _fd
+                btc_u_subs -= _su * _fs
                 proceeds = gross * (1 - tx)
-                btc_init_realized += proceeds * _f
-                btc_dca_realized += proceeds * (1 - _f)
+                btc_init_realized += proceeds * _fi
+                btc_dca_realized += proceeds * _fd
+                btc_subs_realized += proceeds * _fs
                 fee_btc_sold += gross
                 fee_paid += proceeds
                 fee_from_btc += proceeds
                 short -= proceeds
-                b_val = (btc_u_init + btc_u_dca) * px
+                b_val = (btc_u_init + btc_u_dca + btc_u_subs) * px
             return max(short, 0.0)
 
         fee_due = ((is_me and mgmt_freq == "M") or (is_qe and mgmt_freq == "Q"))
         if fee_due and mgmt_fee > 0:
             per_year = 12.0 if mgmt_freq == "M" else 4.0
-            aum = debt_val + b_val + cash + harvest_pool
+            aum = debt_val + b_val + cash + pending_dca
             amt = aum * (mgmt_fee / per_year) + fee_debt
             fee_debt = 0.0
             _before = fee_paid
@@ -1025,7 +1199,7 @@ def run_pd_btc(btc_chf, idx, params):
 
         if (is_me and d.month in cryst_months) or i == len(idx) - 1:
             if perf_fee > 0:
-                nav_now = debt_val + b_val + cash + harvest_pool
+                nav_now = debt_val + b_val + cash + pending_dca
                 _frac = max((d - prev_cryst_date).days, 0) / 365.25
                 thr = hwm * (1.0 + hwm_hurdle * _frac)
                 excess_p = 0.0
@@ -1043,7 +1217,7 @@ def run_pd_btc(btc_chf, idx, params):
                     _short = _pay(_amt)
                     perf_paid_row = _amt - _short
                     total_perf += perf_paid_row
-                _after = debt_val + b_val + cash + harvest_pool
+                _after = debt_val + b_val + cash + pending_dca
                 if _after > hwm:
                     hwm = _after
                 prev_cryst_date = d
@@ -1052,12 +1226,13 @@ def run_pd_btc(btc_chf, idx, params):
             "date": d,
             "debt_value": debt_val,
             "btc_value": b_val,
-            "cash": cash + harvest_pool,
-            "total_value": debt_val + b_val + cash + harvest_pool,
-            "harvest": harvest if is_me else np.nan,
+            "cash": cash + pending_dca,
+            "total_value": debt_val + b_val + cash + pending_dca,
+            "harvest": harvest if harvest > 0 else np.nan,
             "debt_cost_basis": debt_cost_basis,
             "debt_accrued": debt_accrued,
             "subscriptions": subs,
+            "outflow": outflow,
             "btc_buys": buys,
             "btc_sells": sells,
             "mgmt_fee_paid": fee_paid,
@@ -1079,15 +1254,27 @@ def run_pd_btc(btc_chf, idx, params):
     _px_end = _btc_v[-1]
     _bi_end = btc_u_init * _px_end
     _bd_end = btc_u_dca * _px_end
+    _bs_end = btc_u_subs * _px_end
     btc_init_gain = (_bi_end + btc_init_realized) - btc_init_invested
     btc_dca_gain = (_bd_end + btc_dca_realized) - btc_dca_invested
-    _btot = btc_init_gain + btc_dca_gain
+    btc_subs_gain = (_bs_end + btc_subs_realized) - btc_subs_invested
+    # DCA-Anteil misst NUR den ertragsfinanzierten Beitrag gegen die
+    # kapitalfinanzierten Lots (Startallokation + Zeichnungen). Sonst würden
+    # Mittelzuflüsse die Kennzahl verfälschen.
+    _btot = btc_init_gain + btc_dca_gain + btc_subs_gain
     dca_share = (btc_dca_gain / _btot) if abs(_btot) > 1e-9 else float("nan")
+    # ZWEITE KENNZAHL: der Mechanismus-Anteil OHNE Zeichnungseffekt. Ein schnell
+    # wachsender Fonds kauft pro-rata viel BTC aus Zeichnungen — das drückt den
+    # rohen DCA-Anteil, sagt aber NICHTS über die Kraft des Ertragsmechanismus.
+    _bmech = btc_init_gain + btc_dca_gain
+    dca_share_ex_subs = ((btc_dca_gain / _bmech) if abs(_bmech) > 1e-9
+                         else float("nan"))
 
     nav_end = float(out["total_value"].iloc[-1])
-    pnl = nav_end - cap - subs_total          # Zeichnungen sind kein Gewinn!
+    # Zeichnungen sind kein Gewinn, Rücknahmen kein Verlust.
+    pnl = nav_end - cap - subs_total + outflow_paid
     recon = (accrued_total - loss_total + btc_init_gain + btc_dca_gain
-             + cash_interest_total - (total_mgmt + total_perf))
+             + btc_subs_gain + cash_interest_total - (total_mgmt + total_perf))
 
     out.attrs["total_mgmt"] = total_mgmt
     out.attrs["total_perf"] = total_perf
@@ -1097,18 +1284,30 @@ def run_pd_btc(btc_chf, idx, params):
         "credit_losses": -loss_total,          # Kreditausfälle (negativ)
         "btc_initial_gain": btc_init_gain,
         "btc_dca_gain": btc_dca_gain,
+        "btc_subs_gain": btc_subs_gain,
+        "btc_subs_invested": btc_subs_invested,
         "cash_interest": cash_interest_total,
         "fees": -(total_mgmt + total_perf),
         "total_pnl": pnl,
         "reconciliation_error": recon - pnl,
         "dca_share": dca_share,
+        "dca_share_ex_subs": dca_share_ex_subs,
         "btc_initial_invested": btc_init_invested,
         "btc_dca_invested": btc_dca_invested,
         "harvest_total": harvest_total,        # tatsächlich realisierter "Coupon"
+        "n_redemptions": n_redemptions,        # Anzahl Rücknahme-Vorgänge
+        "credit_shock": shock_amount,          # einmaliger Schock (CHF)
+        # KAPITALERHALTUNGS-NACHWEIS: NAV, wenn Bitcoin auf NULL ginge
+        "nav_if_btc_zero": float(out["debt_value"].iloc[-1] + out["cash"].iloc[-1]),
+        "dca_pending": pending_dca,
         "accrued_total": accrued_total,
         "unharvested": debt_accrued,           # klemmt im Zertifikat
         "harvest_ratio": (harvest_total / accrued_total) if accrued_total > 0 else float("nan"),
         "subscriptions": subs_total,
+        "outflow_paid": outflow_paid,
+        "outflow_gated": outflow_gated,
+        "n_gates": n_gates,
+        "cash_topup": cash_topup_total,
         "cash_drag": -cash_drag,
         "years": max((idx[-1] - idx[0]).days / 365.25, 1e-9),
     }
@@ -1116,15 +1315,32 @@ def run_pd_btc(btc_chf, idx, params):
 
 
 def run_debt_only(idx, params):
-    """Benchmark: identisches Kreditbuch OHNE Bitcoin — der Ertrag wird
-    thesauriert (nichts wird geerntet, nichts verkauft). Isoliert exakt den
-    Beitrag der Bitcoin-Allokation."""
+    """Benchmark: identisches Kreditbuch OHNE Bitcoin.
+
+    KORREKTUR (Systemaudit): Der Benchmark muss DIESELBEN Belastungen tragen wie
+    die Strategie — sonst isoliert der Vergleich nicht den Bitcoin-Beitrag,
+    sondern vermischt ihn mit Gebühren und Kreditschock. Enthalten sind daher:
+      * Nettorendite (thesaurierend, keine Ernte, kein Verkauf)
+      * laufende Kreditausfälle
+      * EINMALIGER KREDITSCHOCK (neu)
+      * MANAGEMENT-GEBÜHR (neu) — sie wird dem Kreditbuch belastet
+      * Zeichnungen
+    NICHT enthalten: Performance Fee (fällt ohne Bitcoin-Überrendite faktisch
+    nicht an) und der Cash-Puffer (der existiert nur wegen des BTC-Mechanismus —
+    seine Renditebremse ist zu Recht ein Nachteil der Strategie).
+    """
     idx = pd.DatetimeIndex(idx).normalize().unique().sort_values()
     cap = float(params["initial_capital"])
     ny = float(params["net_yield"])
     loss_r = float(params.get("credit_loss_rate", 0.0))
+    mgmt = float(params.get("mgmt_fee", 0.0))
+    mgmt_freq = params.get("mgmt_fee_freq", "M")
     sub_amt = float(params.get("subscription_amount", 0.0))
     sub_freq = params.get("subscription_freq", "N")
+    shock_pct = float(params.get("credit_shock_pct", 0.0))
+    shock_date = params.get("credit_shock_date", None)
+    shock_date = pd.Timestamp(shock_date).normalize() if shock_date else None
+
     v = cap
     vals = []
     for i, d in enumerate(idx):
@@ -1132,11 +1348,19 @@ def run_debt_only(idx, params):
         is_me = (i == len(idx) - 1) or (idx[i + 1].to_period("M") != d.to_period("M"))
         is_qe = is_me and d.month in (3, 6, 9, 12)
         is_ye = is_me and d.month == 12
+
+        if shock_pct > 0 and shock_date is not None and d == shock_date:
+            v -= v * shock_pct                      # gleicher Schock wie die Strategie
+
+        if mgmt > 0 and ((is_me and mgmt_freq == "M") or (is_qe and mgmt_freq == "Q")):
+            v -= v * (mgmt / (12.0 if mgmt_freq == "M" else 4.0))
+
         if sub_amt > 0 and ((sub_freq == "M" and is_me) or (sub_freq == "Q" and is_qe)
                             or (sub_freq == "A" and is_ye)):
             v += sub_amt
         vals.append(v)
     return pd.Series(vals, index=idx)
+
 
 # ===========================================================================
 # UI
@@ -1217,16 +1441,79 @@ with st.sidebar:
                                      "kann, bleibt im Zertifikat und verzinst "
                                      "sich weiter — es geht NICHT verloren.") / 100.0
 
+    st.markdown("### Ertrags-Ernte")
+    st.caption("Das Underlying schüttet NICHT aus. Der Ertrag wird periodisch "
+               "durch Rücknahme realisiert und danach gestreckt investiert.")
+    _hf_label = st.selectbox(
+        "Ernte-Rhythmus", ["jährlich", "halbjährlich", "quartalsweise"], index=0,
+        help="Jährlich = ein einziger Rücknahme-Vorgang pro Jahr. Häufigere "
+             "Rücknahmen erhöhen den operativen Aufwand, ohne dass mehr Ertrag "
+             "entsteht.")
+    harvest_freq = {"jährlich": "A", "halbjährlich": "S",
+                    "quartalsweise": "Q"}[_hf_label]
+    harvest_month = st.selectbox(
+        "Erntemonat (bei jährlich)",
+        list(range(1, 13)), index=0,
+        format_func=lambda mth: ["Januar", "Februar", "März", "April", "Mai",
+                                 "Juni", "Juli", "August", "September", "Oktober",
+                                 "November", "Dezember"][mth - 1],
+        help="Es wird der seit der letzten Ernte aufgelaufene Ertrag realisiert "
+             "— also im Januar der Ertrag des Vorjahres.")
+    dca_months = st.slider(
+        "DCA-Streckung der Ernte (Monate)", 1, 24, 12, 1,
+        help="Der geerntete Jahresertrag wird über diese Anzahl Monate "
+             "gleichmässig in Bitcoin investiert (rollierender DCA) — nicht als "
+             "Klumpen.")
+
+    st.markdown("### Rücknahmen (Investoren)")
+    st.caption("Open-End: Investoren können aussteigen. Wasserfall: Cash → BTC "
+               "(nur bis zur unteren Bandgrenze) → Kreditbuch → Gate.")
+    _of_label = st.selectbox("Rücknahme-Rhythmus",
+                             ["keine", "quartalsweise", "jährlich"], index=0)
+    outflow_freq = {"keine": "N", "quartalsweise": "Q", "jährlich": "A"}[_of_label]
+    outflow_pct = st.slider("Rücknahme je Termin (% des NAV)", 0, 30, 0, 1,
+                            help="Wie viel Prozent des Fondsvermögens je Termin "
+                                 "zurückgenommen wird.") / 100.0
+    principal_redeem_rate = st.slider(
+        "Kapitalrücknahme beim Emittenten (% erfüllbar)", 0, 100, 50, 5,
+        help="Anteil einer KAPITAL-Rücknahme, der beim Underlying tatsächlich "
+             "platziert werden kann. Grosse Tickets sind deutlich schwerer als "
+             "die kleine jährliche Ertrags-Ernte. Was nicht liquidiert werden "
+             "kann, wird GEGATED — das schützt die bleibenden Investoren.") / 100.0
+    cash_floor_pct = st.slider(
+        "Cash-Zielquote (% des NAV)", 0, 20, 5, 1,
+        help="Der Puffer zahlt die Gebühren. Er wird aus der Ernte "
+             "aufgefüllt, BEVOR in Bitcoin alloziert wird.") / 100.0
+
+    st.markdown("### Kreditschock (Stress)")
+    st.caption("Einmaliger Wertverlust des Kreditbuchs — z.B. Schweizer "
+               "Immobilienabschwung. Nachrangige Hypotheken tragen den Erstverlust.")
+    credit_shock_pct = st.select_slider(
+        "Schockgrösse", options=[0, 10, 20, 30, 40], value=0,
+        format_func=lambda v: "kein Schock" if v == 0 else f"−{v}%") / 100.0
+    credit_shock_date = None
+    if credit_shock_pct > 0:
+        credit_shock_date = st.date_input(
+            "Zeitpunkt des Schocks", value=date(2022, 6, 1), key="pd_shock_dt")
+
     st.markdown("### Zeichnungen (Wachstum)")
     subscription_freq_label = st.selectbox(
         "Rhythmus", ["keine", "monatlich", "quartalsweise", "jährlich"], index=0)
     subscription_freq = {"keine": "N", "monatlich": "M",
                          "quartalsweise": "Q", "jährlich": "A"}[subscription_freq_label]
     subscription_amount = st.number_input(
-        "Betrag je Zeichnung (CHF)", min_value=0, value=0, step=100_000,
-        help="Neue Zeichnungen fliessen vollständig ins Kreditbuch (Kern) — "
-             "nie direkt in Bitcoin. Sie erhöhen dadurch die Ertragsbasis und "
-             "damit die Ernte, die den DCA speist.")
+        "Betrag je Zeichnung (CHF)", min_value=0, value=0, step=100_000)
+    _sm_label = st.selectbox(
+        "Zeichnungs-Allokation",
+        ["Pro-rata (aktuelle Gewichte)", "100% ins Kreditbuch",
+         "Zielgewichte (Startallokation)"], index=0,
+        help="OPEN-END: Neue Gelder zeichnen zum NAV und kaufen einen Anteil am "
+             "BESTEHENDEN Portfolio. Pro-rata hält die Gewichte konstant und ist "
+             "der faire Fondsstandard. «100% ins Kreditbuch» verwässert die "
+             "BTC-Quote der Bestandsinvestoren mit jeder Zeichnung.")
+    subscription_mode = {"Pro-rata (aktuelle Gewichte)": "prorata",
+                         "100% ins Kreditbuch": "debt",
+                         "Zielgewichte (Startallokation)": "target"}[_sm_label]
 
     st.markdown("### Ertragsallokation")
     base_invest_rate = st.slider("Basis-Investitionsrate (%)", 0, 100, 50, 5) / 100.0
@@ -1292,6 +1579,12 @@ params = dict(
     initial_capital=float(initial_capital), initial_btc_pct=initial_btc_pct,
     initial_cash_pct=initial_cash_pct, net_yield=net_yield,
     credit_loss_rate=credit_loss_rate, redemption_rate=redemption_rate,
+    harvest_freq=harvest_freq, harvest_month=int(harvest_month),
+    dca_months=int(dca_months),
+    credit_shock_pct=credit_shock_pct, credit_shock_date=credit_shock_date,
+    subscription_mode=subscription_mode, cash_floor_pct=cash_floor_pct,
+    outflow_pct=outflow_pct, outflow_freq=outflow_freq,
+    principal_redeem_rate=principal_redeem_rate,
     subscription_amount=float(subscription_amount),
     subscription_freq=subscription_freq,
     lower_threshold=lower_threshold, upper_threshold=upper_threshold,
@@ -1354,7 +1647,7 @@ c4.metric("BTC-Beitrag", f"{btc_contrib*100:+.2f}% p.a.",
 
 c5, c6, c7, c8 = st.columns(4)
 c5.metric("Sharpe Ratio*", f"{m['sharpe']:.2f}")
-c6.metric("Max Drawdown*", f"{m['max_dd']*100:.2f}%")
+c6.metric("Max Drawdown*", f"{m['max_drawdown']*100:.2f}%")
 c7.metric("Volatilität*", f"{m['vol_ann']*100:.2f}%")
 _wb = ts["btc_value"].iloc[-1] / net.iloc[-1] if net.iloc[-1] > 0 else 0
 c8.metric("BTC-Quote (aktuell)", f"{_wb*100:.1f}%",
@@ -1405,6 +1698,21 @@ with h4:
               "Nein" if abs(_drift) < 1.0 else f"{_drift:+,.0f}")
     st.caption("Kostenbasis-Drift (ohne Zeichnungen)")
 
+h5, h6, h7, h8 = st.columns(4)
+with h5:
+    st.metric("Rücknahme-Vorgänge", f"{_att['n_redemptions']}")
+    st.caption(f"{_hf_label} · über {years:.1f} Jahre")
+with h6:
+    st.metric("Ø Ernte je Vorgang",
+              fmt_chf(_att["harvest_total"] / max(_att["n_redemptions"], 1)))
+    st.caption("Ticketgrösse der Rücknahme")
+with h7:
+    st.metric("DCA noch ausstehend", fmt_chf(_att["dca_pending"]))
+    st.caption(f"geerntet, wird über {dca_months} Mte investiert")
+with h8:
+    st.metric("DCA-Streckung", f"{dca_months} Monate")
+    st.caption("rollierend, kein Klumpen")
+
 if redemption_rate < 1.0:
     st.warning(
         f"⚠️ **Redemption-Erfolgsquote {redemption_rate*100:.0f}%** — es werden "
@@ -1430,6 +1738,116 @@ st.markdown("##### Kostenbasis vs. NAV — der Abstand ist der ungeerntete Ertra
 st.plotly_chart(fig_h, use_container_width=True)
 
 # ==========================================================================
+# KAPITALERHALTUNG — die Kennzahl, die dieses Produkt verkauft
+# ==========================================================================
+st.markdown("## Kapitalerhaltung — was bleibt, wenn Bitcoin auf null geht?")
+st.markdown(
+    "<p style='color:#A9B5A4;margin-top:-6px'>Das eingesetzte Kapital liegt im "
+    "besicherten Kreditbuch. Bitcoin wird <strong>ausschliesslich aus dem "
+    "geernteten Ertrag</strong> gekauft. Der Investor kann sein Kapital daher "
+    "strukturell nicht an Bitcoin verlieren — nur den Ertrag, den es bereits "
+    "erwirtschaftet hat.</p>", unsafe_allow_html=True)
+
+_nav_zero = ts["debt_value"] + ts["cash"]          # NAV, wenn BTC = 0
+_zero_end = float(_nav_zero.iloc[-1])
+_zero_ratio = _zero_end / _cap_base if _cap_base > 0 else 0.0
+# Der ungünstigste Zeitpunkt: wann war die Deckung am tiefsten?
+_cov = _nav_zero / (initial_capital + ts["subscriptions"].cumsum())
+_cov_min = float(_cov.min())
+_cov_min_at = _cov.idxmin()
+
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    st.metric("NAV bei BTC = 0 (heute)", fmt_chf(_zero_end))
+    st.caption("Kreditbuch + Cash, ohne jeden Bitcoin")
+with k2:
+    st.metric("Kapitaldeckung", f"{_zero_ratio*100:.1f}%")
+    st.caption("in % des eingesetzten Kapitals")
+with k3:
+    st.metric("Tiefste Deckung je", f"{_cov_min*100:.1f}%")
+    st.caption(f"am {_cov_min_at:%b %Y}")
+with k4:
+    st.metric("Kreditschock", "keiner" if credit_shock_pct <= 0
+              else f"−{credit_shock_pct*100:.0f}%")
+    st.caption(fmt_chf(_att["credit_shock"]) if credit_shock_pct > 0
+               else "kein Stress modelliert")
+
+if _zero_ratio >= 1.0:
+    st.success(
+        f"✅ **Selbst bei einem Totalverlust von Bitcoin läge der NAV bei "
+        f"{fmt_chf(_zero_end)} — das sind {_zero_ratio*100:.1f}% des "
+        f"eingesetzten Kapitals.** Das Kapital ist strukturell nicht dem "
+        "Bitcoin-Risiko ausgesetzt: gekauft wird nur aus dem Ertrag, den das "
+        "Kreditbuch bereits abgeworfen hat.")
+else:
+    st.warning(
+        f"⚠️ Bei einem Totalverlust von Bitcoin läge der NAV bei "
+        f"{_zero_ratio*100:.1f}% des eingesetzten Kapitals. Die Unterdeckung "
+        "stammt NICHT aus Bitcoin, sondern aus Kreditausfällen bzw. dem "
+        "Kreditschock sowie aus Gebühren, die den Ertrag übersteigen.")
+
+fig_k = go.Figure()
+fig_k.add_trace(go.Scatter(x=ts.index, y=net.values, name="NAV (mit Bitcoin)",
+                           line=dict(color=OAK_GOLD, width=2.2)))
+fig_k.add_trace(go.Scatter(x=ts.index, y=_nav_zero.values,
+                           name="NAV, wenn Bitcoin auf null ginge",
+                           line=dict(color=OAK_SAGE, width=2, dash="dash")))
+fig_k.add_trace(go.Scatter(
+    x=ts.index, y=(initial_capital + ts["subscriptions"].cumsum()).values,
+    name="Eingesetztes Kapital", line=dict(color=OAK_CREAM_DIM, width=1.4,
+                                           dash="dot")))
+fig_k = style_plotly(fig_k, height=380)
+fig_k.update_yaxes(title_text="Wert (CHF)", tickformat=",.0f")
+fig_k.update_layout(margin=dict(l=70, r=30, t=10, b=60),
+                    legend=dict(orientation="h", yanchor="top", y=-0.18, x=0))
+st.markdown("##### Der Sicherheitsboden: die gestrichelte Linie darf das "
+            "eingesetzte Kapital nie unterschreiten")
+st.plotly_chart(fig_k, use_container_width=True)
+
+# ==========================================================================
+# LIQUIDITÄT & RÜCKNAHMEN
+# ==========================================================================
+if outflow_pct > 0 or _att["outflow_paid"] > 0:
+    st.markdown("## Liquidität & Rücknahmen")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Bitcoin ist der liquide "
+        "Sleeve — aber er wird <strong>nicht geplündert</strong>. Verkauft wird "
+        "nur bis zur unteren Bandgrenze; darüber hinaus muss das Kreditbuch "
+        "liefern. Kann es das nicht, wird die Auszahlung anteilig "
+        "<strong>gegated</strong>. Das verhindert, dass Aussteiger die "
+        "Liquidität abräumen und die Bleibenden mit dem illiquiden Rest "
+        "zurücklassen.</p>", unsafe_allow_html=True)
+
+    l1, l2, l3, l4 = st.columns(4)
+    with l1:
+        st.metric("Ausgezahlt", fmt_chf(_att["outflow_paid"]))
+        st.caption("tatsächlich bedient")
+    with l2:
+        st.metric("Gegated", fmt_chf(_att["outflow_gated"]))
+        st.caption(f"{_att['n_gates']} Gate-Ereignisse")
+    with l3:
+        _req = _att["outflow_paid"] + _att["outflow_gated"]
+        _fill = (_att["outflow_paid"] / _req * 100) if _req > 0 else 100.0
+        st.metric("Erfüllungsquote", f"{_fill:.0f}%")
+        st.caption("bedient / beantragt")
+    with l4:
+        st.metric("Cash-Auffüllung", fmt_chf(_att["cash_topup"]))
+        st.caption("aus der Ernte, vor der Allokation")
+
+    if _att["outflow_gated"] > 0:
+        st.warning(
+            f"⚠️ **{fmt_chf(_att['outflow_gated'])} konnten nicht ausgezahlt "
+            f"werden** ({_att['n_gates']} Gate-Ereignisse). Das ist kein Defekt, "
+            "sondern die Schutzfunktion: Ohne Gate hätten diese Auszahlungen den "
+            "Bitcoin-Sleeve unter die Bandgrenze gedrückt und den Gebührenpuffer "
+            "geleert — die bleibenden Investoren hätten einen übergewichteten, "
+            "illiquiden Kreditbuch-Rest gehalten, den nur die (unzuverlässige) "
+            "Ernte hätte reparieren können.")
+    else:
+        st.success("✅ Alle Rücknahmen konnten bedient werden, ohne die "
+                   "Bandstruktur oder den Gebührenpuffer zu verletzen.")
+
+# ==========================================================================
 # RENDITEZERLEGUNG
 # ==========================================================================
 st.markdown("## Renditezerlegung")
@@ -1449,6 +1867,7 @@ _rows = [
     ("Kreditausfälle", _att["credit_losses"]),
     ("Bitcoin — Startallokation (Tag 1)", _att["btc_initial_gain"]),
     ("Bitcoin — ertragsfinanzierter DCA (Yield Bridge)", _att["btc_dca_gain"]),
+    ("Bitcoin — zeichnungsfinanziert (pro-rata)", _att["btc_subs_gain"]),
     ("Cash-Zins (Puffer)", _att["cash_interest"]),
     ("Gebühren", _att["fees"]),
 ]
@@ -1476,6 +1895,22 @@ with d2:
 with d3:
     st.metric("BTC via Ernte investiert", fmt_chf(_att["btc_dca_invested"]))
     st.caption("über die gesamte Laufzeit")
+if _att["btc_subs_invested"] > 0:
+    _dse = _att["dca_share_ex_subs"]
+    e1, e2 = st.columns(2)
+    with e1:
+        st.metric("Mechanismus-Anteil (ohne Zeichnungseffekt)",
+                  "n/a" if _dse != _dse else f"{_dse*100:.1f}%")
+        st.caption("DCA vs. Startallokation — misst die Kraft der Yield Bridge")
+    with e2:
+        st.metric("BTC aus Zeichnungen", fmt_chf(_att["btc_subs_invested"]))
+        st.caption("pro-rata, kein Kernkapital umgeschichtet")
+    st.caption(
+        f"Zusätzlich {fmt_chf(_att['btc_subs_invested'])} Bitcoin aus "
+        f"Zeichnungen (pro-rata zum bestehenden Portfolio). Das ist KEINE "
+        "Umschichtung von Kernkapital: neue Investoren kaufen zum NAV einen "
+        "Anteil am bestehenden Portfolio. Der DCA-Anteil misst deshalb nur den "
+        "ertragsfinanzierten Beitrag gegen die kapitalfinanzierten Lots.")
 
 if _ds == _ds:
     if _ds < 0.30:
@@ -1559,7 +1994,7 @@ st.plotly_chart(fig_d, use_container_width=True)
 _rm = [("Gesamtrendite", f"{(net.iloc[-1]/_cap_base - 1)*100:.2f}%"),
        ("CAGR (netto)", f"{net_cagr*100:.2f}%"),
        ("Volatilität*", f"{m['vol_ann']*100:.2f}%"),
-       ("Max Drawdown*", f"{m['max_dd']*100:.2f}%"),
+       ("Max Drawdown*", f"{m['max_drawdown']*100:.2f}%"),
        ("Sharpe Ratio*", f"{m['sharpe']:.2f}"),
        ("Sortino Ratio*", f"{m['sortino']:.2f}")]
 _ht = ["<table class='oak-metrics-table'><thead><tr><th>Kennzahl</th>"
@@ -1577,6 +2012,405 @@ with st.expander("Monatliche Ernte (Ertragsrealisierung)"):
     st.bar_chart(_hv)
     st.caption(f"Summe geerntet: {fmt_chf(_hv.sum())} · "
                f"Durchschnitt/Monat: {fmt_chf(_hv.mean())}")
+
+# --------------------------------------------------------------------------
+# PDF-Tearsheet (bilingual DE/EN)
+# --------------------------------------------------------------------------
+st.markdown("---")
+if st.button("PDF-Tearsheet generieren (DE+EN)"):
+    with st.spinner("Erzeuge PDF…"):
+        try:
+            # ---- Charts -------------------------------------------------
+            _lines = [("OAK Swiss Private Debt / Bitcoin (Net of Fees)", net,
+                       "#B8954A", {"lw": 2.2}),
+                      ("Debt only (same model, no BTC)", bench_debt, "#7C8978",
+                       {"ls": "--", "lw": 1.6})]
+            if bench_bond is not None:
+                _lines.append((f"{bench_ticker} (bonds, CHF)", bench_bond,
+                               "#7FA7C4", {"lw": 1.3}))
+            _fig_evo = render_line_chart(_lines, ylabel="Value (CHF)")
+
+            _fig_sleeve = render_line_chart(
+                [("Loan book", ts["debt_value"], "#7C8978", {"lw": 1.8}),
+                 ("Bitcoin", ts["btc_value"], "#F7931A", {"lw": 1.8}),
+                 ("CHF Cash", ts["cash"], "#D4D4CE", {"lw": 1.5})],
+                ylabel="Value (CHF)")
+
+            # Kostenbasis vs. NAV — der Beweis, dass das Kapital unangetastet bleibt
+            _fig_basis = render_line_chart(
+                [("Cost basis (capital invested)", ts["debt_cost_basis"],
+                  "#7C8978", {"lw": 1.8}),
+                 ("Loan-book NAV (incl. accrued yield)", ts["debt_value"],
+                  "#B8954A", {"lw": 1.8})],
+                ylabel="CHF")
+
+            _dd_s = compute_drawdown(net)
+            _fig_dd = render_line_chart(
+                [("Strategy (Net)", _dd_s * 100, "#B8954A", {"lw": 1.6})],
+                ylabel="Drawdown (%)")
+
+            _figs = [("Portfolio Evolution vs. Debt-only & Bond Benchmark", _fig_evo),
+                     ("Sleeve Development", _fig_sleeve),
+                     ("Cost Basis vs. NAV — the gap is unharvested yield", _fig_basis),
+                     ("Drawdown Analysis*", _fig_dd)]
+            _figs = [(t, f) for t, f in _figs if f is not None]
+
+            # ---- Zahlen -------------------------------------------------
+            _tot_ret = (net.iloc[-1] / _cap_base - 1) * 100
+            _kpis_perf = [("Strategy (Net)", fmt_chf(net.iloc[-1])),
+                          ("Net CAGR", f"{net_cagr*100:.2f}%"),
+                          ("Debt only", fmt_chf(bench_debt.iloc[-1])),
+                          ("BTC Contribution", f"{btc_contrib*100:+.2f}% p.a.")]
+            _kpis_risk = [("Sharpe Ratio*", f"{m['sharpe']:.2f}"),
+                          ("Sortino Ratio*", f"{m['sortino']:.2f}"),
+                          ("Max Drawdown*", f"{m['max_drawdown']*100:.2f}%"),
+                          ("Volatility*", f"{m['vol_ann']*100:.2f}%")]
+            _fees = [("Mgmt Fees", fmt_chf(total_mgmt)),
+                     ("Perf Fees", fmt_chf(total_perf)),
+                     ("Total Fees", fmt_chf(total_mgmt + total_perf)),
+                     ("Fee Drag", f"{fee_drag*100:.2f}% p.a.")]
+
+            _risk_rows = [
+                ["Total Return", f"{_tot_ret:.2f}%",
+                 f"{(bench_debt.iloc[-1]/_cap_base - 1)*100:.2f}%"],
+                ["CAGR", f"{net_cagr*100:.2f}%", f"{debt_cagr*100:.2f}%"],
+                ["Volatility*", f"{m['vol_ann']*100:.2f}%", "—"],
+                ["Max Drawdown*", f"{m['max_drawdown']*100:.2f}%", "—"],
+                ["Sharpe Ratio*", f"{m['sharpe']:.2f}", "—"],
+                ["Sortino Ratio*", f"{m['sortino']:.2f}", "—"],
+            ]
+
+            _fe = ts[["mgmt_fee_only", "perf_fee_only"]].copy()
+            _fe = _fe[(_fe["mgmt_fee_only"] > 0) | (_fe["perf_fee_only"] > 0)]
+            _fee_rows = []
+            if not _fe.empty:
+                _g = _fe.groupby([_fe.index.year, _fe.index.quarter]).sum()
+                for (yy, qq), r in _g.iterrows():
+                    _fee_rows.append([f"Q{qq} {yy}",
+                                      f"CHF {r['mgmt_fee_only']:,.0f}",
+                                      f"CHF {r['perf_fee_only']:,.0f}",
+                                      f"CHF {r['mgmt_fee_only']+r['perf_fee_only']:,.0f}"])
+
+            _hr = _att["harvest_ratio"]
+            _params = [
+                ("Allocation Framework",
+                 ("OAK Yield Bridge (pure) — the satellite is funded exclusively by "
+                  "harvested loan-book yield; the capital base is never touched"
+                  if initial_btc_pct <= 0 else
+                  f"OAK Yield Bridge with strategic initial allocation — "
+                  f"{initial_btc_pct*100:.0f}% of capital allocated to Bitcoin on day 1")),
+                ("DCA Share of BTC Gain",
+                 "n/a" if _ds != _ds else f"{_ds*100:.1f}% (harvest-funded vs. day-1 lump sum)"),
+                ("Initial Capital", f"CHF {initial_capital:,.0f}"),
+                ("Subscriptions (total)", fmt_chf(_att["subscriptions"])),
+                ("Initial Allocation",
+                 f"{(1-initial_btc_pct-initial_cash_pct)*100:.0f}% Loan book / "
+                 f"{initial_btc_pct*100:.0f}% BTC / {initial_cash_pct*100:.0f}% Cash"),
+                ("Underlying (reference)",
+                 "LEND Hypovest, ISIN CH1357099691 — diversified Swiss subordinated "
+                 "mortgages (accumulating, no coupon)"),
+                ("Net Yield", f"{net_yield*100:.1f}% p.a. (parametric, on cost basis)"),
+                ("Credit Losses", f"{credit_loss_rate*100:.1f}% p.a."),
+                ("Yield Realisation",
+                 "Monthly harvest — only the NAV accretion above cost basis is "
+                 "redeemed; the capital base is never sold"),
+                ("Redemption Success Rate",
+                 f"{redemption_rate*100:.0f}% (best-effort; unharvested yield stays "
+                 f"in the certificate and keeps compounding)"),
+                ("Harvest Realised",
+                 "n/a" if _hr != _hr else f"{_hr*100:.0f}% of accrued yield"),
+                ("BTC Band",
+                 f"{lower_threshold*100:.0f}% – {upper_threshold*100:.0f}%"),
+                ("Investment Rate (harvest)",
+                 f"{base_invest_rate*100:.0f}% in band / "
+                 f"{boost_invest_rate*100:.0f}% below lower threshold"),
+                ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
+                ("Management Fee", f"{mgmt_fee*100:.2f}% p.a."),
+                ("Performance Fee",
+                 f"{perf_fee*100:.0f}% ({crystallization_freq}, {hurdle_type} "
+                 f"{hurdle*100:.1f}% Yr 1)"),
+            ]
+
+            _universe = [
+                ["Bitcoin", "BTC", "Digital Assets",
+                 f"Band {lower_threshold*100:.0f}–{upper_threshold*100:.0f}%"],
+                ["CH mortgage loan book (parametric)", "CH1357099691",
+                 "Private Debt",
+                 f"{(1-initial_btc_pct-initial_cash_pct)*100:.0f}% initial"],
+                ["CHF Cash", "—", "Cash", "Fee cushion · buffer"],
+            ]
+
+            # ---- Renditezerlegung als eigene PDF-Sektion -----------------
+            def _xt(lang):
+                de = (lang == "de")
+                labels = ([("Ertragsanfall Kreditbuch (brutto)", "debt_income"),
+                           ("Kreditausfälle", "credit_losses"),
+                           ("Bitcoin — Startallokation (Tag 1)", "btc_initial_gain"),
+                           ("Bitcoin — ertragsfinanzierter DCA", "btc_dca_gain"),
+                           ("Cash-Zins (Puffer)", "cash_interest"),
+                           ("Gebühren", "fees")] if de else
+                          [("Loan-book yield accrued (gross)", "debt_income"),
+                           ("Credit losses", "credit_losses"),
+                           ("Bitcoin — initial allocation (day 1)", "btc_initial_gain"),
+                           ("Bitcoin — harvest-funded DCA", "btc_dca_gain"),
+                           ("Cash interest (buffer)", "cash_interest"),
+                           ("Fees", "fees")])
+                rows = [[lab, f"{_att.get(k, 0.0):+,.0f}", f"{_pp(_att.get(k, 0.0)):+.2f}"]
+                        for lab, k in labels]
+                rows.append([("Total (= NAV − Startkapital − Zeichnungen)" if de else
+                              "Total (= NAV − initial capital − subscriptions)"),
+                             f"{_att['total_pnl']:+,.0f}",
+                             f"{_pp(_att['total_pnl']):+.2f}"])
+                _dstxt = "n/a" if _ds != _ds else f"{_ds*100:.1f}%"
+                out = [{
+                    "eyebrow": "08",
+                    "title": "Renditezerlegung" if de else "Return Attribution",
+                    "subtitle": (
+                        f"DCA-Anteil am BTC-Gewinn: {_dstxt}. Zeichnungen sind kein "
+                        f"Gewinn und werden herausgerechnet."
+                        if de else
+                        f"DCA share of the BTC gain: {_dstxt}. Subscriptions are not a "
+                        f"gain and are excluded."),
+                    "headers": (["Beitrag", "CHF", "%-Punkte p.a."] if de else
+                                ["Contribution", "CHF", "pp p.a."]),
+                    "rows": rows,
+                    "note": (
+                        "Der DCA-Anteil ist invers zum Einstiegsglück: je schlechter "
+                        "der Einstiegszeitpunkt, desto grösser der Beitrag des "
+                        "ertragsfinanzierten DCA. Höhere Zeichnungen erhöhen die "
+                        "Ertragsbasis und damit den DCA-Anteil."
+                        if de else
+                        "The DCA share is inverse to entry luck: the worse the entry "
+                        "point, the larger the contribution of the harvest-funded DCA. "
+                        "Higher subscriptions grow the yield base and therefore the "
+                        "DCA share."),
+                }]
+                # Kapitalerhaltung — die Kennzahl, die das Produkt verkauft
+                out.append({
+                    "eyebrow": "09",
+                    "title": ("Kapitalerhaltung — Bitcoin auf null" if de else
+                              "Capital Preservation — Bitcoin at zero"),
+                    "subtitle": (
+                        "Das Kapital liegt im besicherten Kreditbuch. Bitcoin wird "
+                        "ausschliesslich aus dem geernteten Ertrag gekauft — das "
+                        "eingesetzte Kapital ist strukturell nicht dem Bitcoin-Risiko "
+                        "ausgesetzt."
+                        if de else
+                        "The capital sits in the secured loan book. Bitcoin is bought "
+                        "exclusively from harvested yield — the invested capital is "
+                        "structurally not exposed to Bitcoin risk."),
+                    "headers": (["Kennzahl", "Wert"] if de else ["Metric", "Value"]),
+                    "rows": [
+                        [("Eingesetztes Kapital" if de else "Capital invested"),
+                         f"CHF {_cap_base:,.0f}"],
+                        [("NAV, wenn Bitcoin auf null ginge" if de else
+                          "NAV if Bitcoin went to zero"), f"CHF {_zero_end:,.0f}"],
+                        [("Kapitaldeckung" if de else "Capital coverage"),
+                         f"{_zero_ratio*100:.1f}%"],
+                        [("Tiefste Deckung im Zeitverlauf" if de else
+                          "Lowest coverage over time"),
+                         f"{_cov_min*100:.1f}% ({_cov_min_at:%b %Y})"],
+                        [("Modellierter Kreditschock" if de else "Credit shock modelled"),
+                         ("keiner" if credit_shock_pct <= 0 else
+                          f"−{credit_shock_pct*100:.0f}% (CHF {_att['credit_shock']:,.0f})")
+                         if de else
+                         ("none" if credit_shock_pct <= 0 else
+                          f"−{credit_shock_pct*100:.0f}% (CHF {_att['credit_shock']:,.0f})")],
+                    ],
+                    "note": (
+                        "Ein Kreditschock frisst zuerst den aufgelaufenen Ertrag und "
+                        "danach die Kapitalsubstanz. Solange der Buchwert unter der "
+                        "Kostenbasis liegt, gibt es NICHTS zu ernten — der "
+                        "Bitcoin-DCA pausiert vollständig, bis der laufende Ertrag den "
+                        "Verlust aufgeholt hat. Das ist der wesentliche Risikofaktor "
+                        "dieser Struktur und wichtiger als die Bitcoin-Volatilität."
+                        if de else
+                        "A credit shock first consumes accrued yield and then eats into "
+                        "capital. As long as the book value sits below the cost basis "
+                        "there is NOTHING to harvest — the Bitcoin DCA pauses entirely "
+                        "until current yield has made good the loss. This is the "
+                        "material risk of the structure and matters more than Bitcoin "
+                        "volatility."),
+                })
+                # Ernte & Redemption — die produktspezifische Sektion
+                out.append({
+                    "eyebrow": "10",
+                    "title": ("Ertrags-Ernte & Redemption-Stress" if de else
+                              "Yield Harvesting & Redemption Stress"),
+                    "subtitle": (
+                        "Das Underlying ist thesaurierend. Der Ertrag wird monatlich "
+                        "geerntet — es wird nur der NAV-Zuwachs über der Kostenbasis "
+                        "redimiert, nie das Kapital."
+                        if de else
+                        "The underlying is accumulating. Yield is harvested monthly — "
+                        "only the NAV accretion above the cost basis is redeemed, never "
+                        "the capital base."),
+                    "headers": (["Kennzahl", "Wert"] if de else ["Metric", "Value"]),
+                    "rows": [
+                        [("Ertragsanfall (brutto)" if de else "Yield accrued (gross)"),
+                         f"CHF {_att['accrued_total']:,.0f}"],
+                        [("Davon geerntet" if de else "Of which harvested"),
+                         f"CHF {_att['harvest_total']:,.0f}"],
+                        [("Ungeerntet (klemmt im Zertifikat)" if de else
+                          "Unharvested (stuck in the certificate)"),
+                         f"CHF {_att['unharvested']:,.0f}"],
+                        [("Redemption-Erfolgsquote" if de else "Redemption success rate"),
+                         f"{redemption_rate*100:.0f}%"],
+                        [("Kostenbasis Start" if de else "Cost basis at start"),
+                         f"CHF {ts['debt_cost_basis'].iloc[0]:,.0f}"],
+                        [("Kostenbasis Ende" if de else "Cost basis at end"),
+                         f"CHF {ts['debt_cost_basis'].iloc[-1]:,.0f}"],
+                    ],
+                    "note": (
+                        "Rücknahmen erfolgen best-effort (kein Sekundärmarkt). Klemmen "
+                        "sie, ist der Ertrag NICHT verloren — er bleibt im Zertifikat, "
+                        "verzinst sich weiter und wird nachgeholt, sobald Rücknahmen "
+                        "wieder gefüllt werden. Der DCA pausiert lediglich, und zwar "
+                        "typischerweise in Stressphasen, in denen aggressive Zukäufe "
+                        "ohnehin fragwürdig wären. Die Kostenbasis verändert sich "
+                        "ausschliesslich durch neue Zeichnungen."
+                        if de else
+                        "Redemptions are best-effort (no secondary market). If they are "
+                        "not filled, the yield is NOT lost — it stays in the certificate, "
+                        "keeps compounding, and is caught up once redemptions clear. The "
+                        "DCA merely pauses, typically in stress phases where aggressive "
+                        "buying would be questionable anyway. The cost basis changes only "
+                        "through new subscriptions."),
+                })
+                return out
+
+            _disc_de = [
+                "Dieses Dokument wurde von Oakwood Capital ausschliesslich zu "
+                "illustrativen und informativen Zwecken erstellt. Es stellt weder eine "
+                "Anlageberatung, eine Empfehlung, ein Angebot noch eine Aufforderung "
+                "zum Kauf oder Verkauf eines Finanzinstruments dar.",
+
+                "OAK Swiss Private Debt / Bitcoin ist eine PARAMETRISCHE SIMULATION und "
+                "kein marktdatenbasierter Backtest. Für den Debt-Sleeve existiert keine "
+                "verwertbare Kurshistorie (das Referenz-Underlying LEND Hypovest, ISIN "
+                "CH1357099691, wurde im Juli 2024 emittiert). Die Nettorendite ist eine "
+                "gesetzte Annahme, keine realisierte Grösse. Der Debt-Sleeve wird zum "
+                "Nennwert geführt und weist konstruktionsbedingt KEINE "
+                "Kapitalwertschwankung auf; Volatilität, Sharpe Ratio und "
+                "Drawdown-Kennzahlen der Gesamtstrategie sind dadurch systematisch nach "
+                "unten verzerrt und nicht mit marktbewerteten Strategien vergleichbar.",
+
+                "Das Referenz-Underlying ist ein THESAURIERENDES Zertifikat auf "
+                "nachrangige, immobilienbesicherte Schweizer Kredite — es schüttet "
+                "nichts aus. Der Ertrag wird in der Simulation über eine monatliche "
+                "Ernte realisiert (Rücknahme des NAV-Zuwachses über der Kostenbasis). "
+                "Rücknahmen erfolgen best-effort; es besteht kein Sekundärmarkt und "
+                "damit keine Garantie, dass die Ernte in der modellierten Höhe "
+                "tatsächlich möglich ist. Nachrangige Kredite tragen das "
+                "First-Loss-Risiko; es besteht kein Kapitalschutz. Gebühren des "
+                "Underlyings (Investor Fee, Zeichnungsgebühr) kommen zu den hier "
+                "ausgewiesenen Gebühren HINZU und sind in der Nettorendite-Annahme zu "
+                "berücksichtigen.",
+
+                "Der Bitcoin-Anteil basiert auf historischen Marktpreisen (BTC/USD, in "
+                "Schweizer Franken umgerechnet). Digitale Vermögenswerte sind "
+                "hochvolatil und können zum Totalverlust des eingesetzten Kapitals "
+                "führen.",
+
+                "Neue Zeichnungen sind KEIN Anlageerfolg. Sämtliche Renditekennzahlen "
+                "sind auf die Summe aus Anfangskapital und Zeichnungen bezogen. Steuern "
+                "sind nicht modelliert. Die simulierte Performance ist hypothetisch, "
+                "unterliegt dem Vorteil der Rückschau und ist kein verlässlicher "
+                "Indikator für zukünftige Ergebnisse.",
+
+                "Dieses Material ist streng vertraulich und ausschliesslich für den "
+                "Empfänger bestimmt.",
+            ]
+            _disc_en = [
+                "This document has been prepared by Oakwood Capital for illustrative and "
+                "informational purposes only. It does not constitute investment advice, a "
+                "recommendation, an offer, or a solicitation to buy or sell any financial "
+                "instrument.",
+
+                "OAK Swiss Private Debt / Bitcoin is a PARAMETRIC SIMULATION, not a "
+                "market-data backtest. No usable price history exists for the debt sleeve "
+                "(the reference underlying, LEND Hypovest, ISIN CH1357099691, was issued "
+                "in July 2024). The net yield is an assumption, not a realised figure. The "
+                "debt sleeve is carried at par and by construction exhibits NO capital-value "
+                "volatility; volatility, Sharpe ratio and drawdown figures for the overall "
+                "strategy are therefore systematically understated and not comparable to "
+                "market-priced strategies.",
+
+                "The reference underlying is an ACCUMULATING certificate on subordinated, "
+                "real-estate-secured Swiss loans — it pays no coupon. In the simulation the "
+                "yield is realised through a monthly harvest (redeeming the NAV accretion "
+                "above the cost basis). Redemptions are best-effort; there is no secondary "
+                "market and therefore no guarantee that the harvest is achievable at the "
+                "modelled level. Subordinated loans carry first-loss risk; there is no "
+                "capital protection. Fees of the underlying (investor fee, subscription "
+                "fee) come IN ADDITION to the fees shown here and must be reflected in the "
+                "net-yield assumption.",
+
+                "The Bitcoin sleeve is based on historical market prices (BTC/USD converted "
+                "to CHF). Digital assets are highly volatile and may result in total loss.",
+
+                "New subscriptions are NOT investment performance. All return figures are "
+                "based on the sum of initial capital and subscriptions. Taxes are not "
+                "modelled. Simulated performance is hypothetical, benefits from hindsight, "
+                "and is not a reliable indicator of future results.",
+
+                "This material is strictly confidential and intended solely for the "
+                "recipient.",
+            ]
+
+            pdf_bytes = build_bilingual_tearsheet(
+                strategy_name="OAK Swiss Private Debt / Bitcoin",
+                strategy_subtitle_de=(
+                    "Immobilienbesichertes Schweizer Kreditbuch mit struktureller "
+                    "Bitcoin-Allokation, ertragsfinanziertem DCA und "
+                    "schwellenwertbasiertem Risikomanagement."),
+                strategy_subtitle_en=(
+                    "Swiss real-estate-secured loan book with a structural Bitcoin "
+                    "allocation, harvest-funded DCA and threshold-based risk "
+                    "management."),
+                period_str=f"{net.index[0]:%Y-%m-%d} to {net.index[-1]:%Y-%m-%d}",
+                kpis_performance=_kpis_perf,
+                kpis_risk=_kpis_risk,
+                fee_summary=_fees,
+                risk_table_headers=["Metric", "Strategy (Net)", "Debt only"],
+                risk_table_rows=_risk_rows,
+                fee_table_headers=["Period", "Mgmt Fee", "Perf Fee", "Total Cost"],
+                fee_table_rows=_fee_rows,
+                figures=_figs,
+                params_summary=_params,
+                universe_rows=_universe,
+                period_returns=compute_period_returns(net, bench_debt),
+                perf_summary_sub_de=(
+                    "Nach Gebühren und Transaktionskosten · *Der Debt-Sleeve wird zum "
+                    "Nennwert geführt — Risikokennzahlen sind nach unten verzerrt"),
+                perf_summary_sub_en=(
+                    "Net of fees and transaction costs · *The debt sleeve is carried at "
+                    "par — risk metrics are understated"),
+                benchmark_label_de="Nur Kreditbuch (gleiches Modell)",
+                benchmark_label_en="Debt only (same model)",
+                universe_sub_de=(
+                    "Drei Sleeves: ein immobilienbesichertes Schweizer Kreditbuch "
+                    "(parametrisch, thesaurierend), eine bandgesteuerte "
+                    "Bitcoin-Allokation und ein CHF-Cash-Puffer. Siehe Methodik und "
+                    "Hinweise."),
+                universe_sub_en=(
+                    "Three sleeves: a Swiss real-estate-secured loan book (parametric, "
+                    "accumulating), a band-managed Bitcoin allocation, and a CHF cash "
+                    "buffer. See Methodology and Disclosures."),
+                disclaimer_paragraphs_de=_disc_de,
+                disclaimer_paragraphs_en=_disc_en,
+                extra_tables_de=_xt("de"),
+                extra_tables_en=_xt("en"),
+            )
+
+            _fn = f"OAK_Swiss_PrivateDebt_BTC_{date.today():%Y%m%d}.pdf"
+            st.download_button("PDF herunterladen", data=pdf_bytes, file_name=_fn,
+                               mime="application/pdf")
+            st.success("Tearsheet erzeugt (DE + EN).")
+        except Exception as exc:
+            import traceback
+            st.error(f"PDF-Erzeugung fehlgeschlagen: {exc}")
+            st.code(traceback.format_exc())
 
 st.markdown(
     f"""<div class='oak-footer'>
