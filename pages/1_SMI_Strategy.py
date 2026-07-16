@@ -1731,6 +1731,15 @@ if _show_results:
     c12.metric("Gesamtkosten (inkl. TX)", fmt_chf(fees_total),
                f"{fees_total_pct_initial:.1f}% of initial capital", delta_color="off")
 
+    st.caption(
+        "Fee-Mechanik (bewusst abweichend von OAK RE/BTC und Private Debt): "
+        "Gebühren werden hier als **nachgelagerter NAV-Abschlag** verbucht — "
+        "ökonomisch ein proportionaler Trim beider Sleeves, nie ein gezielter "
+        "BTC-Verkauf. Ein Stundungs-Wasserfall (wie bei den Produkten mit "
+        "illiquidem Kern) ist hier nicht nötig: SMI-Aktien und Bitcoin sind beide "
+        "liquide, es gibt keinen illiquiden Kern zu schützen, und die "
+        "Netto-Dividende fliesst voll in den BTC-DCA (die Fee zehrt nicht am DCA).")
+
     # ---- KPI Row 4: Strategy mechanics ----
     n_thresholds = len(evts)
     total_btc_sold = float(-txs[txs["type"]=="SELL"]["btc_amount"].sum()) if not txs.empty else 0

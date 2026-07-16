@@ -1106,9 +1106,11 @@ def run_re_btc(prop_index_daily, btc_chf, params):
                 sells = sell_chf
                 b_val = (btc_u_init + btc_u_dca) * _px_b
 
-        # ---- fee waterfall helper: pay `amount` from cash, then by selling
-        #      BTC (net of tx); property is never sold. Returns unpaid shortfall.
-        def _pay_from_liquidity(amount):
+        # ---- fee waterfall helper: pay `amount` from cash; only sell BTC when
+        #      allow_btc=True (property is never sold). The management fee passes
+        #      allow_btc=False → it defers (fee_debt) instead of fire-selling BTC.
+        #      Returns unpaid shortfall.
+        def _pay_from_liquidity(amount, allow_btc=True):
             nonlocal cash, btc_u_init, btc_u_dca, b_val, fee_paid, fee_btc_sold
             nonlocal fee_from_cash, fee_from_btc, btc_init_realized, btc_dca_realized
             if amount <= 1e-9:
@@ -1118,7 +1120,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             fee_paid += from_cash
             fee_from_cash += from_cash
             short = amount - from_cash
-            if short > 1e-9 and b_val > 0:
+            if allow_btc and short > 1e-9 and b_val > 0:
                 gross_sell = min(b_val, short / (1 - tx))
                 proceeds = gross_sell * (1 - tx)
                 # fee-funded BTC sales also reduce both lots PRO RATA
@@ -1137,8 +1139,9 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             return max(short, 0.0)
 
         # ---- management fee (real cash outflow): monthly or quarterly -------
-        #      Charged on full AuM, funded cash-first then BTC; any residual
-        #      after BTC is exhausted accrues as fee_debt (practically never).
+        #      Charged on full AuM, funded from cash; any residual is DEFERRED as
+        #      fee_debt (accrues against NAV, settled in cash once rent refills the
+        #      buffer) — the mgmt fee never fire-sells BTC. Property is never sold.
         fee_due = ((is_me and mgmt_freq == "M") or (is_qe and mgmt_freq == "Q"))
         if fee_due and mgmt_fee > 0:
             per_year = 12.0 if mgmt_freq == "M" else 4.0
@@ -1146,14 +1149,14 @@ def run_re_btc(prop_index_daily, btc_chf, params):
             fee_amt = aum * (mgmt_fee / per_year) + fee_debt
             fee_debt = 0.0
             paid_before = fee_paid
-            fee_debt = _pay_from_liquidity(fee_amt)
+            fee_debt = _pay_from_liquidity(fee_amt, allow_btc=False)
             mgmt_paid_row = fee_paid - paid_before   # actually-paid this date
             total_mgmt += mgmt_paid_row
 
         # ---- performance fee (real cash outflow) at crystallization dates ---
         is_cryst = is_me and (d.month in cryst_months)
         if (is_cryst or i == len(idx) - 1) and perf_fee > 0:
-            nav_now = p_val + b_val + cash + rent_pool
+            nav_now = p_val + b_val + cash + rent_pool - fee_debt
             _frac = max((d - prev_cryst_date).days, 0) / 365.25
             hurdle_threshold = hwm * (1.0 + hwm_hurdle * _frac)
             excess = 0.0
@@ -1172,7 +1175,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
                 perf_paid_row = perf_amt - _short
                 total_perf += perf_paid_row
             # update HWM to post-fee NAV high
-            nav_after = p_val + b_val + cash + rent_pool
+            nav_after = p_val + b_val + cash + rent_pool - fee_debt
             if nav_after > hwm:
                 hwm = nav_after
             prev_cryst_date = d
@@ -1194,7 +1197,7 @@ def run_re_btc(prop_index_daily, btc_chf, params):
 
         rows.append({
             "date": d,
-            "total_value": p_val + b_val + cash + rent_pool,
+            "total_value": p_val + b_val + cash + rent_pool - fee_debt,
             "re_value": p_val,
             "btc_value": b_val,
             "cash": cash + rent_pool,
@@ -1232,7 +1235,10 @@ def run_re_btc(prop_index_daily, btc_chf, params):
     btc_dca_value_end = btc_u_dca * _p_end
     btc_init_gain = (btc_init_value_end + btc_init_realized) - btc_init_invested
     btc_dca_gain = (btc_dca_value_end + btc_dca_realized) - btc_dca_invested
-    fees_total = total_mgmt + total_perf
+    # The deferred management fee (fee_debt) has already reduced NAV as an accrued
+    # liability (see total_value); it must therefore sit in the fee term of the
+    # decomposition, otherwise the identity breaks by exactly fee_debt.
+    fees_total = total_mgmt + total_perf + fee_debt
 
     # The headline number: how much of the BTC gain actually came from the
     # rent-funded Yield Bridge, as opposed to the day-1 lump sum.
@@ -1357,7 +1363,9 @@ with st.sidebar:
                                       "Management Fee bezahlt wird, damit die "
                                       "volle Nettomiete ins BTC-Band fliesst. "
                                       "Wird vom Block-Reinvest geschützt (Floor). "
-                                      "Reicht es nicht, wird BTC verkauft.") / 100.0
+                                      "Reicht es nicht, wird die Management Fee "
+                                      "GESTUNDET (gegen die NAV abgegrenzt, später "
+                                      "beglichen) — kein BTC-Verkauf.") / 100.0
     reinvest_floor_pct = st.slider("Reinvest Cash-Floor (% des AuM)", 0, 20, 5, 1,
                                    help="Mindest-Cash als Anteil des aktuellen "
                                         "AuM, der vom 3.0-Mio-Block-Reinvest "
@@ -1449,9 +1457,10 @@ with st.sidebar:
                             help="Auf das gehandelte BTC-Volumen je Trade. "
                                  "10 bps = 0.10%.")
     mgmt_fee = st.slider("Management Fee (% p.a.)", 0.0, 3.0, 1.5, 0.05,
-                         help="Echter Cash-Abzug auf das gesamte AuM: zuerst "
-                              "aus dem Cash-Puffer, sonst durch BTC-Verkauf "
-                              "(Immobilie nie). Die Nettomiete bleibt voll im "
+                         help="Cash-Abzug auf das gesamte AuM: aus dem Cash-Puffer; "
+                              "reicht er nicht, wird die Fee GESTUNDET (gegen die "
+                              "NAV abgegrenzt) — nie BTC- oder Immobilienverkauf für "
+                              "die laufende Gebühr. Die Nettomiete bleibt voll im "
                               "BTC-Band.") / 100.0
     mgmt_fee_freq_label = st.selectbox("Management Fee Verbuchung",
                                        ["monatlich", "quartalsweise"], index=0)
@@ -1550,7 +1559,21 @@ with st.spinner("Lade BTC/FX-Daten und simuliere…"):
         st.error("Simulation lieferte keine Daten (zu kurzer Überlappungszeitraum?).")
         st.stop()
 
-    bench_re = run_re_only(prop_daily, ts.index, params)
+    # The synthetic "RE only (same model)" benchmark must carry the IDENTICAL
+    # fee schedule as the strategy — otherwise net-strategy-vs-gross-benchmark
+    # understates the BTC contribution by the full fee load (the KPI "BTC-Beitrag"
+    # was previously too low by ~the management fee, ≈1.6pp p.a.). The strategy
+    # charges mgmt on total AuM (incl. BTC); the benchmark bears mgmt on its
+    # property-only NAV, so the residual mgmt drag attributable to the BTC sleeve
+    # correctly stays with BTC. Perf fee on RE-only is ~0 (it rarely clears the
+    # hurdle) but the schedule is applied identically for rigour. SIAT stays
+    # gross: a real, investable market fund (like the SMI index for product 1)
+    # is legitimately compared against the net strategy.
+    bench_re_gross = run_re_only(prop_daily, ts.index, params)
+    bench_re, _bench_mgmt, _bench_perf, _ = apply_fees(
+        bench_re_gross, initial_capital,
+        mgmt_fee_annual=mgmt_fee, perf_fee_rate=perf_fee, hwm_hurdle=hurdle,
+        crystallization_freq=crystallization_freq, hurdle_type=hurdle_type)
     bench_index = (snb_q / snb_q.reindex(
         [ts.index[0]], method="ffill").iloc[0] * initial_capital)
     bench_index_daily = interpolate_quarterly_to_daily(bench_index, ts.index)
@@ -1619,7 +1642,7 @@ c1.metric("Strategie (netto)", fmt_chf(net.iloc[-1]),
           f"{(net.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 c2.metric("Strategie (brutto)", fmt_chf(gross.iloc[-1]),
           f"Gebührenlast: {fee_drag*100:.2f}% p.a.", delta_color="off")
-c3.metric("Nur Immobilien (gleiches Modell)", fmt_chf(bench_re.iloc[-1]),
+c3.metric("Nur Immobilien (gleiches Modell, netto)", fmt_chf(bench_re.iloc[-1]),
           f"{(bench_re.iloc[-1]/initial_capital - 1)*100:+.1f}%")
 if siat_series is not None:
     c4.metric("UBS «Siat» (Wohnfonds)", fmt_chf(siat_series.iloc[-1]),
@@ -1731,7 +1754,7 @@ fig.add_trace(go.Scatter(x=net.index, y=net.values, name="Strategie (netto)",
 fig.add_trace(go.Scatter(x=gross.index, y=gross.values, name="Strategie (brutto)",
                          line=dict(color=OAK_GOLD, width=1.2, dash="dot"), opacity=0.55))
 fig.add_trace(go.Scatter(x=bench_re.index, y=bench_re.values,
-                         name="Nur Immobilien (gleiches Modell, ohne BTC)",
+                         name="Nur Immobilien (gleiches Modell, netto, ohne BTC)",
                          line=dict(color=OAK_SAGE, width=2, dash="dash")))
 for _flabel, _fseries, _fcol in fund_benches:
     fig.add_trace(go.Scatter(x=_fseries.index, y=_fseries.values, name=_flabel,
@@ -2354,8 +2377,9 @@ if mgmt_fee >= _be_fee:
         f"⚠️ **Die Management Fee ({mgmt_fee*100:.2f}%) übersteigt den Mietertrag "
         f"({_be_fee*100:.2f}% des AuM).** Der gesamte Nettomietertrag geht für "
         "Gebühren drauf — für den mietertragsfinanzierten DCA bleibt nichts, und "
-        "Bitcoin muss zur Gebührendeckung verkauft werden. Die Yield Bridge kann "
-        "unter diesen Bedingungen mechanisch nicht funktionieren.")
+        "die Management Fee muss zunehmend gestundet werden (der Puffer wird nicht "
+        "mehr aufgefüllt). Die Yield Bridge kann unter diesen Bedingungen "
+        "mechanisch nicht funktionieren.")
 elif _head < 0.005:
     st.warning(
         f"Nach Gebühren bleiben nur {_head*100:.2f}% p.a. des AuM für den DCA. "
@@ -2439,27 +2463,29 @@ if st.button("Monte-Carlo-Simulation starten", key="mc_btn"):
             unsafe_allow_html=True)
 
 # ==========================================================================
-# Fee Funding & Liquidity Stress — makes the pro-cyclical risk visible:
-# in a flat/bear BTC regime the cash buffer dries up (no sell-downs, boost
-# pulls rent into BTC) and fees increasingly force BTC liquidation.
+# Fee Funding & Liquidity — the management fee DEFERS (fee_debt) when the cash
+# buffer is short; it never fire-sells BTC. Only the performance fee (fires above
+# the HWM, i.e. in strong periods with ample cash) may trim BTC. Property never.
 # ==========================================================================
-st.markdown("## Gebührenfinanzierung & Liquiditätsstress")
+st.markdown("## Gebührenfinanzierung & Liquidität")
 st.markdown(
     "<p style='color:#A9B5A4;margin-top:-6px'>Woher die Gebühren real bezahlt "
-    "wurden — und wie nah das Konstrukt an Liquiditätsdruck kam. Im Bull-Case "
-    "speisen Sell-downs den Cash; bei fallendem oder seitwärts laufendem BTC "
-    "bleiben Sell-downs aus und Gebühren müssen zunehmend über BTC-Verkäufe "
-    "gedeckt werden (prozyklisch).</p>", unsafe_allow_html=True)
+    "wurden. Die <strong>Management Fee wird bei knappem Cash gestundet</strong> — "
+    "sie grenzt sich gegen die NAV ab und wird beglichen, sobald die Nettomiete "
+    "den Puffer wieder füllt; kein BTC-Notverkauf. Nur die Performance Fee kann "
+    "BTC anrühren, und die feuert ausschliesslich über der High-Water-Mark, also "
+    "in starken Phasen mit reichlich Cash. Die Immobilie wird nie verkauft.</p>",
+    unsafe_allow_html=True)
 
 total_fees_paid = float(ts["mgmt_fee_paid"].sum())
 fee_from_btc_total = float(ts["fee_from_btc"].sum())
 fee_from_cash_total = float(ts["fee_from_cash"].sum())
 btc_share = (fee_from_btc_total / total_fees_paid * 100) if total_fees_paid > 0 else 0.0
-forced = ts.index[ts["fee_btc_sold"] > 0]
-first_forced = f"{forced[0]:%b %Y}" if len(forced) else "nie"
+forced = ts.index[ts["fee_btc_sold"] > 0]   # now: performance-fee BTC trims only
 below_floor = int((ts["cash"] < ts["cash_floor"] - 1e-6).sum())
 below_floor_pct = below_floor / len(ts) * 100
 max_debt = float(ts["fee_debt"].max())
+fee_debt_now = float(ts["fee_debt"].iloc[-1])
 # Cash runway: how many months the current cash covers the current monthly fee
 _last_aum = float(ts["total_value"].iloc[-1])
 _monthly_fee_now = _last_aum * (mgmt_fee / 12.0)
@@ -2467,14 +2493,14 @@ runway = (float(ts["cash"].iloc[-1]) / _monthly_fee_now) if _monthly_fee_now > 0
 
 s1, s2, s3, s4 = st.columns(4)
 with s1:
-    st.metric("Gebühren via BTC-Verkauf", fmt_chf(fee_from_btc_total))
-    st.caption(f"{btc_share:.0f}% aller Gebühren")
+    st.metric("Gestundete Fee (max)", fmt_chf(max_debt))
+    st.caption("Höchststand aufgelaufener Mgmt-Fee")
 with s2:
-    st.metric("Erster Zwangsverkauf", first_forced)
-    st.caption("BTC zur Fee-Deckung" if len(forced) else "Cushion hat getragen")
+    st.metric("Gestundet aktuell", fmt_chf(fee_debt_now))
+    st.caption("offen am Ende" if fee_debt_now > 1 else "vollständig beglichen")
 with s3:
-    st.metric("Tage Cash < Floor", f"{below_floor:,}")
-    st.caption(f"{below_floor_pct:.0f}% der Laufzeit")
+    st.metric("Perf-Fee via BTC", fmt_chf(fee_from_btc_total))
+    st.caption(f"{btc_share:.0f}% aller Gebühren · Mgmt-Fee: nie")
 with s4:
     st.metric("Cash-Runway (heute)",
               ("∞" if runway == float("inf") else f"{runway:.1f} Mte"))
@@ -2488,7 +2514,7 @@ st.markdown("##### Gebühren-Finanzierungsquelle je Quartal")
 fig_fund = go.Figure()
 fig_fund.add_trace(go.Bar(x=_q_labels, y=_q_cash.values, name="aus Cash",
                           marker_color=OAK_SAGE))
-fig_fund.add_trace(go.Bar(x=_q_labels, y=_q_btc.values, name="aus BTC-Verkauf",
+fig_fund.add_trace(go.Bar(x=_q_labels, y=_q_btc.values, name="aus BTC (Performance Fee)",
                           marker_color=OAK_BTC))
 fig_fund.update_layout(barmode="stack")
 fig_fund = style_plotly(fig_fund, height=340)
@@ -2503,17 +2529,21 @@ fig_fund.update_xaxes(tickangle=0, tickmode="array",
 fig_fund.update_yaxes(tickprefix="CHF ", tickformat=",.0f")
 st.plotly_chart(fig_fund, use_container_width=True)
 
-# Cash vs dynamic floor, with stress markers where fees forced a BTC sale
-st.markdown("##### Cash vs. Reserve-Floor (Liquiditätsdruck)")
+# Cash vs dynamic floor, with the deferred-fee balance and perf-fee BTC trims
+st.markdown("##### Cash vs. Reserve-Floor & gestundete Fee")
 fig_liq = go.Figure()
 fig_liq.add_trace(go.Scatter(x=ts.index, y=ts["cash"], name="CHF Cash",
                              line=dict(color=OAK_CREAM_DIM, width=2)))
 fig_liq.add_trace(go.Scatter(x=ts.index, y=ts["cash_floor"], name="Reserve-Floor",
                              line=dict(color=OAK_GOLD, width=1.5, dash="dot")))
+if float(ts["fee_debt"].max()) > 1:
+    fig_liq.add_trace(go.Scatter(x=ts.index, y=ts["fee_debt"],
+                                 name="gestundete Fee (Verbindlichkeit)",
+                                 line=dict(color=OAK_RED, width=1.5)))
 if len(forced):
     fig_liq.add_trace(go.Scatter(
         x=forced, y=ts.loc[forced, "cash"], mode="markers",
-        name="BTC-Zwangsverkauf",
+        name="BTC-Trim (Performance Fee)",
         marker=dict(symbol="x", size=8, color=OAK_BTC)))
 fig_liq = style_plotly(fig_liq, height=380)
 fig_liq.update_layout(
@@ -2530,15 +2560,15 @@ if _cmax > 0:
                                    for v in _tv])
 st.plotly_chart(fig_liq, use_container_width=True)
 
-if btc_share >= 25:
+if max_debt > 0.02 * _last_aum:
     st.warning(
-        f"⚠️ In diesem Szenario wurden **{btc_share:.0f}%** der Gebühren durch "
-        f"BTC-Verkäufe gedeckt ({fmt_chf(fee_from_btc_total)}). Das ist der "
-        "prozyklische Effekt: bei schwachem BTC trocknet der Cash-Puffer aus "
-        "und Gebühren zwingen zu Verkäufen — genau dann, wenn die Strategie "
-        "eigentlich akkumulieren möchte. Hebel zur Abfederung: höhere "
-        "Initial-Cash-Reserve, Fee nur auf den Immobilien-NAV, oder Boost-Rate "
-        "bei knappem Cash drosseln.")
+        f"⚠️ In diesem Szenario stieg die **gestundete Management Fee auf bis zu "
+        f"{fmt_chf(max_debt)}** ({max_debt/_last_aum*100:.0f}% der NAV). Das ist "
+        "kein Defekt: die Fee grenzt sich gegen die NAV ab und wird beglichen, "
+        "sobald die Nettomiete den Puffer wieder füllt — statt BTC zum Notpreis "
+        "zu verkaufen. Ein hoher Wert signalisiert anhaltenden Ertragsstress "
+        "(Miete schwach relativ zur Fee), kein Liquiditätsleck. Hebel: höhere "
+        "Initial-Cash-Reserve, tiefere Fee, oder Boost-Rate bei knappem Cash drosseln.")
 
 # ---- detail expanders (unchanged) ----
 with st.expander("Monatliche Netto-Cashflows (Mieterträge → BTC-DCA)"):
@@ -2645,7 +2675,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                    f"{upper_threshold*100:.0f}% wird nicht investiert — {sell_de}. "
                    f"Im Simulationszeitraum erzielte die Strategie einen Netto-CAGR "
                    f"von {net_cagr*100:.1f}%, gegenüber {re_cagr*100:.1f}% für das "
-                   f"identische Immobilienmodell ohne Bitcoin. Der Immobilienteil "
+                   f"identische Immobilienmodell ohne Bitcoin (ebenfalls netto, "
+                   f"identischer Gebührenschedule). Der Immobilienteil "
                    f"beruht auf einem geglätteten Bewertungsindex — die Ergebnisse "
                    f"sind als parametrische Simulation zu verstehen, nicht als "
                    f"marktdatenbasierter Backtest.")
@@ -2662,7 +2693,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                    f"no new investments are made — {sell_en}. Over the simulation "
                    f"period the strategy delivered a net CAGR of "
                    f"{net_cagr*100:.1f}%, versus {re_cagr*100:.1f}% for the "
-                   f"identical property model without Bitcoin. As the property "
+                   f"identical property model without Bitcoin (also net, same fee "
+                   f"schedule). As the property "
                    f"sleeve rests on a smoothed valuation index, results should be "
                    f"read as a parametric simulation rather than a market-data "
                    f"backtest.")
@@ -2678,7 +2710,7 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
         ]
         snapshot = [("sn_inception", f"{net.index[0]:%d %b %Y}"),
                     ("sn_currency", "CHF"),
-                    ("sn_benchmark", "RE only (same model)"),
+                    ("sn_benchmark", "RE only (same model, net)"),
                     ("sn_style", "Real Assets (Residential + BTC)"),
                     ("sn_domicile", "Switzerland"),
                     ("sn_frequency", "Daily")]
@@ -2887,8 +2919,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
             top_drawdowns=identify_top_drawdowns(net),
             perf_summary_sub_de="Nach Gebühren und Transaktionskosten · *Kennzahlen auf geglättetem Bewertungsindex — siehe Hinweise",
             perf_summary_sub_en="Net of fees and transaction costs · *Metrics on a smoothed valuation index — see Disclosures",
-            benchmark_label_de="RE only (gleiches Modell)",
-            benchmark_label_en="RE only (same model)",
+            benchmark_label_de="RE only (gleiches Modell, netto)",
+            benchmark_label_en="RE only (same model, net of fees)",
             universe_sub_de=("Drei Sleeves: Schweizer Wohnimmobilien (parametrisch, "
                              "SNB-Wohnimmobilienpreisindex), eine strukturelle "
                              "Bitcoin-Allokation (bandgesteuert) und ein unverzinster "

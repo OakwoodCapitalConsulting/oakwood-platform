@@ -9,9 +9,11 @@ Konzept (OAK Yield Bridge, dritte Anwendung):
     Juli 2024) und KEINE Kapitalwertschwankung (at par, held to maturity).
 
   * BESONDERHEIT: Das Underlying ist THESAURIEREND — es schüttet nichts aus.
-    Der Ertrag wird über eine monatliche ERTRAGS-ERNTE realisiert: es werden
-    exakt so viele Anteile redimiert, wie dem aufgelaufenen NAV-Zuwachs über
-    der Kostenbasis entsprechen. Nie das Kapital. Ökonomisch identisch mit
+    Der Ertrag wird über eine JÄHRLICHE ERTRAGS-ERNTE (Default: Januar)
+    realisiert: es werden exakt so viele Anteile redimiert, wie dem seit der
+    letzten Ernte aufgelaufenen NAV-Zuwachs über der Kostenbasis entsprechen.
+    Nie das Kapital. Der geerntete Betrag wird anschliessend rollierend über
+    dca_months (Default 12) in Bitcoin investiert. Ökonomisch identisch mit
     einem Coupon; die Kostenbasis bleibt nachweislich konstant.
 
   * REDEMPTION-RISIKO: Rücknahmen sind best-effort (kein Sekundärmarkt).
@@ -1050,9 +1052,11 @@ def run_pd_btc(btc_chf, idx, params):
                 _tranche0 = tranche          # WICHTIG: Originalgrösse merken —
                                              # pending_dca muss um DIESE sinken.
                 tot = debt_val + b_val + cash + pending_dca
-                # CASH-AUFFÜLLUNG ZUERST: Der Puffer zahlt die Gebühren. Er muss
-                # auf die Zielquote gebracht werden, BEVOR alloziert wird —
-                # sonst zwingt die nächste Fee zu einem BTC-Verkauf.
+                # CASH-AUFFÜLLUNG ZUERST: Der Puffer zahlt die Gebühren. Er wird
+                # auf die Zielquote gebracht, BEVOR alloziert wird — sonst muss die
+                # nächste Management Fee gestundet werden (fee_debt). Der Topup
+                # minimiert die Stundung; ein BTC-Verkauf für die laufende Fee
+                # findet nicht statt.
                 _cash_target = cash_floor_pct * tot
                 _topup = min(max(_cash_target - cash, 0.0), tranche)
                 cash += _topup
@@ -1153,8 +1157,11 @@ def run_pd_btc(btc_chf, idx, params):
             outflow_paid += _paid
             outflow = _paid
 
-        # ---- Gebühren-Wasserfall: Cash -> BTC. Das KREDITBUCH NIE. ---------
-        def _pay(amount):
+        # ---- Gebühren-Wasserfall ------------------------------------------
+        #   Management Fee: Cash -> STUNDEN (fee_debt). Nie BTC, nie Kreditbuch.
+        #   Performance Fee: Cash -> BTC (feuert nur über HWM, also in guten
+        #     Phasen mit reichlich Cash). Kreditbuch NIE.
+        def _pay(amount, allow_btc=True):
             nonlocal cash, btc_u_init, btc_u_dca, btc_u_subs, b_val, fee_paid
             nonlocal fee_btc_sold, fee_from_cash, fee_from_btc
             nonlocal btc_init_realized, btc_dca_realized, btc_subs_realized
@@ -1165,7 +1172,7 @@ def run_pd_btc(btc_chf, idx, params):
             fee_paid += from_cash
             fee_from_cash += from_cash
             short = amount - from_cash
-            if short > 1e-9 and b_val > 0 and px > 0:
+            if allow_btc and short > 1e-9 and b_val > 0 and px > 0:
                 gross = min(b_val, short / (1 - tx))
                 _u = btc_u_init + btc_u_dca + btc_u_subs
                 _fi = (btc_u_init / _u) if _u > 0 else 0.0
@@ -1193,13 +1200,18 @@ def run_pd_btc(btc_chf, idx, params):
             amt = aum * (mgmt_fee / per_year) + fee_debt
             fee_debt = 0.0
             _before = fee_paid
-            fee_debt = _pay(amt)
+            # Management Fee: Cash zuerst, Rest wird GESTUNDET (fee_debt) — NIE
+            # BTC verkaufen. Die Fee ist beim AMC eine Level-Deduktion; sie grenzt
+            # sich gegen die NAV ab (siehe total_value) und wird in Cash beglichen,
+            # sobald die Ernte wieder Liquidität liefert. Marktstandard (Fee-Deferral),
+            # verhindert prozyklischen BTC-Verkauf im Stressfall.
+            fee_debt = _pay(amt, allow_btc=False)
             mgmt_paid_row = fee_paid - _before
             total_mgmt += mgmt_paid_row
 
         if (is_me and d.month in cryst_months) or i == len(idx) - 1:
             if perf_fee > 0:
-                nav_now = debt_val + b_val + cash + pending_dca
+                nav_now = debt_val + b_val + cash + pending_dca - fee_debt
                 _frac = max((d - prev_cryst_date).days, 0) / 365.25
                 thr = hwm * (1.0 + hwm_hurdle * _frac)
                 excess_p = 0.0
@@ -1217,7 +1229,7 @@ def run_pd_btc(btc_chf, idx, params):
                     _short = _pay(_amt)
                     perf_paid_row = _amt - _short
                     total_perf += perf_paid_row
-                _after = debt_val + b_val + cash + pending_dca
+                _after = debt_val + b_val + cash + pending_dca - fee_debt
                 if _after > hwm:
                     hwm = _after
                 prev_cryst_date = d
@@ -1227,7 +1239,7 @@ def run_pd_btc(btc_chf, idx, params):
             "debt_value": debt_val,
             "btc_value": b_val,
             "cash": cash + pending_dca,
-            "total_value": debt_val + b_val + cash + pending_dca,
+            "total_value": debt_val + b_val + cash + pending_dca - fee_debt,
             "harvest": harvest if harvest > 0 else np.nan,
             "debt_cost_basis": debt_cost_basis,
             "debt_accrued": debt_accrued,
@@ -1273,8 +1285,13 @@ def run_pd_btc(btc_chf, idx, params):
     nav_end = float(out["total_value"].iloc[-1])
     # Zeichnungen sind kein Gewinn, Rücknahmen kein Verlust.
     pnl = nav_end - cap - subs_total + outflow_paid
+    # Die gestundete Management Fee (fee_debt) ist eine ökonomisch bereits
+    # getragene Gebühr: sie mindert die NAV (siehe total_value), auch wenn sie
+    # noch nicht in Cash beglichen ist. Sie gehört daher in den Fee-Term der
+    # Abstimmung, sonst bricht die Identität um genau fee_debt.
     recon = (accrued_total - loss_total + btc_init_gain + btc_dca_gain
-             + btc_subs_gain + cash_interest_total - (total_mgmt + total_perf))
+             + btc_subs_gain + cash_interest_total
+             - (total_mgmt + total_perf + fee_debt))
 
     out.attrs["total_mgmt"] = total_mgmt
     out.attrs["total_perf"] = total_perf
@@ -1287,7 +1304,7 @@ def run_pd_btc(btc_chf, idx, params):
         "btc_subs_gain": btc_subs_gain,
         "btc_subs_invested": btc_subs_invested,
         "cash_interest": cash_interest_total,
-        "fees": -(total_mgmt + total_perf),
+        "fees": -(total_mgmt + total_perf + fee_debt),
         "total_pnl": pnl,
         "reconciliation_error": recon - pnl,
         "dca_share": dca_share,
@@ -1298,7 +1315,7 @@ def run_pd_btc(btc_chf, idx, params):
         "n_redemptions": n_redemptions,        # Anzahl Rücknahme-Vorgänge
         "credit_shock": shock_amount,          # einmaliger Schock (CHF)
         # KAPITALERHALTUNGS-NACHWEIS: NAV, wenn Bitcoin auf NULL ginge
-        "nav_if_btc_zero": float(out["debt_value"].iloc[-1] + out["cash"].iloc[-1]),
+        "nav_if_btc_zero": float(out["debt_value"].iloc[-1] + out["cash"].iloc[-1]) - fee_debt,
         "dca_pending": pending_dca,
         "accrued_total": accrued_total,
         "unharvested": debt_accrued,           # klemmt im Zertifikat
@@ -1377,8 +1394,9 @@ st.markdown(
 st.markdown(
     f"<p style='color:{OAK_SAGE}; font-size:16px; max-width:900px; "
     f"margin-bottom:26px;'>Immobilienbesichertes Schweizer Kreditbuch mit "
-    f"struktureller Bitcoin-Allokation. Der thesaurierende Ertrag wird monatlich "
-    f"geerntet und über Bandregeln in Bitcoin investiert — das eingesetzte "
+    f"struktureller Bitcoin-Allokation. Der thesaurierende Ertrag wird einmal "
+    f"jährlich (Default Januar) geerntet und dann rollierend über Bandregeln in "
+    f"Bitcoin investiert — das eingesetzte "
     f"Kapital bleibt unangetastet. Parametrische Simulation.</p>",
     unsafe_allow_html=True)
 
@@ -1415,9 +1433,11 @@ with st.sidebar:
                                      "ausschliesslich aus dem geernteten Ertrag "
                                      "aufgebaut).") / 100.0
     initial_cash_pct = st.slider("Initiale Cash-Reserve (%)", 0, 25, 5, 1,
-                                 help="Polster zur Gebührendeckung. Reicht es "
-                                      "nicht, wird BTC verkauft — nie das "
-                                      "Kreditbuch.") / 100.0
+                                 help="Polster zur Gebührendeckung, gefüllt aus der "
+                                      "Ernte. Reicht es nicht, wird die Management "
+                                      "Fee GESTUNDET (gegen die NAV abgegrenzt, "
+                                      "später in Cash beglichen) — kein BTC- oder "
+                                      "Kreditbuch-Verkauf für die laufende Gebühr.") / 100.0
     cash_rate = st.slider("Cash-Verzinsung (% p.a., SARON-nah)", 0.0, 3.0, 1.0,
                           0.05) / 100.0
     lower_threshold = st.slider("Untere BTC-Schwelle (%)", 0, 40, 10, 1) / 100.0
@@ -1668,6 +1688,23 @@ c11.metric("Gebühren total", fmt_chf(total_mgmt + total_perf),
 c12.metric("Nettorendite (Input)", f"{net_yield*100:.1f}% p.a.",
            "parametrisch, auf Kostenbasis", delta_color="off")
 
+# Fee-Funding-Transparenz: die Management Fee wird aus dem Cash-Puffer (Ernte)
+# bezahlt; reicht er nicht, wird sie GESTUNDET (fee_debt) statt BTC zu verkaufen.
+_fee_deferred = float(ts.attrs.get("fee_debt_final", 0.0))
+_fee_from_btc_total = float(ts["fee_from_btc"].sum()) if "fee_from_btc" in ts else 0.0
+if _fee_deferred > 1e-6 or _fee_from_btc_total > 1e-6:
+    st.caption(
+        f"**Fee-Funding:** aktuell **{fmt_chf(_fee_deferred)} Management Fee gestundet** "
+        "— aufgelaufen, mindert die NAV bereits, wird aber erst in Cash beglichen, "
+        "sobald die Ernte wieder Liquidität liefert (kein BTC-Verkauf für die laufende "
+        f"Gebühr). Über BTC-Verkauf finanziert: {fmt_chf(_fee_from_btc_total)} "
+        "(nur Performance Fee bzw. Investoren-Rücknahmen).")
+else:
+    st.caption(
+        "**Fee-Funding:** Gebühren vollständig aus dem Cash-Puffer (aus der Ernte) "
+        "bezahlt — kein BTC-Verkauf, keine Stundung. Die Management Fee würde bei "
+        "Liquiditätsknappheit gestundet, nicht durch BTC-Verkauf gedeckt.")
+
 # ==========================================================================
 # ERTRAGS-ERNTE & REDEMPTION-STRESS — die produktspezifische Kernsektion
 # ==========================================================================
@@ -1675,8 +1712,10 @@ st.markdown("## Ertrags-Ernte & Redemption-Stress")
 st.markdown(
     "<p style='color:#A9B5A4;margin-top:-6px'>Das Underlying ist "
     "<strong>thesaurierend</strong> — es schüttet nichts aus. Der Ertrag wird "
-    "monatlich geerntet, indem exakt der aufgelaufene NAV-Zuwachs über der "
-    "Kostenbasis redimiert wird. Das eingesetzte Kapital wird nie angetastet. "
+    "einmal jährlich (Default Januar) geerntet, indem exakt der seit der letzten "
+    "Ernte aufgelaufene NAV-Zuwachs über der Kostenbasis redimiert und dann "
+    "rollierend über mehrere Monate in Bitcoin gestreckt wird. Das eingesetzte "
+    "Kapital wird nie angetastet. "
     "Klemmen die Rücknahmen, bleibt der Ertrag im Zertifikat und verzinst sich "
     "weiter — er geht nicht verloren.</p>", unsafe_allow_html=True)
 
@@ -1716,7 +1755,7 @@ with h8:
 if redemption_rate < 1.0:
     st.warning(
         f"⚠️ **Redemption-Erfolgsquote {redemption_rate*100:.0f}%** — es werden "
-        f"nur {redemption_rate*100:.0f}% des monatlichen Ertragszuwachses "
+        f"nur {redemption_rate*100:.0f}% des aufgelaufenen Ertragszuwachses "
         f"tatsächlich redimiert. Aktuell klemmen "
         f"{fmt_chf(_att['unharvested'])} im Zertifikat. Wichtig zur Einordnung: "
         "dieser Betrag ist **nicht verloren**, er verzinst sich weiter und wird "
@@ -2007,11 +2046,271 @@ for _lab, _v in _rm:
 _ht.append("</tbody></table>")
 st.markdown("".join(_ht), unsafe_allow_html=True)
 
-with st.expander("Monatliche Ernte (Ertragsrealisierung)"):
+with st.expander("Ertrags-Ernte (jährliche Realisierung)"):
     _hv = ts["harvest"].dropna()
     st.bar_chart(_hv)
     st.caption(f"Summe geerntet: {fmt_chf(_hv.sum())} · "
-               f"Durchschnitt/Monat: {fmt_chf(_hv.mean())}")
+               f"Ø je Ernte: {fmt_chf(_hv.mean())}")
+
+# ==========================================================================
+# ROBUSTHEIT — Grid über Startallokation × Fee, rollierende Startzeitpunkte,
+# Break-even-Fee. Beantwortet die drei Positionierungs-Fragen:
+#   1. Welche Startallokation?  2. Welche Management Fee?
+#   3. Trägt der Ertragsmechanismus (DCA-Anteil) über verschiedene Einstiege?
+#
+# Bewusst KEIN Bestwert-Cherrypicking: über rollierende Fenster wird die
+# VERTEILUNG der Netto-CAGR gezeigt, nicht der Bestwert. Der Debt-Sleeve ist
+# parametrisch (at par) → die Engine ist sehr schnell, das Grid billig.
+# Der (datierte) Kreditschock wird im Grid neutralisiert: ein Einmal-Event auf
+# festem Datum gehört nicht in eine Verteilung über rollierende Startzeitpunkte.
+# ==========================================================================
+st.markdown("---")
+st.markdown("## Robustheit — Grid, Startzeitpunkt & Break-even")
+st.markdown(
+    "<p style='color:#A9B5A4;margin-top:-6px'>Ein einzelnes Startdatum ist keine "
+    "Evidenz. Die Engine läuft hier über ein Parameter-Gitter (Startallokation × "
+    "Management Fee) und über viele rollierende Startzeitpunkte — ausgewiesen wird "
+    "die Verteilung. Der DCA-Anteil ist der <strong>Mechanismus-Anteil ohne "
+    "Zeichnungseffekt</strong> (Zeichnungen kaufen pro-rata BTC mit und würden den "
+    "rohen Wert sonst verzerren).</p>", unsafe_allow_html=True)
+
+
+def _derive_band_pd(alloc):
+    """Schwellen skalieren mit der Startallokation — fixe 10/25% wären bei
+    kleiner Startallokation sinnlos (die Quote läge dauerhaft unter der unteren
+    Schwelle, der Boost-Modus liefe permanent).
+      untere Schwelle = Startallokation × 2  (Minimum 5%)
+      obere Schwelle  = untere + 10pp
+    """
+    lo = max(alloc * 2.0, 0.05)
+    return lo, lo + 0.10
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_pd_robustness_grid(_btc, base, allocs, fees, win_years, step_months):
+    """Grid × rollierende Fenster → lange Tabelle (alloc, fee, start) ->
+    net_cagr, dca_share (mechanismus-rein). Der Kreditschock wird neutralisiert."""
+    full = pd.DatetimeIndex(_btc.index)
+    if len(full) < 400:
+        return pd.DataFrame()
+    starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                           freq=f"{step_months}MS")
+    rows = []
+    for alloc in allocs:
+        lo, up = _derive_band_pd(alloc)
+        for fee in fees:
+            for s in starts:
+                e = s + pd.DateOffset(years=win_years)
+                w = full[(full >= s) & (full <= e)]
+                if len(w) < 300:
+                    continue
+                p = dict(base)
+                p.update(initial_btc_pct=alloc, lower_threshold=lo,
+                         upper_threshold=up, mgmt_fee=fee,
+                         credit_shock_pct=0.0, credit_shock_date=None)
+                t = run_pd_btc(_btc, w, p)
+                if t.empty:
+                    continue
+                yrs = max((t.index[-1] - t.index[0]).days / 365.25, 1e-9)
+                cagr = (t["total_value"].iloc[-1] / p["initial_capital"]) ** (1 / yrs) - 1
+                a = t.attrs.get("attribution", {})
+                rows.append({"alloc": alloc, "fee": fee, "start": s,
+                             "net_cagr": cagr,
+                             "dca_share": a.get("dca_share_ex_subs", np.nan)})
+    return pd.DataFrame(rows)
+
+
+_prb1, _prb2, _prb3 = st.columns([1, 1, 1])
+with _prb1:
+    _pd_win_years = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0,
+                                 key="pd_rb_win")
+with _prb2:
+    _pd_step_label = st.selectbox("Fenster-Schritt", ["quartalsweise", "monatlich"],
+                                  index=0, key="pd_rb_step",
+                                  help="Monatlich ist gründlicher, dauert aber "
+                                       "länger (mehr Läufe).")
+with _prb3:
+    st.caption("")
+    _pd_run_rb = st.button("Robustheitsanalyse starten", key="pd_rb_go")
+
+if _pd_run_rb:
+    st.session_state["pd_rb_has_run"] = True
+
+if st.session_state.get("pd_rb_has_run"):
+    _pd_allocs = [0.0, 0.05, 0.075, 0.10, 0.20]
+    _pd_fees = [0.0150, 0.0100, 0.0075, 0.0050]   # eigene Fee ≤1% p.a. (Gebühren-Stapel)
+    _pd_step = 3 if _pd_step_label == "quartalsweise" else 1
+
+    _pd_base = dict(params)   # aktuelle Sidebar-Parameter als Basis
+    with st.spinner("Rechne Grid über alle rollierenden Fenster…"):
+        pd_grid = compute_pd_robustness_grid(btc_chf, _pd_base, _pd_allocs,
+                                             _pd_fees, _pd_win_years, _pd_step)
+
+    if pd_grid.empty:
+        st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
+    else:
+        _pd_n_win = pd_grid["start"].nunique()
+        st.caption(f"{len(pd_grid):,} Engine-Läufe · {_pd_n_win} rollierende "
+                   f"{_pd_win_years}-Jahres-Fenster · Schwellen skalieren mit der "
+                   f"Startallokation (untere = Start × 2, min. 5%; obere = untere + 10pp) "
+                   f"· Kreditschock im Grid neutralisiert")
+
+        # ---- 1) Grid-Matrix: Startallokation × Fee -> Median Netto-CAGR -----
+        st.markdown("##### Netto-CAGR (Median über alle Fenster) — Startallokation × Management Fee")
+        _ppiv = (pd_grid.groupby(["alloc", "fee"])["net_cagr"].median().unstack() * 100)
+        _pfig_g = go.Figure(data=go.Heatmap(
+            z=_ppiv.values,
+            x=[f"{f*100:.2f}%" for f in _ppiv.columns],
+            y=[f"{a*100:.1f}%" for a in _ppiv.index],
+            colorscale=[[0, OAK_GREEN_2], [0.5, OAK_SAGE], [1, OAK_GOLD]],
+            text=[[f"{v:.1f}%" for v in r] for r in _ppiv.values],
+            texttemplate="%{text}", showscale=False))
+        _pfig_g.update_xaxes(title_text="Management Fee (p.a.)", type="category")
+        _pfig_g.update_yaxes(title_text="Startallokation BTC", type="category")
+        _pfig_g = style_plotly(_pfig_g, height=340)
+        st.plotly_chart(_pfig_g, use_container_width=True)
+
+        # ---- 2) DCA-Anteil-Matrix (mechanismus-rein) — hält der Name? -------
+        st.markdown("##### DCA-Anteil am BTC-Gewinn (Median, ohne Zeichnungseffekt) — hält der Name, was er verspricht?")
+        _ppivd = (pd_grid.groupby(["alloc", "fee"])["dca_share"].median().unstack() * 100)
+        _pfig_d = go.Figure(data=go.Heatmap(
+            z=_ppivd.values,
+            x=[f"{f*100:.2f}%" for f in _ppivd.columns],
+            y=[f"{a*100:.1f}%" for a in _ppivd.index],
+            colorscale=[[0, "#8C3A2B"], [0.3, OAK_GREEN_3], [1, OAK_GOLD]],
+            text=[[("n/a" if v != v else f"{v:.0f}%") for v in r] for r in _ppivd.values],
+            texttemplate="%{text}", showscale=False, zmin=0, zmax=100))
+        _pfig_d.update_xaxes(title_text="Management Fee (p.a.)", type="category")
+        _pfig_d.update_yaxes(title_text="Startallokation BTC", type="category")
+        _pfig_d = style_plotly(_pfig_d, height=340)
+        st.plotly_chart(_pfig_d, use_container_width=True)
+        st.caption("Ein tiefer Wert heisst NICHT «Mechanismus schwach», sondern «der "
+                   "Einstieg lag günstig». Bei 0% Startallokation ist der Anteil 100% "
+                   "(jeder BTC-Gewinn stammt dann aus dem geernteten Ertrag).")
+
+        # ---- 3) Verteilung der Netto-CAGR je Startallokation ----------------
+        st.markdown("##### Verteilung der Netto-CAGR je Startallokation (alle Fenster, alle Fees)")
+        _pfig_b = go.Figure()
+        for a in _pd_allocs:
+            v = pd_grid.loc[pd_grid["alloc"] == a, "net_cagr"] * 100
+            _pfig_b.add_trace(go.Box(y=v, name=f"{a*100:.1f}%",
+                                     marker_color=OAK_GOLD, line_color=OAK_SAGE,
+                                     boxmean=True))
+        _pfig_b.update_yaxes(title_text="Netto-CAGR (%)")
+        _pfig_b.update_xaxes(title_text="Startallokation BTC", type="category")
+        _pfig_b = style_plotly(_pfig_b, height=380)
+        _pfig_b.update_layout(showlegend=False)
+        st.plotly_chart(_pfig_b, use_container_width=True)
+
+        _pd_dist = (pd_grid.groupby("alloc")["net_cagr"]
+                    .agg(Minimum="min", P25=lambda s: s.quantile(.25), Median="median",
+                         P75=lambda s: s.quantile(.75), Maximum="max") * 100).round(2)
+        _pd_dist["Streuung"] = (_pd_dist["Maximum"] - _pd_dist["Minimum"]).round(2)
+        _pd_dist.index = [f"{a*100:.1f}%" for a in _pd_dist.index]
+        _pd_dist.index.name = "Startallokation"
+        st.dataframe(_pd_dist.style.format("{:.2f}%"), use_container_width=True)
+
+        st.caption(
+            "⚠️ **Das Minimum ist kein Risikomass.** Es steigt mit der "
+            "Startallokation, weil die Datenreihe kein einziges Mehrjahres-Fenster "
+            "mit einem Bitcoin-Kollaps ohne Erholung enthält — die Stichprobe "
+            "enthält das Risiko schlicht nicht. Das belastbare Signal ist die "
+            "**Streuung**: wie stark das Ergebnis vom Einstiegszeitpunkt abhängt.")
+
+        # ---- 4) Worst-Entry — die Zahl für den Investor --------------------
+        st.markdown("##### Worst-Entry — was passiert dem Investor mit dem schlechtesten Einstieg?")
+        _pd_cur = min(_pd_allocs, key=lambda a: abs(a - initial_btc_pct))
+        _pd_g = pd_grid[(pd_grid["alloc"] == _pd_cur)
+                        & (np.isclose(pd_grid["fee"], mgmt_fee))]
+        if _pd_g.empty:
+            _pd_g = pd_grid[pd_grid["alloc"] == _pd_cur]
+        if not _pd_g.empty:
+            _pd_worst = _pd_g.loc[_pd_g["net_cagr"].idxmin()]
+            _pw1, _pw2, _pw3, _pw4 = st.columns(4)
+            with _pw1:
+                st.metric("Schlechtestes Fenster", f"{_pd_worst['net_cagr']*100:.1f}% p.a.")
+                st.caption(f"Einstieg {_pd_worst['start']:%b %Y}")
+            with _pw2:
+                st.metric("DCA-Anteil dort",
+                          "n/a" if _pd_worst["dca_share"] != _pd_worst["dca_share"]
+                          else f"{_pd_worst['dca_share']*100:.0f}%")
+                st.caption("Yield Bridge im Stressfall")
+            with _pw3:
+                st.metric("Median", f"{_pd_g['net_cagr'].median()*100:.1f}% p.a.")
+                st.caption("mittleres Fenster")
+            with _pw4:
+                _pd_spr = (_pd_g["net_cagr"].max() - _pd_g["net_cagr"].min()) * 100
+                st.metric("Streuung", f"{_pd_spr:.0f} pp")
+                st.caption("Max − Min über alle Fenster")
+            st.caption(
+                f"Bei {_pd_cur*100:.1f}% Startallokation und {mgmt_fee*100:.2f}% Fee. "
+                "Je schlechter der Einstieg, desto WICHTIGER wird der "
+                "ertragsfinanzierte DCA — er kauft antizyklisch nach, während das "
+                "Kreditbuch unangetastet weiter Ertrag abwirft.")
+
+        st.session_state["pd_rb_dist"] = _pd_dist
+
+        # ---- 5) Feste Startzeitpunkte — Zyklushoch vs. Zyklustief ----------
+        st.markdown("##### Feste Startzeitpunkte — Zyklushoch vs. Zyklustief")
+        _pd_fixed = {"2018-01-01 (BTC nahe Zyklushoch)": "2018-01-01",
+                     "2019-01-01 (nahe Bärenmarkt-Tief)": "2019-01-01",
+                     "2021-11-01 (Zyklushoch)": "2021-11-01",
+                     "2022-06-01 (Zyklustief)": "2022-06-01"}
+        _pd_frows = []
+        _pd_full = pd.DatetimeIndex(btc_chf.index)
+        for lab, s in _pd_fixed.items():
+            s = pd.Timestamp(s)
+            w = _pd_full[_pd_full >= s]
+            if len(w) < 300:
+                _pd_frows.append({"Startzeitpunkt": lab, "Netto-CAGR": np.nan,
+                                  "DCA-Anteil": np.nan})
+                continue
+            p = dict(params)
+            _lo, _up = _derive_band_pd(initial_btc_pct)
+            p.update(lower_threshold=_lo, upper_threshold=_up,
+                     credit_shock_pct=0.0, credit_shock_date=None)
+            t = run_pd_btc(btc_chf, w, p)
+            yrs = max((t.index[-1] - t.index[0]).days / 365.25, 1e-9)
+            cg = (t["total_value"].iloc[-1] / float(initial_capital)) ** (1 / yrs) - 1
+            ds = t.attrs.get("attribution", {}).get("dca_share_ex_subs", np.nan)
+            _pd_frows.append({"Startzeitpunkt": lab, "Netto-CAGR": cg * 100,
+                              "DCA-Anteil": ds * 100})
+        _pd_fdf = pd.DataFrame(_pd_frows).set_index("Startzeitpunkt")
+        st.dataframe(_pd_fdf.style.format("{:.1f}%", na_rep="n/a"),
+                     use_container_width=True)
+        st.session_state["pd_rb_fixed"] = _pd_fdf
+        st.caption(f"Mit der aktuellen Startallokation ({initial_btc_pct*100:.0f}%) und "
+                   "daraus abgeleiteten Schwellen. Die Spreizung zwischen den "
+                   "Startzeitpunkten zeigt, wie stark das Ergebnis vom Einstieg abhängt.")
+
+# ---- 6) Break-even-Fee: ab wann frisst die Gebühr den ganzen Ertrag? -------
+st.markdown("##### Break-even Management Fee — ab wann bleibt für den DCA nichts mehr?")
+_pd_debt_share = max(1.0 - initial_btc_pct - initial_cash_pct, 1e-9)
+_pd_be_fee = net_yield * _pd_debt_share
+_pbc1, _pbc2, _pbc3 = st.columns(3)
+with _pbc1:
+    st.metric("Break-even Fee", f"{_pd_be_fee*100:.2f}% p.a.")
+    st.caption("Nettorendite × Debt-Anteil am AuM")
+with _pbc2:
+    st.metric("Aktuelle Fee", f"{mgmt_fee*100:.2f}% p.a.")
+    st.caption("Management Fee laut Sidebar")
+with _pbc3:
+    _pd_head = _pd_be_fee - mgmt_fee
+    st.metric("Puffer bis Break-even", f"{_pd_head*100:+.2f} pp",
+              delta_color="normal" if _pd_head > 0 else "inverse")
+    st.caption("positiv = Ertrag trägt die Fee")
+if mgmt_fee >= _pd_be_fee:
+    st.warning(
+        f"⚠️ **Die Management Fee ({mgmt_fee*100:.2f}%) erreicht oder übersteigt "
+        f"den Break-even ({_pd_be_fee*100:.2f}%)** — die Gebühr frisst den gesamten "
+        "geernteten Ertrag, für den BTC-DCA bleibt nichts. Die Yield Bridge steht "
+        "still, bis Fee < Ertrag.")
+else:
+    st.caption(
+        "Hinweis: Die Fee wird aktuell auf das **Gesamt-AuM** verbucht (inkl. BTC "
+        "und Cash), nicht nur auf den Debt-Sleeve — deshalb Break-even = Nettorendite "
+        "× Debt-Anteil. Würde die Fee auf den Debt-Sleeve beschränkt, läge der "
+        f"Break-even bei der vollen Nettorendite ({net_yield*100:.2f}%).")
 
 # --------------------------------------------------------------------------
 # PDF-Tearsheet (bilingual DE/EN)
@@ -2238,11 +2537,12 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                     "title": ("Ertrags-Ernte & Redemption-Stress" if de else
                               "Yield Harvesting & Redemption Stress"),
                     "subtitle": (
-                        "Das Underlying ist thesaurierend. Der Ertrag wird monatlich "
-                        "geerntet — es wird nur der NAV-Zuwachs über der Kostenbasis "
-                        "redimiert, nie das Kapital."
+                        "Das Underlying ist thesaurierend. Der Ertrag wird einmal "
+                        "jährlich (Januar) geerntet — es wird nur der aufgelaufene "
+                        "NAV-Zuwachs über der Kostenbasis redimiert, nie das Kapital."
                         if de else
-                        "The underlying is accumulating. Yield is harvested monthly — "
+                        "The underlying is accumulating. Yield is harvested once a "
+                        "year (January) — "
                         "only the NAV accretion above the cost basis is redeemed, never "
                         "the capital base."),
                     "headers": (["Kennzahl", "Wert"] if de else ["Metric", "Value"]),
@@ -2297,8 +2597,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
 
                 "Das Referenz-Underlying ist ein THESAURIERENDES Zertifikat auf "
                 "nachrangige, immobilienbesicherte Schweizer Kredite — es schüttet "
-                "nichts aus. Der Ertrag wird in der Simulation über eine monatliche "
-                "Ernte realisiert (Rücknahme des NAV-Zuwachses über der Kostenbasis). "
+                "nichts aus. Der Ertrag wird in der Simulation über eine jährliche "
+                "Ernte (Default Januar) realisiert (Rücknahme des NAV-Zuwachses über der Kostenbasis). "
                 "Rücknahmen erfolgen best-effort; es besteht kein Sekundärmarkt und "
                 "damit keine Garantie, dass die Ernte in der modellierten Höhe "
                 "tatsächlich möglich ist. Nachrangige Kredite tragen das "
@@ -2338,7 +2638,8 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
 
                 "The reference underlying is an ACCUMULATING certificate on subordinated, "
                 "real-estate-secured Swiss loans — it pays no coupon. In the simulation the "
-                "yield is realised through a monthly harvest (redeeming the NAV accretion "
+                "yield is realised through an annual harvest (default January, redeeming "
+                "the NAV accretion "
                 "above the cost basis). Redemptions are best-effort; there is no secondary "
                 "market and therefore no guarantee that the harvest is achievable at the "
                 "modelled level. Subordinated loans carry first-loss risk; there is no "
