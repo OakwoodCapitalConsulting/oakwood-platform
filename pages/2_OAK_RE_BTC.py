@@ -2127,6 +2127,190 @@ if st.button("Sensitivitätsanalyse starten (Grid-Backtest)", key="sens_btn"):
         fig_ddh.update_yaxes(title_text="Initial BTC %")
         st.plotly_chart(fig_ddh, use_container_width=True)
 
+# ==========================================================================
+# KALIBRIERUNG — Grundallokation, Cash-Sleeve, Bandbreite (vor Emission).
+# Identische Methodik wie OAK Private Debt / Bitcoin: Multi-Objective-Grid-
+# Search mit zwei harten Constraints statt Wert-Picking.
+#   1. Mechanismus-Constraint: Median DCA-Anteil über einer Mindestschwelle.
+#   2. Downside-Constraint: gepaart pro Fenster darf die Strategie im unteren
+#      Viertel (P25 Excess) nicht schlechter sein als «nur Immobilie» —
+#      WICHTIG: der Benchmark wird mit demselben Fee-Schedule genetzt
+#      (apply_fees), sonst vergleicht man netto gegen brutto (derselbe Fehler,
+#      der beim RE-only-Benchmark bereits korrigiert wurde).
+# Unter den zulässigen Kombinationen wird die Median-Netto-CAGR maximiert.
+# ==========================================================================
+st.markdown("---")
+st.markdown("## Kalibrierung — Grundallokation, Cash-Sleeve, Bandbreite")
+st.markdown(
+    "<p style='color:#A9B5A4;margin-top:-6px'>Rastersuche über Startallokation × "
+    "Cash-Sleeve × Bandbreite, ausgewertet über alle rollierenden Fenster. Zwei "
+    "harte Nebenbedingungen (kein Kompromiss-Score): Mechanismus-Reinheit "
+    "(DCA-Anteil) und Downside-Robustheit (Strategie ≥ nur Immobilie, netto "
+    "vs. netto, im unteren Viertel der Fenster). Unter den zulässigen "
+    "Kombinationen wird die Median-Rendite maximiert.</p>", unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_re_calibration_grid(prop_daily, _btc, base, allocs, cash_pcts, widths,
+                                win_years, step_months):
+    """Grid über (Startallokation × Cash-Sleeve × Bandbreite) × rollierende
+    Fenster. Der Benchmark (run_re_only) wird mit demselben Fee-Schedule wie
+    die Strategie genetzt (apply_fees) — sonst wäre der Downside-Vergleich
+    netto-vs-brutto verzerrt."""
+    full = pd.DatetimeIndex(_btc.index)
+    if len(full) < 400:
+        return pd.DataFrame()
+    starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                           freq=f"{step_months}MS")
+    rows = []
+    for alloc in allocs:
+        lo = max(alloc * 2.0, 0.05)
+        for width in widths:
+            up = lo + width
+            for cash_pct in cash_pcts:
+                p = dict(base)
+                p.update(initial_btc_pct=alloc, initial_cash_pct=cash_pct,
+                         lower_threshold=lo, upper_threshold=up)
+                for s in starts:
+                    e = s + pd.DateOffset(years=win_years)
+                    w = full[(full >= s) & (full <= e)]
+                    if len(w) < 300:
+                        continue
+                    t = run_re_btc(prop_daily, _btc.loc[w], p)
+                    if t.empty:
+                        continue
+                    yrs = max((t.index[-1] - t.index[0]).days / 365.25, 1e-9)
+                    cagr = (t["total_value"].iloc[-1] / p["initial_capital"]) ** (1 / yrs) - 1
+                    a = t.attrs.get("attribution", {})
+                    tb_gross = run_re_only(prop_daily, w, p)
+                    tb_net, _, _, _ = apply_fees(
+                        tb_gross, p["initial_capital"],
+                        mgmt_fee_annual=p["mgmt_fee"], perf_fee_rate=p["perf_fee"],
+                        hwm_hurdle=p["hwm_hurdle"], crystallization_freq=p["crystallization_freq"],
+                        hurdle_type=p["hurdle_type"])
+                    bcagr = (tb_net.iloc[-1] / p["initial_capital"]) ** (1 / yrs) - 1
+                    rows.append({"alloc": alloc, "cash_pct": cash_pct, "width": width,
+                                 "start": s, "net_cagr": cagr, "bench_cagr": bcagr,
+                                 "dca_share": a.get("dca_share", np.nan)})
+    return pd.DataFrame(rows)
+
+
+def score_re_calibration(grid, dca_floor, downside_tol):
+    g = grid.copy()
+    g["excess"] = g["net_cagr"] - g["bench_cagr"]
+    gp = g.groupby(["alloc", "cash_pct", "width"])
+    s = gp.agg(median_cagr=("net_cagr", "median"),
+               p05_cagr=("net_cagr", lambda x: x.quantile(.05)),
+               median_dca=("dca_share", "median"),
+               p25_excess=("excess", lambda x: x.quantile(.25)),
+               spread=("net_cagr", lambda x: x.max() - x.min()),
+               n=("net_cagr", "size")).reset_index()
+    s["feasible"] = (s["median_dca"] >= dca_floor) & (s["p25_excess"] >= downside_tol)
+    return s.sort_values("median_cagr", ascending=False)
+
+
+rc1, rc2, rc3 = st.columns(3)
+with rc1:
+    _re_dca_floor = st.slider("Mindest-DCA-Anteil (Mechanismus-Constraint)",
+                              30, 90, 60, 5, key="re_calib_floor") / 100.0
+with rc2:
+    _re_downside_tol = st.slider("Downside-Toleranz (pp, P25 Excess vs. Benchmark)",
+                                 -3.0, 1.0, -1.0, 0.25, key="re_calib_tol") / 100.0
+with rc3:
+    st.caption("")
+    _re_run_calib = st.button("Kalibrierung starten", key="re_calib_go")
+
+if _re_run_calib:
+    st.session_state["re_calib_has_run"] = True
+
+if st.session_state.get("re_calib_has_run"):
+    _re_c_allocs = [0.0, 0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
+    _re_c_cash = [0.025, 0.05, 0.075]
+    _re_c_widths = [0.10, 0.15, 0.20]
+    _re_c_base = dict(params)
+    with st.spinner("Rastersuche über alle Kombinationen × rollierende Fenster… "
+                     "(kann 1–2 Minuten dauern)"):
+        re_calib_grid = compute_re_calibration_grid(
+            prop_daily, btc_chf, _re_c_base, _re_c_allocs, _re_c_cash, _re_c_widths,
+            win_years=3, step_months=6)
+
+    if re_calib_grid.empty:
+        st.warning("Zu wenig überlappende Daten für die Kalibrierung.")
+    else:
+        re_calib_scored = score_re_calibration(re_calib_grid, _re_dca_floor, _re_downside_tol)
+        _n_feas = int(re_calib_scored["feasible"].sum())
+        st.caption(f"{len(re_calib_grid):,} Engine-Läufe × 2 (Strategie + Benchmark) · "
+                   f"{re_calib_grid['start'].nunique()} rollierende 3-Jahres-Fenster · "
+                   f"**{_n_feas} von {len(re_calib_scored)}** Kombinationen zulässig")
+
+        if _n_feas == 0:
+            st.error("⚠️ Keine Kombination erfüllt beide Constraints bei dieser "
+                     "Einstellung. Lockere den DCA-Floor oder die Downside-Toleranz.")
+        else:
+            _rec = re_calib_scored[re_calib_scored["feasible"]].iloc[0]
+            r1, r2, r3, r4, r5 = st.columns(5)
+            with r1:
+                st.metric("Empfohlene Startallokation", f"{_rec['alloc']*100:.1f}%")
+            with r2:
+                st.metric("Empfohlener Cash-Sleeve", f"{_rec['cash_pct']*100:.1f}%")
+            with r3:
+                st.metric("Bandbreite", f"{_rec['width']*100:.0f}pp")
+                st.caption(f"Band {max(_rec['alloc']*2,0.05)*100:.1f}–"
+                           f"{(max(_rec['alloc']*2,0.05)+_rec['width'])*100:.1f}%")
+            with r4:
+                st.metric("Median-Netto-CAGR", f"{_rec['median_cagr']*100:.1f}%")
+            with r5:
+                st.metric("Median DCA-Anteil", f"{_rec['median_dca']*100:.0f}%")
+            st.caption(
+                "Empfehlung = höchste Median-CAGR unter allen Kombinationen, die "
+                "beide Constraints erfüllen — basiert auf dem Median über alle "
+                "rollierenden Fenster, kein Bestwert-Cherrypicking.")
+
+            st.markdown("##### Zulässige Kombinationen (nach Median-CAGR)")
+            _disp = re_calib_scored[re_calib_scored["feasible"]].head(10).copy()
+            _disp["Startallokation"] = (_disp["alloc"] * 100).round(1).astype(str) + "%"
+            _disp["Cash-Sleeve"] = (_disp["cash_pct"] * 100).round(1).astype(str) + "%"
+            _disp["Bandbreite"] = (_disp["width"] * 100).round(0).astype(int).astype(str) + "pp"
+            _disp["Median-CAGR"] = (_disp["median_cagr"] * 100).round(2).astype(str) + "%"
+            _disp["P5-CAGR"] = (_disp["p05_cagr"] * 100).round(2).astype(str) + "%"
+            _disp["DCA-Anteil"] = (_disp["median_dca"] * 100).round(0).astype(str) + "%"
+            _disp["Streuung"] = (_disp["spread"] * 100).round(1).astype(str) + "pp"
+            st.dataframe(_disp[["Startallokation", "Cash-Sleeve", "Bandbreite",
+                                "Median-CAGR", "P5-CAGR", "DCA-Anteil", "Streuung"]],
+                        use_container_width=True, hide_index=True)
+
+            st.markdown("##### Effizienzlinie — Downside-Schutz vs. Median-Rendite")
+            _fig_ef = go.Figure()
+            _infeas = re_calib_scored[~re_calib_scored["feasible"]]
+            _feas = re_calib_scored[re_calib_scored["feasible"]]
+            _fig_ef.add_trace(go.Scatter(
+                x=_infeas["p05_cagr"] * 100, y=_infeas["median_cagr"] * 100,
+                mode="markers", name="nicht zulässig",
+                marker=dict(size=7, color=OAK_GREEN_3, opacity=0.5)))
+            _fig_ef.add_trace(go.Scatter(
+                x=_feas["p05_cagr"] * 100, y=_feas["median_cagr"] * 100,
+                mode="markers", name="zulässig",
+                marker=dict(size=9 + _feas["median_dca"] * 10, color=OAK_GOLD,
+                           line=dict(width=1, color=OAK_CREAM))))
+            _fig_ef.add_trace(go.Scatter(
+                x=[_rec["p05_cagr"] * 100], y=[_rec["median_cagr"] * 100],
+                mode="markers", name="Empfehlung",
+                marker=dict(size=16, symbol="star", color=OAK_BTC,
+                           line=dict(width=1.5, color=OAK_CREAM))))
+            _fig_ef.update_xaxes(title_text="P5 Netto-CAGR — Downside (%)")
+            _fig_ef.update_yaxes(title_text="Median Netto-CAGR (%)")
+            _fig_ef = style_plotly(_fig_ef, height=420)
+            st.plotly_chart(_fig_ef, use_container_width=True)
+            st.caption("Punktgrösse = DCA-Anteil. Grüne Punkte verfehlen mindestens "
+                       "einen Constraint — meist hohe Startallokation (gute "
+                       "Median-Rendite, aber der Mechanismus wird kannibalisiert).")
+
+        st.warning(
+            "⚠️ **Provisorisch, solange mit synthetischen Testpfaden gerechnet "
+            "wird.** Diese Rastersuche läuft auf denselben echten Kursen "
+            "(`btc_chf`, `prop_daily`) wie der Rest der Seite — im Streamlit-"
+            "Deployment liefert derselbe Button die launch-tauglichen Zahlen.")
+
 # =====================================================================
 # Monte-Carlo Forward Projection (like the SMI page)
 # =====================================================================
