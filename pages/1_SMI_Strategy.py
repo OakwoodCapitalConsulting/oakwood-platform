@@ -1962,12 +1962,31 @@ if _show_results:
                         st.caption(f"**{_fname} ({_ft})** — {len(_sp)} gemeldete(s) "
                                    "Split-Ereignis(se):")
                         st.dataframe(_spdf, use_container_width=True, hide_index=True)
-                        # KORREKTUR: nicht mehr nach Ratio-Grösse urteilen (Sika hatte
-                        # einen echten 60:1-Split, das wäre fälschlich "unplausibel"
-                        # gewesen) — stattdessen prüfen, ob die Ratio den tatsächlich
-                        # beobachteten Kurssprung im Rohdatensatz erklärt. Derselbe
-                        # Test wie in _apply_split_adjustment, hier nur zur Anzeige.
-                        _raw_t = prices[_ft] if _ft in prices.columns else None
+                        # KORREKTUR (zweite Runde): der erste Versuch prüfte die
+                        # Kontinuität gegen prices[_ft] — das ist aber schon die
+                        # BEREITS bereinigte Serie (Ausgabe von fetch_prices). Ist
+                        # die Bereinigung korrekt gelaufen, gibt es dort gar keinen
+                        # Sprung mehr zu erklären, und der Test schlägt fälschlich
+                        # fehl — unabhängig davon, ob die eigentliche Bereinigung
+                        # stimmt. Für einen echten Test brauchen wir die ROHEN,
+                        # unbereinigten Kurse — dafür separat und gezielt nur für
+                        # diesen einen auffälligen Titel neu laden.
+                        _raw_dl = _download_with_retry([_ft], start_str, end_str)
+                        _raw_t = None
+                        if _raw_dl is not None and not _raw_dl.empty:
+                            try:
+                                if isinstance(_raw_dl.columns, pd.MultiIndex):
+                                    _raw_t = _raw_dl[_ft]["Close"] if (_ft, "Close") in _raw_dl.columns or _ft in _raw_dl.columns.get_level_values(0) else None
+                                else:
+                                    _raw_t = _raw_dl["Close"]
+                                if _raw_t is not None:
+                                    _raw_t = _clean_index(_raw_t.dropna())
+                            except Exception:
+                                _raw_t = None
+                        if _raw_t is None or _raw_t.empty:
+                            st.caption(f"Konnte rohe Kursdaten für {_fname} nicht separat "
+                                       "nachladen — Kontinuitätsprüfung hier übersprungen.")
+                            continue
                         _sp_naive = _sp.copy()
                         try:
                             if _sp_naive.index.tz is not None:
@@ -1988,15 +2007,17 @@ if _show_results:
                             _match = 0.6 <= (_implied / float(_r)) <= 1.6
                             if _match:
                                 st.caption(f"✓ Ratio {_r:.2f} am {_d:%Y-%m-%d} erklärt den "
-                                           f"beobachteten Kurssprung (implizite Ratio "
-                                           f"{_implied:.2f}) — sieht nach echtem Split aus, "
-                                           "wird angewendet.")
+                                           f"beobachteten ROHEN Kurssprung (implizite Ratio "
+                                           f"{_implied:.2f}, Rohkurs davor {_pb:.2f} → danach "
+                                           f"{_pa:.2f}) — sieht nach echtem Split aus, wird "
+                                           "in der Bereinigung angewendet.")
                             else:
                                 st.warning(
                                     f"⚑ Ratio {_r:.2f} am {_d:%Y-%m-%d} erklärt den "
-                                    f"beobachteten Kurssprung NICHT (implizite Ratio "
-                                    f"{_implied:.2f}, weicht stark ab) — wird verworfen, "
-                                    "vermutlich Datenfehler des Anbieters.")
+                                    f"beobachteten ROHEN Kurssprung NICHT (implizite Ratio "
+                                    f"{_implied:.2f}, Rohkurs davor {_pb:.2f} → danach "
+                                    f"{_pa:.2f}) — wird verworfen, vermutlich Datenfehler "
+                                    "des Anbieters.")
         else:
             st.success("Keine Tagesbewegung über der Schwelle gefunden.")
 
