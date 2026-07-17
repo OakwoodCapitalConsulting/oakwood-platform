@@ -1317,6 +1317,107 @@ def simulate_smi_benchmarks(prices, dividends_df, initial_capital, weights,
     return pd.DataFrame(records).set_index("date")
 
 
+def run_static_blend(prices, dividends_df, btc_prices_usd, fx_chf_usd,
+                      initial_capital, weights, btc_pct):
+    """The TRUE alpha benchmark: a passive, unmanaged X% Bitcoin / (1-X)%
+    Equity blend, bought once at day 0 and never touched again.
+
+    Bitcoin leg: bought once, held forever — no DCA, no threshold sell-down,
+    no rebalancing of any kind.
+    Equity leg: standard total-return treatment (net dividends reinvested
+    into the same paying stock), no quarterly rebalance either — this is
+    deliberately the LAZIEST possible comparator.
+
+    If OAK Swiss Blue Chip / Bitcoin's CAGR/Sharpe does not beat this at the
+    SAME starting allocation, any outperformance elsewhere is coming from
+    carrying more average Bitcoin exposure over time (beta), not from the
+    DCA/threshold mechanism (alpha). This isolates the mechanism, not the
+    allocation choice.
+    """
+    prices = _clean_index(prices.copy())
+    available = [t for t in weights if t in prices.columns]
+    if not available:
+        return pd.DataFrame()
+    w = pd.Series({t: weights[t] for t in available})
+    w = w / w.sum()
+    prices_clean = prices[available].dropna(how="all").ffill()
+    if prices_clean.empty:
+        return pd.DataFrame()
+
+    div_lookup = {}
+    if not dividends_df.empty:
+        for _, r in dividends_df.iterrows():
+            div_lookup[(_norm_ts(r["date"]), r["ticker"])] = \
+                r["dividend_per_share"] * DIVIDEND_NET_FACTOR
+
+    btc_prices_usd = _clean_index(btc_prices_usd.copy())
+    fx_chf_usd = _clean_index(fx_chf_usd.copy())
+
+    def get_btc_price(d):
+        sub = btc_prices_usd[btc_prices_usd.index <= d]
+        return float(sub.iloc[-1]) if not sub.empty else None
+
+    def get_fx(d):
+        sub = fx_chf_usd[fx_chf_usd.index <= d]
+        return float(sub.iloc[-1]) if not sub.empty else None
+
+    first_day = prices_clean.index[0]
+    active_t0 = [t for t in available if pd.notna(prices_clean.loc[first_day, t])]
+    if not active_t0:
+        return pd.DataFrame()
+    w_t0 = w[active_t0] / w[active_t0].sum()
+
+    btc_price_0, fx_0 = get_btc_price(first_day), get_fx(first_day)
+    equity_capital = initial_capital * (1 - btc_pct)
+    btc_capital = initial_capital * btc_pct
+
+    shares = {t: 0.0 for t in available}
+    for t in active_t0:
+        shares[t] = (equity_capital * w_t0[t]) / prices_clean.loc[first_day, t]
+
+    btc_held = 0.0
+    if btc_price_0 and fx_0 and btc_capital > 0:
+        btc_held = (btc_capital / fx_0) / btc_price_0   # bought once, held forever
+
+    records = []
+    for d in prices_clean.index:
+        row = prices_clean.loc[d]
+        active_today = [t for t in available if pd.notna(row[t])]
+        for t in active_today:
+            key = (d, t)
+            if key in div_lookup:
+                dps = div_lookup[key]
+                cash = shares[t] * dps
+                if cash > 0 and row[t] > 0:
+                    shares[t] += cash / row[t]   # reinvested into the same stock
+        equity_val = sum(shares[t] * row[t] for t in active_today)
+        btc_price_d, fx_d = get_btc_price(d), get_fx(d)
+        btc_val = btc_held * btc_price_d * fx_d if (btc_price_d and fx_d) else 0.0
+        records.append({"date": d, "equity_value": equity_val,
+                        "btc_value_chf": btc_val, "total_value": equity_val + btc_val,
+                        "btc_pct": (btc_val / (equity_val + btc_val)
+                                   if (equity_val + btc_val) > 0 else 0.0)})
+    return pd.DataFrame(records).set_index("date")
+
+
+def risk_metrics(values, risk_free_rate=0.01):
+    """Annualized vol, max drawdown, Sharpe, Calmar from a daily value series.
+    Only meaningful for fully mark-to-market series (true here — SMI/BTC has
+    no at-par sleeve, unlike RE/BTC or Private Debt/BTC)."""
+    if values is None or len(values) < 30:
+        return dict(vol=np.nan, max_dd=np.nan, sharpe=np.nan, calmar=np.nan)
+    rets = values.pct_change().dropna()
+    vol = float(rets.std() * np.sqrt(252))
+    running_max = values.cummax()
+    dd = (values / running_max - 1.0)
+    max_dd = float(dd.min())
+    yrs = max((values.index[-1] - values.index[0]).days / 365.25, 1e-9)
+    cagr = (values.iloc[-1] / values.iloc[0]) ** (1 / yrs) - 1
+    sharpe = float((cagr - risk_free_rate) / vol) if vol > 1e-9 else np.nan
+    calmar = float(cagr / abs(max_dd)) if abs(max_dd) > 1e-9 else np.nan
+    return dict(vol=vol, max_dd=max_dd, sharpe=sharpe, calmar=calmar, cagr=cagr)
+
+
 def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                perf_fee_rate=0.15, hwm_hurdle=0.05,
                crystallization_freq="Quarterly", hurdle_type="Hard Hurdle"):
@@ -2437,6 +2538,405 @@ if _show_results:
 
             st.session_state["smi_rb_dist"] = sdist
 
+    # ======================================================================
+    # KALIBRIERUNG — Schwellenprüfung-Frequenz (Bitcoin-Band)
+    # Beantwortet konkret: unter welchen Bedingungen (Startallokation) macht
+    # monatliche vs. quartalsweise vs. halbjährliche Prüfung Sinn? Dieselbe
+    # Rolling-Window-Methodik wie oben, aber threshold_check_dates_set als
+    # zusätzliche Grid-Dimension. Bandbreite (upper/target) bleibt auf dem
+    # aktuellen Sidebar-Wert fixiert, um die Fragestellung fokussiert zu
+    # halten — das ist NICHT dieselbe Frage wie "welche Startallokation".
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Kalibrierung — Schwellenprüfung-Frequenz")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Beantwortet konkret: unter "
+        "welchen Bedingungen macht eine seltenere Prüfung des Bitcoin-Bands "
+        "Sinn? Dieselbe Rolling-Window-Methodik wie oben, jetzt mit der "
+        "Prüf-Frequenz als zusätzlicher Dimension. Bandbreite bleibt auf dem "
+        "aktuellen Sidebar-Wert fixiert — das ist eine andere Frage als "
+        "\u201ewelche Startallokation\u201c oben.</p>", unsafe_allow_html=True)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_smi_threshold_freq_grid(_prices, _divs, _btc, _fx, _weights, cap,
+                                        allocs, freqs, upper, target, dca_m, txbps,
+                                        win_years, step_months, fee):
+        """Engine je (Frequenz, Startallokation, Fenster). Erfasst zusätzlich
+        die Überschreitung über der oberen Schwelle bei Auslösung — das ist
+        die Kennzahl, die die Prüf-Frequenz direkt sichtbar macht."""
+        full = _prices.index
+        if len(full) < 400:
+            return pd.DataFrame()
+        starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                               freq=f"{step_months}MS")
+        rows = []
+        for freq_label in freqs:
+            for alloc in allocs:
+                for s in starts:
+                    e = s + pd.DateOffset(years=win_years)
+                    w = full[(full >= s) & (full <= e)]
+                    if len(w) < 300:
+                        continue
+                    thr_dates = (None if freq_label == "Monatlich (Standard)"
+                                else get_rebalance_dates(w, freq_label))
+                    try:
+                        _ts, _, _evts = run_strategy(
+                            _prices.loc[w], _divs, _btc, _fx,
+                            initial_capital=cap, weights=_weights,
+                            initial_btc_pct=alloc, upper_threshold=upper,
+                            target_btc_pct=min(target, upper - 0.01),
+                            rebalance_dates_set=set(), dca_months=dca_m,
+                            tx_cost_bps=txbps, threshold_check_dates_set=thr_dates)
+                    except Exception:
+                        continue
+                    if _ts.empty:
+                        continue
+                    _gross = _ts["total_value"]
+                    _att = _ts.attrs.get("attribution", {})
+                    _yrs = max((_gross.index[-1] - _gross.index[0]).days / 365.25, 1e-9)
+                    _net, _, _, _ = apply_fees(
+                        _gross, cap, mgmt_fee_annual=fee, perf_fee_rate=perf_fee_pct,
+                        hwm_hurdle=hwm_hurdle_pct, crystallization_freq=crystallization_freq,
+                        hurdle_type=hurdle_type)
+                    _cagr = (_net.iloc[-1] / cap) ** (1 / _yrs) - 1
+                    _n_events = len(_evts) if _evts is not None else 0
+                    _avg_overshoot = (float((_evts["btc_pct_before"] - upper).mean())
+                                      if _n_events else 0.0)
+                    _max_overshoot = (float((_evts["btc_pct_before"] - upper).max())
+                                      if _n_events else 0.0)
+                    rows.append({"freq": freq_label, "alloc": alloc, "start": s,
+                                 "net_cagr": _cagr,
+                                 "dca_share": _att.get("dca_share", np.nan),
+                                 "n_events": _n_events,
+                                 "avg_overshoot": _avg_overshoot,
+                                 "max_overshoot": _max_overshoot})
+        return pd.DataFrame(rows)
+
+    tf1, tf2, tf3 = st.columns(3)
+    with tf1:
+        _tfw = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0, key="smi_tf_win")
+    with tf2:
+        _tfstep = st.selectbox("Fenster-Schritt", ["halbjährlich", "quartalsweise"],
+                               index=0, key="smi_tf_step")
+    with tf3:
+        st.caption("")
+        _tfgo = st.button("Frequenz-Kalibrierung starten", key="smi_tf_go")
+
+    if _tfgo:
+        st.session_state["smi_tf_has_run"] = True
+
+    if st.session_state.get("smi_tf_has_run"):
+        _tf_allocs = [0.05, 0.10, 0.15, 0.20]
+        _tf_freqs = ["Monatlich (Standard)", "Quartalsweise", "Halbjährlich"]
+        _tf_sm = 6 if _tfstep == "halbjährlich" else 3
+
+        with st.spinner("Rechne Grid über Frequenz × Startallokation × rollierende Fenster… "
+                         "(mehr Läufe als oben, kann länger dauern)"):
+            tfgrid = compute_smi_threshold_freq_grid(
+                prices, divs, btc_series, fx, weights, initial_capital,
+                _tf_allocs, _tf_freqs, upper_threshold, target_btc_pct, dca_months,
+                tx_cost_bps, _tfw, _tf_sm, mgmt_fee_pct)
+
+        if tfgrid.empty:
+            st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
+        else:
+            _tf_nw = tfgrid["start"].nunique()
+            st.caption(f"{len(tfgrid):,} Engine-Läufe · {_tf_nw} rollierende "
+                       f"{_tfw}-Jahres-Fenster je Kombination · Bandbreite "
+                       f"{upper_threshold*100:.0f}% / {target_btc_pct*100:.0f}% "
+                       "(aktueller Sidebar-Wert)")
+
+            st.markdown("##### Vergleichstabelle — Median über alle Fenster")
+            _summary = (tfgrid.groupby(["freq", "alloc"]).agg(
+                Median_CAGR=("net_cagr", "median"),
+                P5_CAGR=("net_cagr", lambda x: x.quantile(.05)),
+                Median_DCA=("dca_share", "median"),
+                Overshoot_avg=("avg_overshoot", "median"),
+                Overshoot_max=("max_overshoot", "max"),
+                Events_pro_Fenster=("n_events", "mean"),
+            ).reset_index())
+            _disp = _summary.copy()
+            _disp["Startallokation"] = (_disp["alloc"] * 100).round(0).astype(int).astype(str) + "%"
+            _disp["Median-CAGR"] = (_disp["Median_CAGR"] * 100).round(2).astype(str) + "%"
+            _disp["P5-CAGR"] = (_disp["P5_CAGR"] * 100).round(2).astype(str) + "%"
+            _disp["DCA-Anteil"] = (_disp["Median_DCA"] * 100).round(0).astype(str) + "%"
+            _disp["Ø Überschreitung"] = (_disp["Overshoot_avg"] * 100).round(2).astype(str) + "pp"
+            _disp["Max Überschreitung"] = (_disp["Overshoot_max"] * 100).round(2).astype(str) + "pp"
+            _disp["Events/Fenster"] = _disp["Events_pro_Fenster"].round(2)
+            _disp = _disp.rename(columns={"freq": "Frequenz"})
+            st.dataframe(_disp[["Frequenz", "Startallokation", "Median-CAGR", "P5-CAGR",
+                                "DCA-Anteil", "Ø Überschreitung", "Max Überschreitung",
+                                "Events/Fenster"]],
+                        use_container_width=True, hide_index=True)
+
+            st.markdown("##### Median-CAGR nach Frequenz und Startallokation")
+            _piv = _summary.pivot(index="alloc", columns="freq", values="Median_CAGR") * 100
+            _piv = _piv[[f for f in _tf_freqs if f in _piv.columns]]
+            figtf = go.Figure()
+            _colors = {"Monatlich (Standard)": OAK_GOLD, "Quartalsweise": OAK_SAGE,
+                      "Halbjährlich": OAK_BTC}
+            for fcol in _piv.columns:
+                figtf.add_trace(go.Bar(name=fcol, x=[f"{a*100:.0f}%" for a in _piv.index],
+                                       y=_piv[fcol].values,
+                                       marker_color=_colors.get(fcol, OAK_SAGE)))
+            figtf.update_layout(barmode="group")
+            figtf.update_xaxes(title_text="Startallokation BTC", type="category")
+            figtf.update_yaxes(title_text="Median Netto-CAGR (%)")
+            figtf = style_plotly(figtf, height=380)
+            st.plotly_chart(figtf, use_container_width=True)
+
+            st.caption(
+                "**Lesehilfe:** Wenn die CAGR-Balken je Startallokation nah beieinander "
+                "liegen, macht die Frequenz für die Rendite kaum einen Unterschied — "
+                "dann entscheidet die Überschreitungs-Spalte (Konzentrationsrisiko "
+                "zwischen den Prüfterminen). Ein systematischer CAGR-Vorteil einer "
+                "Frequenz über ALLE Startallokationen hinweg wäre ein Hinweis auf "
+                "Overfitting an den Testzeitraum, kein robuster Befund.")
+
+    # ======================================================================
+    # KALIBRIERUNG — Risiko/Rendite-Profil (Alpha-Test)
+    # Beantwortet: bringt der Mechanismus (DCA + Schwellen-Rebalancing) einen
+    # echten Mehrwert gegenüber einer simplen, unverwalteten Static-Blend-
+    # Position mit DERSELBEN Startallokation? Trennt "mehr Rendite durch mehr
+    # Bitcoin-Beta" von "mehr Rendite durch den Mechanismus selbst (Alpha)".
+    # Erweitert das Allokations-Raster zusätzlich in die höhere Risikozone.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Kalibrierung — Risiko/Rendite-Profil (Alpha-Test)")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Eine höhere Startallokation "
+        "erzeugt fast immer eine höhere Rendite in einem Bitcoin-Bullenfenster "
+        "— das ist <strong>Beta</strong> (mehr Marktrisiko), kein Verdienst des "
+        "Mechanismus. Diese Sektion isoliert die eigentliche Alpha-Frage: schlägt "
+        "die Strategie (DCA + Schwellen-Rebalancing) eine simple, unverwaltete "
+        "Static-Blend-Position mit <em>derselben</em> Startallokation — bei "
+        "identischem Bitcoin-Exposure am Tag 1? Nur P1 kann diesen Test sauber "
+        "liefern (kein at-par-Sleeve wie bei RE/BTC oder Private Debt/BTC, "
+        "Vol/Sharpe/MaxDD sind hier real).</p>", unsafe_allow_html=True)
+
+    def _window_btc_regime(_btc, w):
+        """Charakterisiert das Marktregime des Fensters an seinem EIGENEN
+        Bitcoin-Verlauf — kein handverlesenes Bär/Bulle-Label, sondern direkt
+        gemessen: Gesamtrendite und Peak-to-Trough-Drawdown innerhalb des
+        Fensters."""
+        seg = _btc.loc[w]
+        if len(seg) < 2 or seg.iloc[0] <= 0:
+            return np.nan, np.nan
+        ret = float(seg.iloc[-1] / seg.iloc[0] - 1.0)
+        running_max = seg.cummax()
+        dd = float((seg / running_max - 1.0).min())
+        return ret, dd
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_smi_alpha_grid(_prices, _divs, _btc, _fx, _weights, cap,
+                               allocs, band_width, dca_m, txbps,
+                               win_years, step_months, fee):
+        """Strategie vs. Static-Blend, EIN Engine-Lauf je (alloc, window) für
+        jede Seite. Band skaliert mit der Allokation (target = alloc, upper =
+        alloc + band_width), damit auch hohe Allokationen ein sinnvolles Band
+        haben statt sofort über einer fixen Schwelle zu liegen. Erfasst
+        zusätzlich die REGIME-Charakteristik jedes Fensters (eigene
+        Bitcoin-Rendite/-Drawdown), um zu zeigen, UNTER WELCHEN BEDINGUNGEN
+        der Mechanismus eine simple Static-Blend-Position schlägt."""
+        full = _prices.index
+        if len(full) < 400:
+            return pd.DataFrame()
+        starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                               freq=f"{step_months}MS")
+        rows = []
+        for alloc in allocs:
+            target = alloc
+            upper = min(alloc + band_width, 0.95)
+            for s in starts:
+                e = s + pd.DateOffset(years=win_years)
+                w = full[(full >= s) & (full <= e)]
+                if len(w) < 300:
+                    continue
+                try:
+                    _ts, _, _ = run_strategy(
+                        _prices.loc[w], _divs, _btc, _fx,
+                        initial_capital=cap, weights=_weights,
+                        initial_btc_pct=alloc, upper_threshold=upper,
+                        target_btc_pct=target, rebalance_dates_set=set(),
+                        dca_months=dca_m, tx_cost_bps=txbps)
+                    _bl = run_static_blend(_prices.loc[w], _divs, _btc, _fx,
+                                           cap, _weights, alloc)
+                except Exception:
+                    continue
+                if _ts.empty or _bl.empty:
+                    continue
+                _net, _, _, _ = apply_fees(
+                    _ts["total_value"], cap, mgmt_fee_annual=fee, perf_fee_rate=0.0,
+                    hwm_hurdle=0.05, crystallization_freq="Quarterly", hurdle_type="Hard Hurdle")
+                _rm_strat = risk_metrics(_net)
+                _rm_bl = risk_metrics(_bl["total_value"])
+                _avg_btc_pct = float(_ts["btc_pct"].mean())
+                _w_ret, _w_dd = _window_btc_regime(_btc, w)
+                rows.append({
+                    "alloc": alloc, "start": s,
+                    "strat_cagr": _rm_strat["cagr"], "strat_vol": _rm_strat["vol"],
+                    "strat_sharpe": _rm_strat["sharpe"], "strat_maxdd": _rm_strat["max_dd"],
+                    "bl_cagr": _rm_bl["cagr"], "bl_vol": _rm_bl["vol"],
+                    "bl_sharpe": _rm_bl["sharpe"], "bl_maxdd": _rm_bl["max_dd"],
+                    "avg_realized_btc_pct": _avg_btc_pct,
+                    "window_btc_return": _w_ret, "window_btc_maxdd": _w_dd,
+                })
+        return pd.DataFrame(rows)
+
+    ac1, ac2, ac3 = st.columns(3)
+    with ac1:
+        _acw = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0, key="smi_ac_win")
+    with ac2:
+        _acstep = st.selectbox("Fenster-Schritt", ["halbjährlich", "quartalsweise"],
+                               index=0, key="smi_ac_step")
+    with ac3:
+        st.caption("")
+        _acgo = st.button("Alpha-Test starten", key="smi_ac_go")
+
+    if _acgo:
+        st.session_state["smi_ac_has_run"] = True
+
+    if st.session_state.get("smi_ac_has_run"):
+        _ac_allocs = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
+        _ac_sm = 6 if _acstep == "halbjährlich" else 3
+
+        with st.spinner("Rechne Strategie vs. Static-Blend über alle Fenster… "
+                         "(2 Engine-Läufe je Kombination)"):
+            agrid = compute_smi_alpha_grid(
+                prices, divs, btc_series, fx, weights, initial_capital,
+                _ac_allocs, 0.10, dca_months, tx_cost_bps, _acw, _ac_sm, mgmt_fee_pct)
+
+        if agrid.empty:
+            st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
+        else:
+            _an = agrid["start"].nunique()
+            st.caption(f"{len(agrid):,} Fenster-Kombinationen ({_an} rollierende "
+                       f"{_acw}-Jahres-Fenster) · Band = Startallokation bis "
+                       "+10pp · Statische Vergleichsposition: gleiche Startallokation, "
+                       "Bitcoin nie verkauft/nachgekauft, Aktien-Dividenden normal "
+                       "reinvestiert, kein Rebalancing")
+
+            summ = agrid.groupby("alloc").agg(
+                Strat_CAGR=("strat_cagr", "median"), Static_CAGR=("bl_cagr", "median"),
+                Strat_Vol=("strat_vol", "median"), Static_Vol=("bl_vol", "median"),
+                Strat_Sharpe=("strat_sharpe", "median"), Static_Sharpe=("bl_sharpe", "median"),
+                Strat_MaxDD=("strat_maxdd", "median"), Static_MaxDD=("bl_maxdd", "median"),
+                Avg_BTC_Quote=("avg_realized_btc_pct", "median"),
+            ).reset_index()
+            summ["Delta_CAGR"] = summ["Strat_CAGR"] - summ["Static_CAGR"]
+            summ["Delta_Sharpe"] = summ["Strat_Sharpe"] - summ["Static_Sharpe"]
+
+            st.markdown("##### Strategie vs. Static-Blend — Median über alle Fenster")
+            _disp = summ.copy()
+            _disp["Startallokation"] = (_disp["alloc"] * 100).round(0).astype(int).astype(str) + "%"
+            _disp["Ø realisierte BTC-Quote"] = (_disp["Avg_BTC_Quote"] * 100).round(1).astype(str) + "%"
+            for c1, c2, lbl in [("Strat_CAGR", "Static_CAGR", "CAGR"),
+                                 ("Strat_Vol", "Static_Vol", "Vol"),
+                                 ("Strat_Sharpe", "Static_Sharpe", "Sharpe"),
+                                 ("Strat_MaxDD", "Static_MaxDD", "MaxDD")]:
+                if lbl == "Sharpe":
+                    _disp[f"Strategie {lbl}"] = _disp[c1].round(2)
+                    _disp[f"Static {lbl}"] = _disp[c2].round(2)
+                else:
+                    _disp[f"Strategie {lbl}"] = (_disp[c1] * 100).round(2).astype(str) + "%"
+                    _disp[f"Static {lbl}"] = (_disp[c2] * 100).round(2).astype(str) + "%"
+            _disp["Δ CAGR (Alpha-Signal)"] = (_disp["Delta_CAGR"] * 100).round(2).astype(str) + "pp"
+            _disp["Δ Sharpe"] = _disp["Delta_Sharpe"].round(2)
+            st.dataframe(_disp[["Startallokation", "Ø realisierte BTC-Quote",
+                                "Strategie CAGR", "Static CAGR", "Δ CAGR (Alpha-Signal)",
+                                "Strategie Vol", "Static Vol",
+                                "Strategie Sharpe", "Static Sharpe", "Δ Sharpe",
+                                "Strategie MaxDD", "Static MaxDD"]],
+                        use_container_width=True, hide_index=True)
+
+            st.markdown("##### Risiko/Rendite-Frontier — Strategie vs. Static-Blend")
+            figac = go.Figure()
+            figac.add_trace(go.Scatter(
+                x=summ["Strat_Vol"] * 100, y=summ["Strat_CAGR"] * 100, mode="markers+lines+text",
+                name="Strategie (DCA + Schwellen-Rebalancing)",
+                text=[f"{a*100:.0f}%" for a in summ["alloc"]], textposition="top center",
+                marker=dict(size=12, color=OAK_GOLD), line=dict(color=OAK_GOLD, dash="dot")))
+            figac.add_trace(go.Scatter(
+                x=summ["Static_Vol"] * 100, y=summ["Static_CAGR"] * 100, mode="markers+lines+text",
+                name="Static-Blend (unverwaltet)",
+                text=[f"{a*100:.0f}%" for a in summ["alloc"]], textposition="bottom center",
+                marker=dict(size=12, color=OAK_SAGE), line=dict(color=OAK_SAGE, dash="dot")))
+            figac.update_xaxes(title_text="Annualisierte Volatilität (%)")
+            figac.update_yaxes(title_text="Median Netto-CAGR (%)")
+            figac = style_plotly(figac, height=440)
+            st.plotly_chart(figac, use_container_width=True)
+            st.caption(
+                "**Lesehilfe:** Liegt die Gold-Linie (Strategie) bei GLEICHER Vola "
+                "über der Salbei-Linie (Static-Blend), ist das echtes Alpha — der "
+                "Mechanismus bringt bei identischem Risiko mehr Rendite. Liegen die "
+                "Linien praktisch übereinander, kommt jede Mehrrendite ausschliesslich "
+                "aus höherer Startallokation (Beta), nicht aus dem Mechanismus. Die "
+                "Spalte 'Ø realisierte BTC-Quote' zeigt, ob die Strategie über die Zeit "
+                "strukturell mehr Bitcoin trägt als die Startallokation vermuten lässt "
+                "(DCA baut kontinuierlich zu) — ein fairer Vergleich muss das einordnen.")
+
+            st.markdown("##### Unter welchen Bedingungen gewinnt der Mechanismus? — Regime-Test")
+            st.markdown(
+                "<p style='color:#A9B5A4;margin-top:-6px'>Keine handverlesenen "
+                "Bär-/Bullen-Label — das Regime jedes Fensters wird direkt an "
+                "dessen EIGENEM Bitcoin-Verlauf gemessen (Drawdown, Gesamtrendite "
+                "innerhalb des Fensters) und mit dem Delta zwischen Strategie und "
+                "Static-Blend korreliert.</p>", unsafe_allow_html=True)
+
+            agrid["delta_cagr"] = agrid["strat_cagr"] - agrid["bl_cagr"]
+            _corr_dd = agrid["delta_cagr"].corr(agrid["window_btc_maxdd"])
+            _corr_ret = agrid["delta_cagr"].corr(agrid["window_btc_return"])
+
+            figreg = go.Figure()
+            figreg.add_trace(go.Scatter(
+                x=agrid["window_btc_maxdd"] * 100, y=agrid["delta_cagr"] * 100,
+                mode="markers",
+                marker=dict(size=7, color=agrid["alloc"], colorscale=[[0, OAK_SAGE], [1, OAK_GOLD]],
+                           showscale=True, colorbar=dict(title="Alloc.")),
+                name="Fenster"))
+            figreg.add_hline(y=0, line=dict(color=OAK_CREAM_DIM, dash="dot"))
+            figreg.update_xaxes(title_text="Bitcoin Max-Drawdown IM Fenster (%)")
+            figreg.update_yaxes(title_text="Δ CAGR — Strategie minus Static-Blend (pp)")
+            figreg = style_plotly(figreg, height=420)
+            st.plotly_chart(figreg, use_container_width=True)
+            st.caption(
+                f"Korrelation Δ-CAGR ↔ Fenster-Drawdown: {_corr_dd:+.2f} · "
+                f"Δ-CAGR ↔ Fenster-Gesamtrendite: {_corr_ret:+.2f}. "
+                "Punkte rechts der Null-Linie oben = Mechanismus gewinnt; "
+                "Punkte unten = Static-Blend gewinnt.")
+
+            st.markdown("###### Anteil Fenster mit Mechanismus-Vorteil, nach Drawdown-Schwere")
+            _bins = [-1.01, -0.6, -0.4, -0.2, -0.05, 0.01]
+            _labels = ["≤ −60%", "−60% bis −40%", "−40% bis −20%", "−20% bis −5%", "> −5%"]
+            agrid["dd_bucket"] = pd.cut(agrid["window_btc_maxdd"], bins=_bins, labels=_labels)
+            _regime_tbl = agrid.groupby("dd_bucket", observed=True).agg(
+                Median_Delta_CAGR=("delta_cagr", "median"),
+                Anteil_positiv=("delta_cagr", lambda x: (x > 0).mean()),
+                n=("delta_cagr", "size"),
+            ).reset_index()
+            _regime_tbl["Fenster-Drawdown"] = _regime_tbl["dd_bucket"].astype(str)
+            _regime_tbl["Median Δ-CAGR"] = (_regime_tbl["Median_Delta_CAGR"] * 100).round(2).astype(str) + "pp"
+            _regime_tbl["Anteil Fenster mit Vorteil"] = (_regime_tbl["Anteil_positiv"] * 100).round(0).astype(str) + "%"
+            _regime_tbl["Anzahl Fenster"] = _regime_tbl["n"]
+            st.dataframe(_regime_tbl[["Fenster-Drawdown", "Median Δ-CAGR",
+                                      "Anteil Fenster mit Vorteil", "Anzahl Fenster"]],
+                        use_container_width=True, hide_index=True)
+            st.caption(
+                "**Ökonomische Lesart — das ist Versicherungslogik:** in ruhigen/rein "
+                "bullischen Fenstern kostet der Mechanismus eine kleine Prämie (die "
+                "Gewinnmitnahme verpasst etwas Fortsetzung der Rally). In Fenstern mit "
+                "einem echten Bitcoin-Crash gewinnt er häufiger — die Bandlogik hat "
+                "rechtzeitig verkauft bzw. der DCA hat günstiger nachgekauft. Das "
+                "Modell macht ökonomisch dort Sinn, wo Crash-Risiko real eingepreist "
+                "werden soll — nicht als genereller Rendite-Booster über Buy-and-Hold.")
+
+            st.warning(
+                "⚠️ **Provisorisch, solange mit synthetischen Testpfaden gerechnet "
+                "wird**, und Einzelrealisierung eines Bitcoin-Pfads — kein Ersatz für "
+                "die Auswertung mit echten Kursen im Deployment. Höhere Allokationen "
+                "(30–40%) sind hier bewusst zur Exploration eingeschlossen; das sind "
+                "keine Empfehlungen, sondern Datenpunkte für die Positionierungs-"
+                "Entscheidung.")
 
     st.markdown("## Parameter-Sensitivität")
     st.markdown(
