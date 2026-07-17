@@ -626,6 +626,18 @@ with st.sidebar:
     run_btn = st.button("Backtest starten", type="primary", use_container_width=True,
                         disabled=(target_btc_pct >= upper_threshold))
 
+    if st.button("🔄 Cache leeren (bei veralteten Daten/nach Code-Update)",
+                use_container_width=True,
+                help="Leert @st.cache_data — nötig, wenn nach einem Code-Update "
+                     "(z.B. Split-Bereinigung) noch alte Kurse angezeigt werden. "
+                     "Streamlits Cache erkennt Änderungen an Hilfsfunktionen nicht "
+                     "immer zuverlässig. Alternative: 'Manage app' (unten rechts) "
+                     "→ 'Reboot app', das räumt zusätzlich den ganzen Prozess auf."):
+        st.cache_data.clear()
+        st.session_state.pop("smi_has_run", None)
+        st.success("Cache geleert. Bitte Backtest neu starten.")
+        st.rerun()
+
     # Make the backtest "sticky": once run, keep showing results across reruns
     # (e.g. when the user clicks the PDF button) instead of clearing the page.
     if run_btn:
