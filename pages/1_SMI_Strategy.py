@@ -570,6 +570,16 @@ with st.sidebar:
         st.error("Target muss kleiner als Upper Threshold sein.")
         st.stop()
 
+    threshold_check_freq = st.selectbox(
+        "Schwellenprüfung-Frequenz (Bitcoin-Band)",
+        ["Monatlich (Standard)", "Quartalsweise", "Halbjährlich"], index=0,
+        help="Wie oft wird geprüft, ob Bitcoin die obere Schwelle überschritten "
+             "hat? Unabhängig von der DCA-Käufe (die laufen immer monatlich) "
+             "und unabhängig vom Aktien-Rebalancing unten. Seltener prüfen "
+             "erlaubt mehr Drift über der Schwelle zwischen den Terminen, "
+             "dafür weniger Transaktionen. Standard = jeden Monatsultimo, "
+             "das historisch verifizierte Design.")
+
     st.markdown("### Aktien-Sleeve")
     weighting_method = st.radio("SMI Gewichtung",
         ["Marktkapitalisierung (Approx. + 18% Cap)", "Equal Weight (5 % je Titel)"])
@@ -877,9 +887,19 @@ def get_rebalance_dates(idx, freq):
 def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                  initial_capital, weights,
                  initial_btc_pct, upper_threshold, target_btc_pct,
-                 rebalance_dates_set, dca_months, tx_cost_bps=0.0):
+                 rebalance_dates_set, dca_months, tx_cost_bps=0.0,
+                 threshold_check_dates_set=None):
     """Integrated daily simulation.
     Returns: timeseries_df, transactions_df, threshold_events_df
+
+    threshold_check_dates_set: dates on which the Bitcoin band (upper_threshold
+    -> target_btc_pct) is evaluated. Defaults to EVERY month-end (None ->
+    falls back to month_ends below), matching the original verified design
+    (documented decision: "Rebalancing: Quarterly (SMI) · Monthly (BTC
+    check)"). Pass a coarser date set (e.g. via get_rebalance_dates) to check
+    less often — this only changes HOW OFTEN the band is evaluated, never
+    whether DCA purchases happen (DCA always executes at every month-end,
+    independent of this parameter).
 
     tx_cost_bps: round-trip transaction cost in basis points applied to the
     traded notional at each trade (initial buy, DCA buys, threshold sells, and
@@ -1040,6 +1060,13 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
         # 2. Month-end: execute DCA buys
         is_month_end = d in month_ends
+        # Threshold-check cadence is INDEPENDENT of the DCA cadence. Defaults
+        # to every month-end (the original verified design) unless a coarser
+        # date set is supplied.
+        is_threshold_check_day = (
+            is_month_end if threshold_check_dates_set is None
+            else d in threshold_check_dates_set
+        )
         if is_month_end and pending_dca:
             total_dca_chf = sum(e["monthly_chf"] for e in pending_dca
                                 if e["remaining"] > 0)
@@ -1067,8 +1094,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     "usd_amount": usd, "btc_price_usd": btc_price_d, "usdchf": fx_d,
                 })
 
-        # 3. Threshold check (after DCA at month-end)
-        if is_month_end and btc_price_d and fx_d and fx_d > 0:
+        # 3. Threshold check (independent cadence, default = month-end)
+        if is_threshold_check_day and btc_price_d and fx_d and fx_d > 0:
             smi_value = _smi_value_on(d, row)
             btc_value_chf = btc_held * btc_price_d * fx_d
             total = smi_value + btc_value_chf + dividend_cash
@@ -1708,13 +1735,19 @@ if _show_results:
             weights = {t: w / total_w * 100.0 for t, w in weights.items()}
 
     rebal_dates = get_rebalance_dates(prices.index, rebalance_freq)
+    _tcf_map = {"Monatlich (Standard)": None, "Quartalsweise": "Quartalsweise",
+                "Halbjährlich": "Halbjährlich"}
+    _tcf = _tcf_map[threshold_check_freq]
+    threshold_dates = (None if _tcf is None
+                       else get_rebalance_dates(prices.index, _tcf))
 
     with st.spinner("Running integrated simulation ..."):
         ts, txs, evts = run_strategy(
             prices, divs, btc_series, fx,
             initial_capital, weights,
             initial_btc_pct, upper_threshold, target_btc_pct,
-            rebal_dates, dca_months, tx_cost_bps=tx_cost_bps
+            rebal_dates, dca_months, tx_cost_bps=tx_cost_bps,
+            threshold_check_dates_set=threshold_dates,
         )
 
     if ts is None or ts.empty or "total_value" not in ts.columns:
