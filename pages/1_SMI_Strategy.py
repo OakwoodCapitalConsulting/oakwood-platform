@@ -2342,6 +2342,178 @@ if _show_results:
         fig_yr.update_yaxes(title_text="Annual Return (Net)", ticksuffix="%")
         st.plotly_chart(fig_yr, use_container_width=True)
 
+    # ======================================================================
+    # KALIBRIERUNG — Datenfenster-Wahl (Start-Sensitivität)
+    # Beantwortet regelbasiert, welcher Backtest-Startpunkt verwendet werden
+    # soll — nicht per Augenmass, sondern über zwei mechanische Tests:
+    #   A) Anker-Extremität: liegt der Startpunkt selbst an einem lokalen
+    #      Kurs-Extrem (Hoch oder Tief)? Das würde die daraus resultierenden
+    #      rollierenden Fenster systematisch verzerren.
+    #   B) Stabilität: bleibt der Regime-Befund (Δ-CAGR in Crash-Fenstern)
+    #      über verschiedene Kandidaten-Startdaten stabil, oder kippt er?
+    # Regel: frühester Kandidat, der (A) nicht extrem ist UND (B) im stabilen
+    # Bereich liegt — maximiert die Anzahl nutzbarer Fenster, ohne Verzerrung.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Kalibrierung — Datenfenster-Wahl (Start-Sensitivität)")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Der Backtest-Startpunkt wird "
+        "hier selbst regelbasiert bestimmt, nicht per Augenmass — sonst wäre "
+        "die Kalibrierung an ihrer eigenen Wurzel diskretionär. Zwei Tests: "
+        "(A) liegt ein Kandidat-Startdatum an einem lokalen Kurs-Extrem? "
+        "(B) bleibt der Regime-Befund stabil, egal welcher nicht-extreme "
+        "Kandidat gewählt wird? Empfehlung = frühester Kandidat, der beide "
+        "Tests besteht — maximiert die Fensterzahl, ohne Anker-Verzerrung.</p>",
+        unsafe_allow_html=True)
+
+    def _anchor_percentile(_btc, cand_date, lookback_m=18, lookahead_m=18):
+        lo = pd.Timestamp(cand_date) - pd.DateOffset(months=lookback_m)
+        hi = pd.Timestamp(cand_date) + pd.DateOffset(months=lookahead_m)
+        seg = _btc[(_btc.index >= lo) & (_btc.index <= hi)]
+        if seg.empty:
+            return np.nan
+        idx_le = _btc.index[_btc.index <= pd.Timestamp(cand_date)]
+        if len(idx_le) == 0:
+            return np.nan
+        p = _btc.loc[idx_le[-1]]
+        return float((seg < p).mean())
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_start_date_sensitivity(_prices, _divs, _btc, _fx, _weights, cap,
+                                       candidates, allocs, band_width, win_years,
+                                       step_months, dd_crash_threshold):
+        """Für jeden Kandidaten-Startpunkt: (A) Anker-Perzentil, (B) Regime-
+        Befund (Median Δ-CAGR und %-positiv in Fenstern mit schwerem
+        BTC-Drawdown), auf den Daten AB diesem Startpunkt."""
+        full_all = _prices.index
+        rows = []
+        for cand in candidates:
+            anchor_pct = _anchor_percentile(_btc, cand)
+            full = full_all[full_all >= pd.Timestamp(cand)]
+            if len(full) < 400:
+                rows.append({"start": cand, "anchor_pct": anchor_pct,
+                            "n_windows": 0, "n_crash": 0,
+                            "median_delta": np.nan, "pos_pct": np.nan})
+                continue
+            starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                                   freq=f"{step_months}MS")
+            deltas, dds = [], []
+            for alloc in allocs:
+                target = alloc
+                upper = min(alloc + band_width, 0.95)
+                for s in starts:
+                    e = s + pd.DateOffset(years=win_years)
+                    w = full[(full >= s) & (full <= e)]
+                    if len(w) < 300:
+                        continue
+                    try:
+                        _ts, _, _ = run_strategy(
+                            _prices.loc[w], _divs, _btc, _fx,
+                            initial_capital=cap, weights=_weights,
+                            initial_btc_pct=alloc, upper_threshold=upper,
+                            target_btc_pct=target, rebalance_dates_set=set(),
+                            dca_months=12, tx_cost_bps=10.0)
+                        _bl = run_static_blend(_prices.loc[w], _divs, _btc, _fx,
+                                               cap, _weights, alloc)
+                    except Exception:
+                        continue
+                    if _ts.empty or _bl.empty:
+                        continue
+                    rm_s = risk_metrics(_ts["total_value"])
+                    rm_b = risk_metrics(_bl["total_value"])
+                    seg = _btc.loc[w]
+                    dd = float((seg / seg.cummax() - 1.0).min())
+                    deltas.append(rm_s["cagr"] - rm_b["cagr"])
+                    dds.append(dd)
+            _d = pd.Series(deltas); _dd = pd.Series(dds)
+            _crash_mask = _dd <= -dd_crash_threshold
+            _n_crash = int(_crash_mask.sum())
+            _med = float(_d[_crash_mask].median()) if _n_crash else np.nan
+            _pos = float((_d[_crash_mask] > 0).mean()) if _n_crash else np.nan
+            rows.append({"start": cand, "anchor_pct": anchor_pct,
+                        "n_windows": len(_d), "n_crash": _n_crash,
+                        "median_delta": _med, "pos_pct": _pos})
+        return pd.DataFrame(rows)
+
+    dw1, dw2, dw3 = st.columns(3)
+    with dw1:
+        _dw_earliest = st.selectbox("Früheste Kandidatin", [2013, 2014, 2015], index=0,
+                                    key="smi_dw_earliest")
+    with dw2:
+        _dw_dd = st.slider("Crash-Schwelle für den Regime-Test (%)", 20, 60, 40, 5,
+                           key="smi_dw_dd") / 100.0
+    with dw3:
+        st.caption("")
+        _dwgo = st.button("Datenfenster-Test starten", key="smi_dw_go")
+
+    if _dwgo:
+        st.session_state["smi_dw_has_run"] = True
+
+    if st.session_state.get("smi_dw_has_run"):
+        _dw_candidates = [f"{y}-01-01" for y in range(_dw_earliest, 2021)]
+        with st.spinner("Teste Kandidaten-Startdaten (Anker-Extremität + "
+                         "Regime-Stabilität)…"):
+            dwres = compute_start_date_sensitivity(
+                prices, divs, btc_series, fx, weights, initial_capital,
+                _dw_candidates, [0.10, 0.20], 0.10, 3, 12, _dw_dd)
+
+        if dwres.empty:
+            st.warning("Zu wenig Daten für den Sensitivitätstest.")
+        else:
+            dwres["extreme"] = (dwres["anchor_pct"] < 0.15) | (dwres["anchor_pct"] > 0.85)
+
+            st.markdown("##### Schritt A — Anker-Extremität je Kandidat")
+            _dispA = dwres.copy()
+            _dispA["Startdatum"] = _dispA["start"]
+            _dispA["Lokales Perzentil"] = (_dispA["anchor_pct"] * 100).round(1).astype(str) + "%"
+            _dispA["Status"] = _dispA["extreme"].map({True: "⚑ extrem", False: "ok"})
+            st.dataframe(_dispA[["Startdatum", "Lokales Perzentil", "Status"]],
+                        use_container_width=True, hide_index=True)
+
+            st.markdown("##### Schritt B — Stabilität des Regime-Befunds je Kandidat")
+            figdw = go.Figure()
+            figdw.add_trace(go.Scatter(
+                x=dwres["start"], y=dwres["median_delta"] * 100, mode="markers+lines",
+                marker=dict(size=10, color=[OAK_BTC if e else OAK_GOLD for e in dwres["extreme"]]),
+                line=dict(color=OAK_SAGE, dash="dot"), name="Median Δ-CAGR in Crash-Fenstern"))
+            figdw.add_hline(y=0, line=dict(color=OAK_CREAM_DIM, dash="dot"))
+            figdw.update_xaxes(title_text="Kandidat-Startdatum")
+            figdw.update_yaxes(title_text="Median Δ-CAGR in Crash-Fenstern (pp)")
+            figdw = style_plotly(figdw, height=360)
+            st.plotly_chart(figdw, use_container_width=True)
+            st.caption("Orange = nicht-extreme Kandidaten, Bitcoin-orange = an Schritt A "
+                       "gescheitert. Flach über mehrere Kandidaten = stabil.")
+
+            _eligible = dwres[~dwres["extreme"] & dwres["n_crash"].ge(3)]
+            if _eligible.empty:
+                st.error("⚠️ Kein Kandidat besteht beide Tests — Zeitraum oder "
+                         "Crash-Schwelle anpassen.")
+            else:
+                # Stability check: is the eligible set's median_delta range tight?
+                _spread = _eligible["median_delta"].max() - _eligible["median_delta"].min()
+                _rec = _eligible.iloc[0]  # earliest eligible (candidates already sorted ascending)
+                r1, r2, r3 = st.columns(3)
+                with r1:
+                    st.metric("Empfohlenes Startdatum", _rec["start"])
+                    st.caption("frühester Kandidat, der beide Tests besteht")
+                with r2:
+                    st.metric("Nutzbare Fenster", int(_rec["n_windows"]))
+                with r3:
+                    st.metric("Streuung über stabile Kandidaten", f"{_spread*100:.2f}pp")
+                    st.caption("klein = Befund robust gegen Startdatum-Wahl")
+                st.info(
+                    f"**Regel angewendet:** {_rec['start']} ist der früheste Kandidat "
+                    f"ohne Anker-Extremität (Schritt A) innerhalb der Kandidaten, deren "
+                    f"Regime-Befund sich um höchstens die oben gezeigte Streuung "
+                    f"unterscheidet (Schritt B). Für den weiteren Live-Test diesen Wert "
+                    "als Backtest-Startdatum in der Sidebar übernehmen.")
+
+        st.warning(
+            "⚠️ **Provisorisch, solange mit synthetischen Testpfaden gerechnet "
+            "wird.** Im Deployment mit echten Kursen automatisch neu bestimmt — "
+            "diese Sektion sollte bei jeder grösseren Neukalibrierung erneut "
+            "laufen, nicht nur einmalig.")
+
     # =====================================================================
     # Parameter Sensitivity Analysis (Heatmap)
     # =====================================================================
