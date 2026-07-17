@@ -2938,6 +2938,189 @@ if _show_results:
                 "keine Empfehlungen, sondern Datenpunkte für die Positionierungs-"
                 "Entscheidung.")
 
+    # ======================================================================
+    # KALIBRIERUNG — Optimales Risiko/Rendite-Profil (Sharpe/Calmar-Grid)
+    # Andere Zielfunktion als der Alpha-Test oben: nicht "schlägt der
+    # Mechanismus Buy-and-Hold" (beantwortet), sondern "welche Kombination
+    # aus Startallokation × Bandbreite × DCA-Fenster liefert das beste
+    # Rendite-pro-Risiko-Verhältnis, ohne das Upside künstlich zu kappen".
+    # Sharpe/Calmar statt fixer Downside-Constraints, weil das Risiko und
+    # Rendite gleichzeitig gewichtet statt eine willkürliche Präferenz
+    # festzulegen. Rebalancing-Frequenz, Gewichtung, Kosten und Gebühren
+    # bleiben fixiert, um die drei eigentlichen Hebel isoliert zu testen.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Kalibrierung — Optimales Risiko/Rendite-Profil")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Zielfunktion: höchste "
+        "risikoadjustierte Rendite (Sharpe/Calmar), NICHT höchste Rendite "
+        "und NICHT primär Downside-Schutz. Rastert Startallokation × "
+        "Bandbreite × Ernte-/DCA-Fenster; Schwellenprüfung-Frequenz, "
+        "Aktien-Rebalancing, Gewichtung, Kosten und Gebühren bleiben auf "
+        "dem aktuellen Sidebar-Wert fixiert, um die drei eigentlichen Hebel "
+        "isoliert zu testen.</p>", unsafe_allow_html=True)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_smi_sharpe_grid(_prices, _divs, _btc, _fx, _weights, cap,
+                                allocs, widths, dca_opts, txbps,
+                                win_years, step_months, max_dd_ceiling):
+        full = _prices.index
+        if len(full) < 400:
+            return pd.DataFrame()
+        starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                               freq=f"{step_months}MS")
+        rows = []
+        for alloc in allocs:
+            for width in widths:
+                target = alloc
+                upper = min(alloc + width, 0.95)
+                for dca_m in dca_opts:
+                    for s in starts:
+                        e = s + pd.DateOffset(years=win_years)
+                        w = full[(full >= s) & (full <= e)]
+                        if len(w) < 300:
+                            continue
+                        try:
+                            _ts, _, _ = run_strategy(
+                                _prices.loc[w], _divs, _btc, _fx,
+                                initial_capital=cap, weights=_weights,
+                                initial_btc_pct=alloc, upper_threshold=upper,
+                                target_btc_pct=target, rebalance_dates_set=set(),
+                                dca_months=dca_m, tx_cost_bps=txbps)
+                        except Exception:
+                            continue
+                        if _ts.empty:
+                            continue
+                        _rm = risk_metrics(_ts["total_value"])
+                        _att = _ts.attrs.get("attribution", {})
+                        rows.append({
+                            "alloc": alloc, "width": width, "dca_m": dca_m, "start": s,
+                            "cagr": _rm["cagr"], "vol": _rm["vol"],
+                            "sharpe": _rm["sharpe"], "max_dd": _rm["max_dd"],
+                            "calmar": _rm["calmar"], "dca_share": _att.get("dca_share", np.nan),
+                        })
+        return pd.DataFrame(rows)
+
+    sh1, sh2, sh3, sh4 = st.columns(4)
+    with sh1:
+        _shw = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0, key="smi_sh_win")
+    with sh2:
+        _shstep = st.selectbox("Fenster-Schritt", ["halbjährlich", "quartalsweise"],
+                               index=0, key="smi_sh_step")
+    with sh3:
+        _dd_ceiling = st.slider("Max-Drawdown-Obergrenze (%)", 20, 80, 45, 5,
+                                key="smi_sh_ddc",
+                                help="Kombinationen mit einem schlechteren Max-"
+                                     "Drawdown (Median über alle Fenster) als "
+                                     "diese Obergrenze werden ausgeschlossen.") / 100.0
+    with sh4:
+        st.caption("")
+        _shgo = st.button("Risiko/Rendite-Grid starten", key="smi_sh_go")
+
+    if _shgo:
+        st.session_state["smi_sh_has_run"] = True
+
+    if st.session_state.get("smi_sh_has_run"):
+        _sh_allocs = [0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
+        _sh_widths = [0.05, 0.10, 0.15, 0.20]
+        _sh_dca = [6, 12, 18, 24]
+        _sh_sm = 6 if _shstep == "halbjährlich" else 3
+
+        with st.spinner("Rechne Startallokation × Bandbreite × DCA-Fenster über "
+                         "alle rollierenden Fenster… (grosses Grid, kann mehrere "
+                         "Minuten dauern)"):
+            shgrid = compute_smi_sharpe_grid(
+                prices, divs, btc_series, fx, weights, initial_capital,
+                _sh_allocs, _sh_widths, _sh_dca, tx_cost_bps, _shw, _sh_sm,
+                _dd_ceiling)
+
+        if shgrid.empty:
+            st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
+        else:
+            _shn = shgrid["start"].nunique()
+            st.caption(f"{len(shgrid):,} Engine-Läufe · {shgrid.groupby(['alloc','width','dca_m']).ngroups} "
+                       f"Parameterkombinationen × {_shn} rollierende {_shw}-Jahres-Fenster · "
+                       "Gebühren nicht angewendet (Mechanismus isoliert getestet)")
+
+            shsumm = shgrid.groupby(["alloc", "width", "dca_m"]).agg(
+                Median_CAGR=("cagr", "median"), Median_Vol=("vol", "median"),
+                Median_Sharpe=("sharpe", "median"), Median_Calmar=("calmar", "median"),
+                Median_MaxDD=("max_dd", "median"), Median_DCA=("dca_share", "median"),
+            ).reset_index()
+            shsumm["feasible"] = shsumm["Median_MaxDD"] >= -_dd_ceiling
+            shsumm = shsumm.sort_values("Median_Sharpe", ascending=False)
+            _n_feas = int(shsumm["feasible"].sum())
+
+            st.caption(f"**{_n_feas} von {len(shsumm)}** Kombinationen innerhalb der "
+                       f"Drawdown-Obergrenze ({_dd_ceiling*100:.0f}%)")
+
+            if _n_feas == 0:
+                st.error("⚠️ Keine Kombination bleibt unter der gewählten Drawdown-"
+                         "Obergrenze. Obergrenze lockern oder Bandbreite/Allokation "
+                         "enger fassen.")
+            else:
+                _best = shsumm[shsumm["feasible"]].iloc[0]
+                b1, b2, b3, b4, b5 = st.columns(5)
+                with b1:
+                    st.metric("Beste Startallokation", f"{_best['alloc']*100:.1f}%")
+                with b2:
+                    st.metric("Beste Bandbreite", f"{_best['width']*100:.0f}pp")
+                with b3:
+                    st.metric("Bestes DCA-Fenster", f"{_best['dca_m']:.0f} Mte")
+                with b4:
+                    st.metric("Sharpe (Median)", f"{_best['Median_Sharpe']:.2f}")
+                with b5:
+                    st.metric("Calmar (Median)", f"{_best['Median_Calmar']:.2f}")
+                st.caption(
+                    f"Median-CAGR {_best['Median_CAGR']*100:.1f}% · Median-Vol "
+                    f"{_best['Median_Vol']*100:.1f}% · Median-MaxDD "
+                    f"{_best['Median_MaxDD']*100:.1f}% · DCA-Anteil "
+                    f"{_best['Median_DCA']*100:.0f}% — höchste Sharpe Ratio unter "
+                    "allen Kombinationen, die die Drawdown-Obergrenze einhalten.")
+
+                st.markdown("##### Top 10 nach Sharpe Ratio (innerhalb der Drawdown-Obergrenze)")
+                _disp = shsumm[shsumm["feasible"]].head(10).copy()
+                _disp["Startallokation"] = (_disp["alloc"] * 100).round(1).astype(str) + "%"
+                _disp["Bandbreite"] = (_disp["width"] * 100).round(0).astype(int).astype(str) + "pp"
+                _disp["DCA-Fenster"] = _disp["dca_m"].astype(int).astype(str) + " Mte"
+                _disp["CAGR"] = (_disp["Median_CAGR"] * 100).round(2).astype(str) + "%"
+                _disp["Vol"] = (_disp["Median_Vol"] * 100).round(2).astype(str) + "%"
+                _disp["Sharpe"] = _disp["Median_Sharpe"].round(2)
+                _disp["Calmar"] = _disp["Median_Calmar"].round(2)
+                _disp["MaxDD"] = (_disp["Median_MaxDD"] * 100).round(1).astype(str) + "%"
+                _disp["DCA-Anteil"] = (_disp["Median_DCA"] * 100).round(0).astype(str) + "%"
+                st.dataframe(_disp[["Startallokation", "Bandbreite", "DCA-Fenster",
+                                    "CAGR", "Vol", "Sharpe", "Calmar", "MaxDD", "DCA-Anteil"]],
+                            use_container_width=True, hide_index=True)
+
+                st.markdown("##### Sharpe Ratio nach Startallokation und Bandbreite (bestes DCA-Fenster je Zelle)")
+                _best_per_cell = shgrid.groupby(["alloc", "width"]).apply(
+                    lambda g: g.groupby("dca_m")["sharpe"].median().max(),
+                    include_groups=False).reset_index(name="best_sharpe")
+                _piv = _best_per_cell.pivot(index="alloc", columns="width", values="best_sharpe")
+                figsh = go.Figure(data=go.Heatmap(
+                    z=_piv.values,
+                    x=[f"{v*100:.0f}pp" for v in _piv.columns],
+                    y=[f"{a*100:.1f}%" for a in _piv.index],
+                    colorscale=[[0, OAK_GREEN_2], [0.5, OAK_SAGE], [1, OAK_GOLD]],
+                    text=[[f"{v:.2f}" for v in r] for r in _piv.values],
+                    texttemplate="%{text}", showscale=False))
+                figsh.update_xaxes(title_text="Bandbreite", type="category")
+                figsh.update_yaxes(title_text="Startallokation BTC", type="category")
+                figsh = style_plotly(figsh, height=340)
+                st.plotly_chart(figsh, use_container_width=True)
+                st.caption(
+                    "Bestes Sharpe-Ratio über alle getesteten DCA-Fenster je Zelle. "
+                    "Kein Downside-Constraint hier — nur die Drawdown-Obergrenze oben. "
+                    "Das Upside wird nicht künstlich gekappt: eine hohe Startallokation "
+                    "mit entsprechend hoher Rendite bleibt zulässig, solange der "
+                    "Drawdown unter der Obergrenze bleibt.")
+
+        st.warning(
+            "⚠️ **Provisorisch, solange mit synthetischen Testpfaden gerechnet "
+            "wird.** Grosses Grid — im Deployment mit echten Kursen entsprechend "
+            "länger laufend, aber derselbe Code, dieselbe Zielfunktion.")
+
     st.markdown("## Parameter-Sensitivität")
     st.markdown(
         f"<p style='color:{OAK_CREAM_DIM}; font-size:13px;'>"
