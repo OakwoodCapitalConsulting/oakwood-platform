@@ -715,6 +715,14 @@ def _apply_split_adjustment(raw_close, splits):
     except (AttributeError, TypeError):
         pass
     s = s[s > 0]
+    # SICHERHEITSNETZ: eine reale Aktiensplit-Ratio liegt praktisch immer im
+    # Bereich 0.05–20 (2:1, 3:1, 5:1, 10:1 oder deren Kehrwert bei Reverse-
+    # Splits). Alles ausserhalb ist mit sehr hoher Wahrscheinlichkeit ein
+    # Datenfehler des Anbieters (z.B. eine falsch gemeldete/doppelte Split-
+    # Ratio), keine echte Kapitalmassnahme — wird ignoriert statt blind
+    # angewendet, um keinen künstlichen Kurssprung zu erzeugen (siehe die
+    # Ausreisser-Diagnose weiter unten für den konkreten Nachweis je Titel).
+    s = s[(s >= 0.05) & (s <= 20)]
     if s.empty:
         return raw_close.copy()
     factor = pd.Series(1.0, index=raw_close.index)
@@ -1903,8 +1911,42 @@ if _show_results:
         if _outlier_rows:
             _odf = pd.DataFrame(_outlier_rows)
             st.error(f"⚠️ **{len(_odf)} auffällige Tagesbewegung(en) gefunden** — "
-                     "vor der weiteren Kalibrierung prüfen.")
+                     "vor der weiteren Kalibrierung prüfen. Nicht jeder Treffer ist "
+                     "ein Fehler: eine reale Kapitalmassnahme (Spin-off, Fusion) oder "
+                     "ein historisch dokumentierter Markt-Crash können ebenfalls "
+                     "grosse, aber ECHTE Tagesbewegungen erzeugen.")
             st.dataframe(_odf, use_container_width=True, hide_index=True)
+
+            # Für jeden auffälligen AKTIENTITEL (nicht BTC/FX) zusätzlich die
+            # ROHEN Split-Ereignisse zeigen, die Yahoo für diesen Ticker meldet —
+            # damit sichtbar wird, ob eine Split-Ratio die Ursache ist, statt es
+            # zu vermuten.
+            _flagged_tickers = sorted(set(
+                r["Ticker"] for r in _outlier_rows if r["Ticker"] != "—"))
+            if _flagged_tickers:
+                st.markdown("###### Rohe Split-Ereignisse der auffälligen Titel (Yahoo Finance)")
+                for _ft in _flagged_tickers:
+                    _sp = _get_split_series(_ft)
+                    _fname = SMI_CONSTITUENTS.get(_ft, (_ft,))[0]
+                    if _sp is None or _sp.empty:
+                        st.caption(f"**{_fname} ({_ft})**: keine Split-Ereignisse in den "
+                                   "Yahoo-Finance-Daten gefunden — die Ursache liegt dann "
+                                   "vermutlich nicht bei der Split-Bereinigung.")
+                    else:
+                        _spdf = pd.DataFrame({
+                            "Datum": [d.strftime("%Y-%m-%d") for d in _sp.index],
+                            "Gemeldete Split-Ratio": [float(v) for v in _sp.values],
+                        })
+                        st.caption(f"**{_fname} ({_ft})** — {len(_sp)} gemeldete(s) "
+                                   "Split-Ereignis(se):")
+                        st.dataframe(_spdf, use_container_width=True, hide_index=True)
+                        _implausible = _sp[(_sp > 10) | ((_sp > 0) & (_sp < 0.1))]
+                        if not _implausible.empty:
+                            st.warning(
+                                f"⚑ Ratio {_implausible.values[0]:.2f} für {_fname} ist "
+                                "für einen realen Aktiensplit unplausibel (übliche Ratios: "
+                                "2, 3, 5, 10 oder deren Kehrwert). Wahrscheinlich ein "
+                                "Datenfehler des Anbieters, keine echte Kapitalmassnahme.")
         else:
             st.success("Keine Tagesbewegung über der Schwelle gefunden.")
 
