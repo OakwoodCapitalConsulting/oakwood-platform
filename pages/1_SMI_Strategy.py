@@ -866,14 +866,28 @@ def fetch_series(ticker, start, end):
 # Integrated Strategy Simulation
 # ---------------------------------------------------------------------------
 def get_rebalance_dates(idx, freq):
+    """Rebalance-Kalender für den SMI-Aktienkern.
+
+    KORREKTUR: SIX überprüft die SMI-ZUSAMMENSETZUNG nur einmal jährlich, am
+    dritten Freitag im SEPTEMBER (nicht Dezember, wie zuvor hier gesetzt) —
+    das ist der reale Termin, an dem Indexmitglieder wechseln. Die 18%-
+    Gewichtskappung läuft laut SIX-Methodik separat quartalsweise (März/
+    Juni/September/Dezember), ist aber eine reine Kappungs-Korrektur für
+    Titel über 18%, kein volles Zurücksetzen auf Zielgewichte — unser
+    "Quartalsweise" resettet dagegen ALLE Gewichte, was näher an einem
+    vereinfachten Constant-Mix-Rebalancing liegt als an der echten SIX-
+    Mechanik. Für Genauigkeit daher "Jährlich" (September) empfohlen; die
+    quartalsweise Cap-only-Korrektur ist als offener Verfeinerungspunkt in
+    Abschnitt 9 des Reglements vermerkt, nicht hier implementiert.
+    """
     if freq == "Keine":
         return set()
     if freq == "Quartalsweise":
         months = {3, 6, 9, 12}
     elif freq == "Halbjährlich":
-        months = {6, 12}
+        months = {3, 9}
     else:
-        months = {12}
+        months = {9}   # Jährlich = September, wie bei SIX (war: Dezember)
     out = set()
     df = pd.DataFrame(index=idx)
     df["ym"] = df.index.to_period("M")
