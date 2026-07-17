@@ -1968,7 +1968,13 @@ if _show_results:
                         # beobachteten Kurssprung im Rohdatensatz erklärt. Derselbe
                         # Test wie in _apply_split_adjustment, hier nur zur Anzeige.
                         _raw_t = prices[_ft] if _ft in prices.columns else None
-                        for _d, _r in _sp.items():
+                        _sp_naive = _sp.copy()
+                        try:
+                            if _sp_naive.index.tz is not None:
+                                _sp_naive.index = _sp_naive.index.tz_localize(None)
+                        except (AttributeError, TypeError):
+                            pass
+                        for _d, _r in _sp_naive.items():
                             if _raw_t is None:
                                 continue
                             _before = _raw_t[_raw_t.index < _d]
