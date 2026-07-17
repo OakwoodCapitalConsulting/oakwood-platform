@@ -657,7 +657,68 @@ def _download_with_retry(tickers, start, end, attempts=3):
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
+def _get_split_series(ticker_symbol):
+    """Fetch stock-split events (ratio per split date), independent of
+    dividends. Mirrors _get_dividend_series' fallback chain for robustness
+    across yfinance versions."""
+    tk = yf.Ticker(ticker_symbol)
+    try:
+        splits = tk.splits
+        if splits is not None and not splits.empty:
+            return splits
+    except Exception:
+        pass
+    try:
+        hist = tk.history(period="max", actions=True, auto_adjust=False)
+        if hist is not None and not hist.empty and "Stock Splits" in hist.columns:
+            s = hist["Stock Splits"]
+            s = s[s > 0]
+            if not s.empty:
+                return s
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
+
+def _apply_split_adjustment(raw_close, splits):
+    """Adjust a RAW (unadjusted) Close series for stock splits ONLY.
+
+    CRITICAL: dividends are deliberately NOT adjusted for here. The strategy
+    extracts real per-share dividend cash separately (fetch_dividends /
+    div_lookup) to fund the Bitcoin DCA — that cash must be the ONLY place
+    the dividend shows up. Yahoo's "Adj Close" bakes dividends into the price
+    itself (as if reinvested into the same stock), which would credit every
+    dividend TWICE: once as phantom price appreciation, once as harvested
+    cash. Splits are cosmetic (no economic value change) and must still be
+    adjusted, or a real split creates a fake overnight NAV collapse.
+
+    Convention matches Yahoo's own split methodology: prices strictly BEFORE
+    a split date are divided by the cumulative product of all split ratios
+    that occur after them, so the series is continuous across the split.
+    """
+    if splits is None or splits.empty:
+        return raw_close.copy()
+    s = splits.copy()
+    try:
+        if s.index.tz is not None:
+            s.index = s.index.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+    s = s[s > 0]
+    if s.empty:
+        return raw_close.copy()
+    factor = pd.Series(1.0, index=raw_close.index)
+    for split_date, ratio in s.items():
+        factor.loc[factor.index < split_date] *= float(ratio)
+    return raw_close / factor
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_prices(tickers, start, end):
+    # IMPORTANT: use RAW "Close", never "Adj Close". Adj Close is adjusted for
+    # BOTH dividends and splits — using it here would double-count every
+    # dividend (see _apply_split_adjustment docstring). We adjust for splits
+    # only, explicitly, below, and leave dividends to fetch_dividends().
     data = _download_with_retry(tickers, start, end)
     cols = {}
     if data is not None and not data.empty:
@@ -667,16 +728,13 @@ def fetch_prices(tickers, start, end):
                 if t in level0:
                     try:
                         sub = data[t]
-                        if "Adj Close" in sub.columns:
-                            cols[t] = sub["Adj Close"]
-                        elif "Close" in sub.columns:
+                        if "Close" in sub.columns:
                             cols[t] = sub["Close"]
                     except Exception:
                         pass
         else:
-            col = "Adj Close" if "Adj Close" in data.columns else "Close"
-            if col in data.columns:
-                cols[tickers[0]] = data[col]
+            if "Close" in data.columns:
+                cols[tickers[0]] = data["Close"]
 
     # Per-ticker fallback for any ticker the batch download missed
     # (rate-limited tickers often succeed on an individual retry)
@@ -689,19 +747,29 @@ def fetch_prices(tickers, start, end):
             if single is not None and not single.empty:
                 if isinstance(single.columns, pd.MultiIndex):
                     single.columns = single.columns.get_level_values(0)
-                if "Adj Close" in single.columns:
-                    cols[t] = single["Adj Close"]
-                elif "Close" in single.columns:
+                if "Close" in single.columns:
                     cols[t] = single["Close"]
         except Exception:
             pass
 
     if not cols:
         return pd.DataFrame()
+
+    # Split-adjust each raw Close series independently (dividends untouched).
+    for t in list(cols.keys()):
+        try:
+            raw = _clean_index(cols[t].dropna())
+            splits = _get_split_series(t)
+            cols[t] = _apply_split_adjustment(raw, splits)
+        except Exception:
+            pass  # fall back to the raw (unsplit-adjusted) series rather than drop the ticker
+
     out = pd.DataFrame(cols)
     out = _clean_index(out)
     out = out.dropna(axis=1, how="all")
     return out.dropna(how="all")
+
+
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
