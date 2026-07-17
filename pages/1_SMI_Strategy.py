@@ -715,19 +715,41 @@ def _apply_split_adjustment(raw_close, splits):
     except (AttributeError, TypeError):
         pass
     s = s[s > 0]
-    # SICHERHEITSNETZ: eine reale Aktiensplit-Ratio liegt praktisch immer im
-    # Bereich 0.05–20 (2:1, 3:1, 5:1, 10:1 oder deren Kehrwert bei Reverse-
-    # Splits). Alles ausserhalb ist mit sehr hoher Wahrscheinlichkeit ein
-    # Datenfehler des Anbieters (z.B. eine falsch gemeldete/doppelte Split-
-    # Ratio), keine echte Kapitalmassnahme — wird ignoriert statt blind
-    # angewendet, um keinen künstlichen Kurssprung zu erzeugen (siehe die
-    # Ausreisser-Diagnose weiter unten für den konkreten Nachweis je Titel).
-    s = s[(s >= 0.05) & (s <= 20)]
     if s.empty:
         return raw_close.copy()
-    factor = pd.Series(1.0, index=raw_close.index)
+    # VALIDIERUNG PER KONTINUITÄT, nicht per Ratio-Grössenordnung. Eine frühere
+    # Fassung verwarf Ratios ausserhalb 0.05–20 als "unplausibel" — das war
+    # eine ungeprüfte Annahme und FALSCH: Sika führte am 13./14. Juni 2018
+    # einen realen, gut dokumentierten 60:1-Split durch (Bareaktien-Split im
+    # Zuge der Saint-Gobain/Burkard-Übernahmeschlacht, bestätigt u.a. durch
+    # die Eurex-Corporate-Action-Meldung und Sikas eigene Investor-Relations-
+    # Daten). Ein Grössen-Schwellenwert hätte diesen echten Split verworfen.
+    # Stattdessen: für jede gemeldete Split-Ratio prüfen, ob sie tatsächlich
+    # den beobachteten Kurssprung im ROHDATENSATZ erklärt (implizite Ratio =
+    # Kurs davor / Kurs danach, verglichen mit der gemeldeten Ratio). Erklärt
+    # sie ihn (auch bei sehr hoher Ratio wie 60), wird sie angewendet —
+    # unabhängig von ihrer Grösse. Erklärt sie ihn NICHT, ist sie vermutlich
+    # ein Datenfehler und wird verworfen.
+    valid = {}
     for split_date, ratio in s.items():
-        factor.loc[factor.index < split_date] *= float(ratio)
+        before = raw_close[raw_close.index < split_date]
+        after = raw_close[raw_close.index >= split_date]
+        if before.empty or after.empty:
+            continue
+        p_before, p_after = before.iloc[-1], after.iloc[0]
+        if p_before <= 0 or p_after <= 0:
+            continue
+        implied_ratio = p_before / p_after
+        # Grosszügige Toleranz (±40%) für normale Kursbewegung rund um das
+        # Split-Datum — die Ratio muss die Grössenordnung des Sprungs
+        # erklären, nicht exakt zu ihm passen.
+        if 0.6 <= (implied_ratio / float(ratio)) <= 1.6:
+            valid[split_date] = float(ratio)
+    if not valid:
+        return raw_close.copy()
+    factor = pd.Series(1.0, index=raw_close.index)
+    for split_date, ratio in valid.items():
+        factor.loc[factor.index < split_date] *= ratio
     return raw_close / factor
 
 
@@ -1940,13 +1962,35 @@ if _show_results:
                         st.caption(f"**{_fname} ({_ft})** — {len(_sp)} gemeldete(s) "
                                    "Split-Ereignis(se):")
                         st.dataframe(_spdf, use_container_width=True, hide_index=True)
-                        _implausible = _sp[(_sp > 10) | ((_sp > 0) & (_sp < 0.1))]
-                        if not _implausible.empty:
-                            st.warning(
-                                f"⚑ Ratio {_implausible.values[0]:.2f} für {_fname} ist "
-                                "für einen realen Aktiensplit unplausibel (übliche Ratios: "
-                                "2, 3, 5, 10 oder deren Kehrwert). Wahrscheinlich ein "
-                                "Datenfehler des Anbieters, keine echte Kapitalmassnahme.")
+                        # KORREKTUR: nicht mehr nach Ratio-Grösse urteilen (Sika hatte
+                        # einen echten 60:1-Split, das wäre fälschlich "unplausibel"
+                        # gewesen) — stattdessen prüfen, ob die Ratio den tatsächlich
+                        # beobachteten Kurssprung im Rohdatensatz erklärt. Derselbe
+                        # Test wie in _apply_split_adjustment, hier nur zur Anzeige.
+                        _raw_t = prices[_ft] if _ft in prices.columns else None
+                        for _d, _r in _sp.items():
+                            if _raw_t is None:
+                                continue
+                            _before = _raw_t[_raw_t.index < _d]
+                            _after = _raw_t[_raw_t.index >= _d]
+                            if _before.empty or _after.empty:
+                                continue
+                            _pb, _pa = _before.iloc[-1], _after.iloc[0]
+                            if _pb <= 0 or _pa <= 0:
+                                continue
+                            _implied = _pb / _pa
+                            _match = 0.6 <= (_implied / float(_r)) <= 1.6
+                            if _match:
+                                st.caption(f"✓ Ratio {_r:.2f} am {_d:%Y-%m-%d} erklärt den "
+                                           f"beobachteten Kurssprung (implizite Ratio "
+                                           f"{_implied:.2f}) — sieht nach echtem Split aus, "
+                                           "wird angewendet.")
+                            else:
+                                st.warning(
+                                    f"⚑ Ratio {_r:.2f} am {_d:%Y-%m-%d} erklärt den "
+                                    f"beobachteten Kurssprung NICHT (implizite Ratio "
+                                    f"{_implied:.2f}, weicht stark ab) — wird verworfen, "
+                                    "vermutlich Datenfehler des Anbieters.")
         else:
             st.success("Keine Tagesbewegung über der Schwelle gefunden.")
 
