@@ -2435,7 +2435,12 @@ if _show_results:
                         continue
                     rm_s = risk_metrics(_ts["total_value"])
                     rm_b = risk_metrics(_bl["total_value"])
-                    seg = _btc.loc[w]
+                    # KORREKTUR: _btc und w (aus _prices.index) überlappen
+                    # nicht zwingend exakt (unabhängige Kalender) — reindex+
+                    # ffill statt .loc[w], sonst KeyError bei fehlendem Datum.
+                    seg = _btc.reindex(w).ffill().dropna()
+                    if len(seg) < 2:
+                        continue
                     dd = float((seg / seg.cummax() - 1.0).min())
                     deltas.append(rm_s["cagr"] - rm_b["cagr"])
                     dds.append(dd)
@@ -2904,8 +2909,16 @@ if _show_results:
         """Charakterisiert das Marktregime des Fensters an seinem EIGENEN
         Bitcoin-Verlauf — kein handverlesenes Bär/Bulle-Label, sondern direkt
         gemessen: Gesamtrendite und Peak-to-Trough-Drawdown innerhalb des
-        Fensters."""
-        seg = _btc.loc[w]
+        Fensters.
+
+        KORREKTUR: _btc und die Aktienkalender (w, aus _prices.index) sind
+        zwei UNABHÄNGIG geladene Serien (Bitcoin handelt 24/7, SIX hat eigene
+        Feiertage) — sie überlappen nicht zwingend exakt. Ein direktes
+        seg = _btc.loc[w] wirft KeyError, sobald ein Datum in w in _btc fehlt.
+        Reindex+ffill nutzt dieselbe "letzter verfügbarer Kurs"-Konvention,
+        die auch die Haupt-Engine (get_btc_price) verwendet.
+        """
+        seg = _btc.reindex(w).ffill().dropna()
         if len(seg) < 2 or seg.iloc[0] <= 0:
             return np.nan, np.nan
         ret = float(seg.iloc[-1] / seg.iloc[0] - 1.0)
