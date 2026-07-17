@@ -2479,13 +2479,23 @@ if _show_results:
         if dwres.empty:
             st.warning("Zu wenig Daten für den Sensitivitätstest.")
         else:
-            dwres["extreme"] = (dwres["anchor_pct"] < 0.15) | (dwres["anchor_pct"] > 0.85)
+            # KORREKTUR: ein Kandidat ohne auswertbares Anker-Perzentil (zu
+            # wenig BTC-Historie vor diesem Datum, z.B. vor dem Beginn der
+            # Yahoo-Finance-BTC-USD-Reihe ~09/2014) ist NICHT automatisch
+            # "ok" — NaN < 0.15 und NaN > 0.85 werten beide als False, was
+            # einen nicht testbaren Kandidaten fälschlich wie einen
+            # bestandenen behandeln würde. Explizit als eigener Status.
+            dwres["insufficient_data"] = dwres["anchor_pct"].isna()
+            dwres["extreme"] = ((dwres["anchor_pct"] < 0.15) | (dwres["anchor_pct"] > 0.85)) & ~dwres["insufficient_data"]
 
             st.markdown("##### Schritt A — Anker-Extremität je Kandidat")
             _dispA = dwres.copy()
             _dispA["Startdatum"] = _dispA["start"]
-            _dispA["Lokales Perzentil"] = (_dispA["anchor_pct"] * 100).round(1).astype(str) + "%"
-            _dispA["Status"] = _dispA["extreme"].map({True: "⚑ extrem", False: "ok"})
+            _dispA["Lokales Perzentil"] = _dispA["anchor_pct"].apply(
+                lambda v: "keine Daten" if pd.isna(v) else f"{v*100:.1f}%")
+            _dispA["Status"] = _dispA.apply(
+                lambda r: "⚐ zu wenig Historie" if r["insufficient_data"]
+                else ("⚑ extrem" if r["extreme"] else "ok"), axis=1)
             st.dataframe(_dispA[["Startdatum", "Lokales Perzentil", "Status"]],
                         use_container_width=True, hide_index=True)
 
@@ -2493,7 +2503,9 @@ if _show_results:
             figdw = go.Figure()
             figdw.add_trace(go.Scatter(
                 x=dwres["start"], y=dwres["median_delta"] * 100, mode="markers+lines",
-                marker=dict(size=10, color=[OAK_BTC if e else OAK_GOLD for e in dwres["extreme"]]),
+                marker=dict(size=10, color=[
+                    (OAK_CREAM_DIM if ins else (OAK_BTC if e else OAK_GOLD))
+                    for e, ins in zip(dwres["extreme"], dwres["insufficient_data"])]),
                 line=dict(color=OAK_SAGE, dash="dot"), name="Median Δ-CAGR in Crash-Fenstern"))
             figdw.add_hline(y=0, line=dict(color=OAK_CREAM_DIM, dash="dot"))
             figdw.update_xaxes(title_text="Kandidat-Startdatum")
@@ -2503,7 +2515,8 @@ if _show_results:
             st.caption("Orange = nicht-extreme Kandidaten, Bitcoin-orange = an Schritt A "
                        "gescheitert. Flach über mehrere Kandidaten = stabil.")
 
-            _eligible = dwres[~dwres["extreme"] & dwres["n_crash"].ge(3)]
+            _eligible = dwres[~dwres["extreme"] & ~dwres["insufficient_data"]
+                              & dwres["n_crash"].ge(3)]
             if _eligible.empty:
                 st.error("⚠️ Kein Kandidat besteht beide Tests — Zeitraum oder "
                          "Crash-Schwelle anpassen.")
