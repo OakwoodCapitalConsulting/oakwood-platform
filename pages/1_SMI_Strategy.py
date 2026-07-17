@@ -1850,6 +1850,64 @@ if _show_results:
             weights = {t: w / total_w * 100.0 for t, w in weights.items()}
 
     rebal_dates = get_rebalance_dates(prices.index, rebalance_freq)
+
+    # =====================================================================
+    # DATENQUALITÄT — Ausreisser-Diagnose
+    # Findet den genauen Titel + das genaue Datum hinter unplausiblen
+    # Tagesbewegungen (z.B. eine fehlerhafte Split-Zuordnung oder ein
+    # schlechter Yahoo-Finance-Tick), BEVOR sie sich unbemerkt in die
+    # Monatsrenditen-Heatmap durchschlagen. Kein Rätselraten — jede
+    # auffällige Bewegung wird mit Titel, Datum und Vorher/Nachher-Kurs
+    # ausgewiesen.
+    # =====================================================================
+    with st.expander("🔍 Datenqualität — Ausreisser-Diagnose (Kurssprünge)"):
+        st.caption(
+            "Prüft jeden geladenen Titel sowie Bitcoin und den USD/CHF-Kurs auf "
+            "einzelne Tagesbewegungen über der Sanity-Schwelle. Eine reale SMI-"
+            "Aktie bewegt sich praktisch nie um mehr als 25% an einem Tag ausserhalb "
+            "eines Delistings/einer Fusion — ein Treffer hier ist meist eine "
+            "fehlerhafte Split-Zuordnung oder ein Datenfehler des Anbieters, kein "
+            "echtes Marktereignis.")
+        _outlier_thresh = st.slider("Sanity-Schwelle (Tagesbewegung, %)", 10, 60, 25, 5,
+                                    key="smi_dq_thresh") / 100.0
+        _outlier_rows = []
+        for _t in prices.columns:
+            _s = prices[_t].dropna()
+            if len(_s) < 2:
+                continue
+            _ret = _s.pct_change().dropna()
+            _hits = _ret[_ret.abs() > _outlier_thresh]
+            for _d, _r in _hits.items():
+                _prev_idx = _s.index[_s.index.get_loc(_d) - 1]
+                _outlier_rows.append({
+                    "Titel": SMI_CONSTITUENTS.get(_t, (_t,))[0], "Ticker": _t,
+                    "Datum": _d.strftime("%Y-%m-%d"), "Tagesbewegung": f"{_r*100:+.1f}%",
+                    "Kurs davor": f"{_s.loc[_prev_idx]:.2f}", "Kurs danach": f"{_s.loc[_d]:.2f}",
+                })
+        # BTC und FX ebenfalls prüfen (andere, meist höhere Toleranz, da BTC volatiler ist)
+        for _label, _series, _tol in [("Bitcoin (BTC-USD)", btc_series, max(_outlier_thresh, 0.35)),
+                                       ("USD/CHF", fx, _outlier_thresh)]:
+            _s = _series.dropna()
+            if len(_s) < 2:
+                continue
+            _ret = _s.pct_change().dropna()
+            _hits = _ret[_ret.abs() > _tol]
+            for _d, _r in _hits.items():
+                _prev_idx = _s.index[_s.index.get_loc(_d) - 1]
+                _outlier_rows.append({
+                    "Titel": _label, "Ticker": "—",
+                    "Datum": _d.strftime("%Y-%m-%d"), "Tagesbewegung": f"{_r*100:+.1f}%",
+                    "Kurs davor": f"{_s.loc[_prev_idx]:.2f}", "Kurs danach": f"{_s.loc[_d]:.2f}",
+                })
+
+        if _outlier_rows:
+            _odf = pd.DataFrame(_outlier_rows)
+            st.error(f"⚠️ **{len(_odf)} auffällige Tagesbewegung(en) gefunden** — "
+                     "vor der weiteren Kalibrierung prüfen.")
+            st.dataframe(_odf, use_container_width=True, hide_index=True)
+        else:
+            st.success("Keine Tagesbewegung über der Schwelle gefunden.")
+
     _tcf_map = {"Monatlich (Standard)": None, "Quartalsweise": "Quartalsweise",
                 "Halbjährlich": "Halbjährlich"}
     _tcf = _tcf_map[threshold_check_freq]
@@ -2513,32 +2571,71 @@ if _show_results:
             figdw = style_plotly(figdw, height=360)
             st.plotly_chart(figdw, use_container_width=True)
             st.caption("Orange = nicht-extreme Kandidaten, Bitcoin-orange = an Schritt A "
-                       "gescheitert. Flach über mehrere Kandidaten = stabil.")
+                       "gescheitert, Cremeweiss = zu wenig Historie (Schritt A nicht "
+                       "auswertbar). Flach über mehrere Kandidaten = stabil.")
+
+            _stab_thresh = st.slider(
+                "Stabilitäts-Schwelle (max. Sprung zwischen Nachbar-Kandidaten, pp)",
+                1.0, 15.0, 5.0, 0.5, key="smi_dw_stabthresh",
+                help="Vorab festgelegt, nicht nachträglich an ein gewünschtes "
+                     "Ergebnis angepasst. Ein Kandidat gehört zum stabilen "
+                     "Bereich nur, wenn sich der Regime-Befund zum nächsten "
+                     "(chronologisch benachbarten, nicht ausgeschlossenen) "
+                     "Kandidaten um höchstens diesen Wert unterscheidet.") / 1.0
 
             _eligible = dwres[~dwres["extreme"] & ~dwres["insufficient_data"]
-                              & dwres["n_crash"].ge(3)]
+                              & dwres["n_crash"].ge(3)].reset_index(drop=True)
             if _eligible.empty:
-                st.error("⚠️ Kein Kandidat besteht beide Tests — Zeitraum oder "
+                st.error("⚠️ Kein Kandidat besteht Schritt A — Zeitraum oder "
                          "Crash-Schwelle anpassen.")
             else:
-                # Stability check: is the eligible set's median_delta range tight?
-                _spread = _eligible["median_delta"].max() - _eligible["median_delta"].min()
-                _rec = _eligible.iloc[0]  # earliest eligible (candidates already sorted ascending)
+                # ECHTER Schritt-B-Filter: rückwärts vom jüngsten zulässigen
+                # Kandidaten aus laufen und so lange in den "stabilen Block"
+                # aufnehmen, wie der Sprung zum nächsten Nachbarn unter der
+                # Schwelle bleibt. Bricht beim ersten (rückwärts gesehenen)
+                # Sprung über der Schwelle ab — alles davor gehört NICHT zum
+                # stabilen Bereich, auch wenn es Schritt A bestanden hat.
+                _n = len(_eligible)
+                _plateau_start_idx = _n - 1
+                for i in range(_n - 1, 0, -1):
+                    _jump = abs(_eligible.loc[i, "median_delta"]
+                               - _eligible.loc[i - 1, "median_delta"]) * 100
+                    if _jump <= _stab_thresh:
+                        _plateau_start_idx = i - 1
+                    else:
+                        break
+                _plateau = _eligible.iloc[_plateau_start_idx:]
+                _excluded_unstable = _eligible.iloc[:_plateau_start_idx]
+                _spread = _plateau["median_delta"].max() - _plateau["median_delta"].min()
+                _rec = _plateau.iloc[0]
+
                 r1, r2, r3 = st.columns(3)
                 with r1:
                     st.metric("Empfohlenes Startdatum", _rec["start"])
-                    st.caption("frühester Kandidat, der beide Tests besteht")
+                    st.caption("frühester Kandidat im stabilen Block")
                 with r2:
                     st.metric("Nutzbare Fenster", int(_rec["n_windows"]))
                 with r3:
-                    st.metric("Streuung über stabile Kandidaten", f"{_spread*100:.2f}pp")
+                    st.metric("Streuung im stabilen Block", f"{_spread*100:.2f}pp")
                     st.caption("klein = Befund robust gegen Startdatum-Wahl")
+
+                if not _excluded_unstable.empty:
+                    st.warning(
+                        f"⚠️ **{len(_excluded_unstable)} früherer Kandidat(en) "
+                        f"({', '.join(_excluded_unstable['start'])}) bestehen zwar "
+                        f"Schritt A, fallen aber bei Schritt B raus** — der Sprung "
+                        f"zum nächsten Nachbarn überschreitet die "
+                        f"{_stab_thresh:.1f}pp-Schwelle. Sie werden NICHT für die "
+                        "Empfehlung verwendet, obwohl sie einzeln unauffällig "
+                        "aussehen.")
+
                 st.info(
                     f"**Regel angewendet:** {_rec['start']} ist der früheste Kandidat "
-                    f"ohne Anker-Extremität (Schritt A) innerhalb der Kandidaten, deren "
-                    f"Regime-Befund sich um höchstens die oben gezeigte Streuung "
-                    f"unterscheidet (Schritt B). Für den weiteren Live-Test diesen Wert "
-                    "als Backtest-Startdatum in der Sidebar übernehmen.")
+                    f"in einem ununterbrochenen Block aufeinanderfolgender Kandidaten "
+                    f"bis zum jüngsten zulässigen Kandidaten, innerhalb dessen sich "
+                    f"der Regime-Befund von Nachbar zu Nachbar um höchstens "
+                    f"{_stab_thresh:.1f}pp unterscheidet. Für den weiteren Live-Test "
+                    "diesen Wert als Backtest-Startdatum in der Sidebar übernehmen.")
 
         st.warning(
             "⚠️ **Provisorisch, solange mit synthetischen Testpfaden gerechnet "
