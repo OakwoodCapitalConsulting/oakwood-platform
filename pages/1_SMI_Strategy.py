@@ -3395,45 +3395,46 @@ if _show_results:
         "isoliert zu testen.</p>", unsafe_allow_html=True)
 
     @st.cache_data(ttl=3600, show_spinner=False)
-    def compute_smi_sharpe_grid(_prices, _divs, _btc, _fx, _weights, cap,
-                                allocs, widths, dca_opts, txbps,
-                                win_years, step_months, max_dd_ceiling):
+    def compute_smi_sharpe_one_combo(_prices, _divs, _btc, _fx, _weights, cap,
+                                     alloc, width, dca_m, txbps, win_years, step_months):
+        """EINE (Allokation, Bandbreite, DCA-Fenster)-Kombination über alle
+        rollierenden Fenster. Pro Kombination separat gecacht — bricht der
+        Lauf ab (Tab geschlossen, Verbindung verloren), sind bereits
+        berechnete Kombinationen beim nächsten Start nicht verloren, nur die
+        fehlenden werden nachgerechnet."""
         full = _prices.index
         if len(full) < 400:
-            return pd.DataFrame()
+            return []
         starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
                                freq=f"{step_months}MS")
+        target = alloc
+        upper = min(alloc + width, 0.95)
         rows = []
-        for alloc in allocs:
-            for width in widths:
-                target = alloc
-                upper = min(alloc + width, 0.95)
-                for dca_m in dca_opts:
-                    for s in starts:
-                        e = s + pd.DateOffset(years=win_years)
-                        w = full[(full >= s) & (full <= e)]
-                        if len(w) < 300:
-                            continue
-                        try:
-                            _ts, _, _ = run_strategy(
-                                _prices.loc[w], _divs, _btc, _fx,
-                                initial_capital=cap, weights=_weights,
-                                initial_btc_pct=alloc, upper_threshold=upper,
-                                target_btc_pct=target, rebalance_dates_set=set(),
-                                dca_months=dca_m, tx_cost_bps=txbps)
-                        except Exception:
-                            continue
-                        if _ts.empty:
-                            continue
-                        _rm = risk_metrics(_ts["total_value"])
-                        _att = _ts.attrs.get("attribution", {})
-                        rows.append({
-                            "alloc": alloc, "width": width, "dca_m": dca_m, "start": s,
-                            "cagr": _rm["cagr"], "vol": _rm["vol"],
-                            "sharpe": _rm["sharpe"], "max_dd": _rm["max_dd"],
-                            "calmar": _rm["calmar"], "dca_share": _att.get("dca_share", np.nan),
-                        })
-        return pd.DataFrame(rows)
+        for s in starts:
+            e = s + pd.DateOffset(years=win_years)
+            w = full[(full >= s) & (full <= e)]
+            if len(w) < 300:
+                continue
+            try:
+                _ts, _, _ = run_strategy(
+                    _prices.loc[w], _divs, _btc, _fx,
+                    initial_capital=cap, weights=_weights,
+                    initial_btc_pct=alloc, upper_threshold=upper,
+                    target_btc_pct=target, rebalance_dates_set=set(),
+                    dca_months=dca_m, tx_cost_bps=txbps)
+            except Exception:
+                continue
+            if _ts.empty:
+                continue
+            _rm = risk_metrics(_ts["total_value"])
+            _att = _ts.attrs.get("attribution", {})
+            rows.append({
+                "alloc": alloc, "width": width, "dca_m": dca_m, "start": s,
+                "cagr": _rm["cagr"], "vol": _rm["vol"],
+                "sharpe": _rm["sharpe"], "max_dd": _rm["max_dd"],
+                "calmar": _rm["calmar"], "dca_share": _att.get("dca_share", np.nan),
+            })
+        return rows
 
     sh1, sh2, sh3, sh4 = st.columns(4)
     with sh1:
@@ -3451,22 +3452,40 @@ if _show_results:
         st.caption("")
         _shgo = st.button("Risiko/Rendite-Grid starten", key="smi_sh_go")
 
+    _sh_wide = st.checkbox(
+        "Erweitertes Grid (96 statt 24 Kombinationen — deutlich langsamer)",
+        key="smi_sh_wide",
+        help="Standard: 6 Allokationen × 2 Bandbreiten × 2 DCA-Fenster = 24 "
+             "Kombinationen, in der Regel wenige Minuten. Erweitert: 4 "
+             "Bandbreiten × 4 DCA-Fenster = 96 Kombinationen, kann deutlich "
+             "länger dauern — nur wenn die schmalere Version bereits einen "
+             "interessanten Bereich zeigt, den es feiner aufzulösen lohnt.")
+
     if _shgo:
         st.session_state["smi_sh_has_run"] = True
 
     if st.session_state.get("smi_sh_has_run"):
         _sh_allocs = [0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
-        _sh_widths = [0.05, 0.10, 0.15, 0.20]
-        _sh_dca = [6, 12, 18, 24]
+        _sh_widths = [0.05, 0.10, 0.15, 0.20] if _sh_wide else [0.05, 0.15]
+        _sh_dca = [6, 12, 18, 24] if _sh_wide else [12, 24]
         _sh_sm = 6 if _shstep == "halbjährlich" else 3
+        _combos = [(a, w, d) for a in _sh_allocs for w in _sh_widths for d in _sh_dca]
 
-        with st.spinner("Rechne Startallokation × Bandbreite × DCA-Fenster über "
-                         "alle rollierenden Fenster… (grosses Grid, kann mehrere "
-                         "Minuten dauern)"):
-            shgrid = compute_smi_sharpe_grid(
+        _prog = st.progress(0.0, text=f"0 / {len(_combos)} Kombinationen …")
+        _t0 = _time.time()
+        _all_rows = []
+        for _i, (_a, _w, _d) in enumerate(_combos):
+            _rows = compute_smi_sharpe_one_combo(
                 prices, divs, btc_series, fx, weights, initial_capital,
-                _sh_allocs, _sh_widths, _sh_dca, tx_cost_bps, _shw, _sh_sm,
-                _dd_ceiling)
+                _a, _w, _d, tx_cost_bps, _shw, _sh_sm)
+            _all_rows.extend(_rows)
+            _elapsed = _time.time() - _t0
+            _eta = (_elapsed / (_i + 1)) * (len(_combos) - _i - 1)
+            _prog.progress((_i + 1) / len(_combos),
+                          text=f"{_i+1} / {len(_combos)} Kombinationen · "
+                               f"{_elapsed:.0f}s gelaufen · noch ca. {_eta:.0f}s")
+        _prog.empty()
+        shgrid = pd.DataFrame(_all_rows)
 
         if shgrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
