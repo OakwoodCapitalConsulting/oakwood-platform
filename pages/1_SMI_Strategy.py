@@ -3571,6 +3571,47 @@ if _show_results:
                     st.success("✓ Optimum liegt innerhalb des getesteten Bereichs, "
                                "nicht am Rand — echter Gipfel gefunden.")
 
+                st.markdown("##### Grenznutzen — was bringt der nächste Allokations-Schritt noch?")
+                st.markdown(
+                    "<p style='color:#A9B5A4;margin-top:-6px'>Sharpe/Calmar kennen "
+                    "kein Konzept von \"Satellit\" — sie maximieren die beste "
+                    "risikoadjustierte Rendite, notfalls bis zur Konzentration in "
+                    "der historisch stärksten Anlageklasse. Ob das noch ein Satellit "
+                    "ist oder schon ein Bitcoin-Fonds mit Aktienbeimischung, "
+                    "entscheidet diese Tabelle nicht — sie zeigt nur, wie viel "
+                    "JEDER zusätzliche Allokations-Schritt noch bringt, damit die "
+                    "Grenze auf Basis von Zahlen gezogen werden kann.</p>",
+                    unsafe_allow_html=True)
+                _marg = (shgrid.groupby("alloc").agg(
+                    Median_Sharpe=("sharpe", "median"),
+                    Median_Calmar=("calmar", "median"),
+                    Median_CAGR=("cagr", "median"),
+                    Median_MaxDD=("max_dd", "median")).reset_index()
+                    .sort_values("alloc"))
+                _marg["Δ Sharpe"] = _marg["Median_Sharpe"].diff()
+                _marg["Δ Calmar"] = _marg["Median_Calmar"].diff()
+                _marg["Δ CAGR (pp)"] = _marg["Median_CAGR"].diff() * 100
+                _mdisp = _marg.copy()
+                _mdisp["Startallokation"] = (_mdisp["alloc"] * 100).round(1).astype(str) + "%"
+                _mdisp["Sharpe"] = _mdisp["Median_Sharpe"].round(2)
+                _mdisp["Calmar"] = _mdisp["Median_Calmar"].round(2)
+                _mdisp["CAGR"] = (_mdisp["Median_CAGR"] * 100).round(1).astype(str) + "%"
+                _mdisp["MaxDD"] = (_mdisp["Median_MaxDD"] * 100).round(1).astype(str) + "%"
+                _mdisp["Δ Sharpe je Schritt"] = _mdisp["Δ Sharpe"].round(3)
+                _mdisp["Δ Calmar je Schritt"] = _mdisp["Δ Calmar"].round(3)
+                _mdisp["Δ CAGR je Schritt"] = _mdisp["Δ CAGR (pp)"].round(2).astype(str) + "pp"
+                st.dataframe(_mdisp[["Startallokation", "Sharpe", "Calmar", "CAGR", "MaxDD",
+                                     "Δ Sharpe je Schritt", "Δ Calmar je Schritt",
+                                     "Δ CAGR je Schritt"]].fillna("—"),
+                            use_container_width=True, hide_index=True)
+                st.warning(
+                    "⚠️ **Das ist eine Geschäftsentscheidung, keine Rechenfrage:** "
+                    "ab welcher Allokation ist das Produkt kein \"SMI-Kern mit "
+                    "Bitcoin-Satellit\" mehr, sondern faktisch umgekehrt? Diese "
+                    "Grenze legt fest, bis wohin überhaupt getestet werden sollte "
+                    "— unabhängig davon, ob Sharpe/Calmar darüber hinaus noch "
+                    "(marginal) weiter steigen würden.")
+
                 st.markdown("##### Top 10 nach Sharpe Ratio (innerhalb der Drawdown-Obergrenze)")
                 _disp = shsumm[shsumm["feasible"]].head(10).copy()
                 _disp["Startallokation"] = (_disp["alloc"] * 100).round(1).astype(str) + "%"
