@@ -3452,29 +3452,49 @@ if _show_results:
         st.caption("")
         _shgo = st.button("Risiko/Rendite-Grid starten", key="smi_sh_go")
 
-    _sh_wide = st.checkbox(
-        "Erweitertes Grid (mehr Bandbreiten/DCA-Fenster — deutlich langsamer)",
-        key="smi_sh_wide",
-        help="Standard: 2 Bandbreiten × 2 DCA-Fenster. Erweitert: 4 × 4, kann "
-             "deutlich länger dauern — nur wenn die schmalere Version bereits "
-             "einen interessanten Bereich zeigt, den es feiner aufzulösen lohnt.")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px;font-size:0.85em'>"
+        "Entscheidung vom 18.07.2026 (korrigiert): unterer Anker/Zielwert "
+        "(wohin bei einem Verkauf zurückgeführt wird) fest auf <strong>15%</strong>. "
+        "Oberer Schwellenwert (wo ein Verkauf ausgelöst wird) bei <strong>25%</strong> "
+        "— das entspricht 10pp Bandbreite ab diesem Anker, bereits in der "
+        "Bandbreiten-Auswahl unten enthalten. Weitere Erhöhung des Ankers nach "
+        "oben ausgeschlossen (Produktidentität: Satellit, kein Bitcoin-Fonds). "
+        "Bandbreite und DCA-Fenster bleiben offen zur Kalibrierung.</p>",
+        unsafe_allow_html=True)
 
     _sh_alloc_options = [2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 25, 27.5, 30, 35, 40, 45, 50]
     _sh_allocs_pct = st.multiselect(
-        "Zu testende Startallokationen (%)", options=_sh_alloc_options,
-        default=[2.5, 5, 7.5, 10, 15, 20, 27.5, 35], key="smi_sh_allocs_ms",
-        help="Liegt das Optimum am RAND dieser Liste (kleinster oder grösster "
-             "gewählter Wert), ist der wahre Gipfel nicht gefunden — Liste "
-             "dann in die entsprechende Richtung erweitern und neu rechnen. "
-             "Ein Optimum in der Mitte ist ein echter Befund.")
+        "Zu testende Startallokationen / unterer Anker (%)", options=_sh_alloc_options,
+        default=[15], key="smi_sh_allocs_ms",
+        help="Unterer Anker (Start- und Zielwert nach Verkauf) auf 15% "
+             "festgelegt. Der obere Schwellenwert ergibt sich aus Anker + "
+             "Bandbreite (unten) — bei 10pp Bandbreite also 25%, wie besprochen.")
+
+    _sh_width_options = [2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20]
+    _sh_widths_pct = st.multiselect(
+        "Zu testende Bandbreiten (pp)", options=_sh_width_options,
+        default=[2.5, 5, 7.5, 10], key="smi_sh_widths_ms",
+        help="5pp war beim letzten Lauf der untere Rand des Optimums — jetzt "
+             "nach unten geöffnet (2.5pp), um zu prüfen, ob ein engeres Band "
+             "noch besser ist. Liegt das Optimum wieder am Rand, weiter "
+             "nach unten öffnen.")
+
+    _sh_dca_options = [3, 6, 9, 12, 15, 18, 21, 24]
+    _sh_dca_pct = st.multiselect(
+        "Zu testende DCA-Fenster (Monate)", options=_sh_dca_options,
+        default=[3, 6, 9, 12], key="smi_sh_dca_ms",
+        help="12 Monate war beim letzten Lauf der untere Rand des Optimums — "
+             "jetzt nach unten geöffnet (ab 3 Monate), um eine kürzere DCA-"
+             "Spanne zu prüfen.")
 
     if _shgo:
         st.session_state["smi_sh_has_run"] = True
 
     if st.session_state.get("smi_sh_has_run"):
-        _sh_allocs = sorted(a / 100.0 for a in _sh_allocs_pct) or [0.05, 0.10, 0.20]
-        _sh_widths = [0.05, 0.10, 0.15, 0.20] if _sh_wide else [0.05, 0.15]
-        _sh_dca = [6, 12, 18, 24] if _sh_wide else [12, 24]
+        _sh_allocs = sorted(a / 100.0 for a in _sh_allocs_pct) or [0.25]
+        _sh_widths = sorted(w / 100.0 for w in _sh_widths_pct) or [0.05]
+        _sh_dca = sorted(_sh_dca_pct) or [12]
         _sh_sm = 6 if _shstep == "halbjährlich" else 3
         _combos = [(a, w, d) for a in _sh_allocs for w in _sh_widths for d in _sh_dca]
 
@@ -3540,26 +3560,33 @@ if _show_results:
 
                 # RAND-ERKENNUNG: liegt das Optimum am Rand des getesteten
                 # Bereichs, ist der wahre Gipfel nicht gefunden — nur der Rand
-                # der Suche. Automatisch geprüft, nicht mehr von Auge.
+                # der Suche. Automatisch geprüft, nicht mehr von Auge. Bei einer
+                # bewusst FIXIERTEN Dimension (nur ein Wert gewählt, z.B.
+                # Allokation fest auf 25% verankert) ist Min=Max desselben
+                # Einzelwerts — das ist kein Randproblem, sondern Absicht, und
+                # wird hier bewusst nicht gewarnt.
                 _edge_msgs = []
-                if _best["alloc"] == min(_sh_allocs):
-                    _edge_msgs.append(f"Startallokation am UNTEREN Rand "
-                                      f"({_best['alloc']*100:.1f}%) — nach unten erweitern.")
-                if _best["alloc"] == max(_sh_allocs):
-                    _edge_msgs.append(f"Startallokation am OBEREN Rand "
-                                      f"({_best['alloc']*100:.1f}%) — nach oben erweitern.")
-                if _best["width"] == min(_sh_widths):
-                    _edge_msgs.append(f"Bandbreite am unteren Rand "
-                                      f"({_best['width']*100:.0f}pp) — engere Werte testen.")
-                if _best["width"] == max(_sh_widths):
-                    _edge_msgs.append(f"Bandbreite am oberen Rand "
-                                      f"({_best['width']*100:.0f}pp) — weitere Werte testen.")
-                if _best["dca_m"] == min(_sh_dca):
-                    _edge_msgs.append(f"DCA-Fenster am unteren Rand "
-                                      f"({_best['dca_m']:.0f} Mte) — kürzere Werte testen.")
-                if _best["dca_m"] == max(_sh_dca):
-                    _edge_msgs.append(f"DCA-Fenster am oberen Rand "
-                                      f"({_best['dca_m']:.0f} Mte) — längere Werte testen.")
+                if len(_sh_allocs) > 1:
+                    if _best["alloc"] == min(_sh_allocs):
+                        _edge_msgs.append(f"Startallokation am UNTEREN Rand "
+                                          f"({_best['alloc']*100:.1f}%) — nach unten erweitern.")
+                    if _best["alloc"] == max(_sh_allocs):
+                        _edge_msgs.append(f"Startallokation am OBEREN Rand "
+                                          f"({_best['alloc']*100:.1f}%) — nach oben erweitern.")
+                if len(_sh_widths) > 1:
+                    if _best["width"] == min(_sh_widths):
+                        _edge_msgs.append(f"Bandbreite am unteren Rand "
+                                          f"({_best['width']*100:.0f}pp) — engere Werte testen.")
+                    if _best["width"] == max(_sh_widths):
+                        _edge_msgs.append(f"Bandbreite am oberen Rand "
+                                          f"({_best['width']*100:.0f}pp) — weitere Werte testen.")
+                if len(_sh_dca) > 1:
+                    if _best["dca_m"] == min(_sh_dca):
+                        _edge_msgs.append(f"DCA-Fenster am unteren Rand "
+                                          f"({_best['dca_m']:.0f} Mte) — kürzere Werte testen.")
+                    if _best["dca_m"] == max(_sh_dca):
+                        _edge_msgs.append(f"DCA-Fenster am oberen Rand "
+                                          f"({_best['dca_m']:.0f} Mte) — längere Werte testen.")
                 if _edge_msgs:
                     st.warning(
                         "⚠️ **Optimum liegt am Rand des getesteten Bereichs — "
