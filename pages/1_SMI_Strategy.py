@@ -3453,19 +3453,26 @@ if _show_results:
         _shgo = st.button("Risiko/Rendite-Grid starten", key="smi_sh_go")
 
     _sh_wide = st.checkbox(
-        "Erweitertes Grid (96 statt 24 Kombinationen — deutlich langsamer)",
+        "Erweitertes Grid (mehr Bandbreiten/DCA-Fenster — deutlich langsamer)",
         key="smi_sh_wide",
-        help="Standard: 6 Allokationen × 2 Bandbreiten × 2 DCA-Fenster = 24 "
-             "Kombinationen, in der Regel wenige Minuten. Erweitert: 4 "
-             "Bandbreiten × 4 DCA-Fenster = 96 Kombinationen, kann deutlich "
-             "länger dauern — nur wenn die schmalere Version bereits einen "
-             "interessanten Bereich zeigt, den es feiner aufzulösen lohnt.")
+        help="Standard: 2 Bandbreiten × 2 DCA-Fenster. Erweitert: 4 × 4, kann "
+             "deutlich länger dauern — nur wenn die schmalere Version bereits "
+             "einen interessanten Bereich zeigt, den es feiner aufzulösen lohnt.")
+
+    _sh_alloc_options = [2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 25, 27.5, 30, 35, 40, 45, 50]
+    _sh_allocs_pct = st.multiselect(
+        "Zu testende Startallokationen (%)", options=_sh_alloc_options,
+        default=[2.5, 5, 7.5, 10, 15, 20, 27.5, 35], key="smi_sh_allocs_ms",
+        help="Liegt das Optimum am RAND dieser Liste (kleinster oder grösster "
+             "gewählter Wert), ist der wahre Gipfel nicht gefunden — Liste "
+             "dann in die entsprechende Richtung erweitern und neu rechnen. "
+             "Ein Optimum in der Mitte ist ein echter Befund.")
 
     if _shgo:
         st.session_state["smi_sh_has_run"] = True
 
     if st.session_state.get("smi_sh_has_run"):
-        _sh_allocs = [0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
+        _sh_allocs = sorted(a / 100.0 for a in _sh_allocs_pct) or [0.05, 0.10, 0.20]
         _sh_widths = [0.05, 0.10, 0.15, 0.20] if _sh_wide else [0.05, 0.15]
         _sh_dca = [6, 12, 18, 24] if _sh_wide else [12, 24]
         _sh_sm = 6 if _shstep == "halbjährlich" else 3
@@ -3530,6 +3537,39 @@ if _show_results:
                     f"{_best['Median_MaxDD']*100:.1f}% · DCA-Anteil "
                     f"{_best['Median_DCA']*100:.0f}% — höchste Sharpe Ratio unter "
                     "allen Kombinationen, die die Drawdown-Obergrenze einhalten.")
+
+                # RAND-ERKENNUNG: liegt das Optimum am Rand des getesteten
+                # Bereichs, ist der wahre Gipfel nicht gefunden — nur der Rand
+                # der Suche. Automatisch geprüft, nicht mehr von Auge.
+                _edge_msgs = []
+                if _best["alloc"] == min(_sh_allocs):
+                    _edge_msgs.append(f"Startallokation am UNTEREN Rand "
+                                      f"({_best['alloc']*100:.1f}%) — nach unten erweitern.")
+                if _best["alloc"] == max(_sh_allocs):
+                    _edge_msgs.append(f"Startallokation am OBEREN Rand "
+                                      f"({_best['alloc']*100:.1f}%) — nach oben erweitern.")
+                if _best["width"] == min(_sh_widths):
+                    _edge_msgs.append(f"Bandbreite am unteren Rand "
+                                      f"({_best['width']*100:.0f}pp) — engere Werte testen.")
+                if _best["width"] == max(_sh_widths):
+                    _edge_msgs.append(f"Bandbreite am oberen Rand "
+                                      f"({_best['width']*100:.0f}pp) — weitere Werte testen.")
+                if _best["dca_m"] == min(_sh_dca):
+                    _edge_msgs.append(f"DCA-Fenster am unteren Rand "
+                                      f"({_best['dca_m']:.0f} Mte) — kürzere Werte testen.")
+                if _best["dca_m"] == max(_sh_dca):
+                    _edge_msgs.append(f"DCA-Fenster am oberen Rand "
+                                      f"({_best['dca_m']:.0f} Mte) — längere Werte testen.")
+                if _edge_msgs:
+                    st.warning(
+                        "⚠️ **Optimum liegt am Rand des getesteten Bereichs — "
+                        "kein echter Gipfel gefunden, nur der Rand der Suche:**\n\n"
+                        + "\n".join(f"- {m}" for m in _edge_msgs)
+                        + "\n\nBereich erweitern und neu rechnen, bevor dieser Wert "
+                          "als Empfehlung verwendet wird.")
+                else:
+                    st.success("✓ Optimum liegt innerhalb des getesteten Bereichs, "
+                               "nicht am Rand — echter Gipfel gefunden.")
 
                 st.markdown("##### Top 10 nach Sharpe Ratio (innerhalb der Drawdown-Obergrenze)")
                 _disp = shsumm[shsumm["feasible"]].head(10).copy()
