@@ -619,8 +619,16 @@ with st.sidebar:
                                help="Annual hurdle return the strategy must beat before performance "
                                     "fees apply in Year 1. After Year 1 the HWM governs.") / 100.0
     crystallization_freq = st.selectbox("Performance Fee Crystallization",
-                                         ["Quarterly", "Semi-Annual", "Annual"], index=0,
+                                         ["Monthly", "Quarterly", "Semi-Annual", "Annual"], index=1,
                                          help="How often the performance fee is crystallized against the HWM.")
+    mgmt_fee_freq = st.selectbox("Management Fee Billing Frequency",
+                                 ["Monthly", "Quarterly", "Semi-Annual", "Annual"], index=0,
+                                 help="How often the management fee is billed/settled — independent "
+                                      "of the performance fee crystallization above (some providers "
+                                      "bill both monthly, others differ). Does NOT change the daily "
+                                      "NAV accrual, which always matches the stated annual rate exactly "
+                                      "— this only controls how the already-accrued amounts are "
+                                      "grouped into a billing ledger for reporting.")
 
     st.markdown("<br>", unsafe_allow_html=True)
     run_btn = st.button("Backtest starten", type="primary", use_container_width=True,
@@ -1476,10 +1484,24 @@ def risk_metrics(values, risk_free_rate=0.01):
 
 def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                perf_fee_rate=0.15, hwm_hurdle=0.05,
-               crystallization_freq="Quarterly", hurdle_type="Hard Hurdle"):
-    """Apply management fee (daily accrual) + performance fee (period-end, HWM).
+               crystallization_freq="Quarterly", hurdle_type="Hard Hurdle",
+               mgmt_fee_freq="Monthly"):
+    """Apply management fee (daily NAV accrual, periodic billing ledger) +
+    performance fee (period-end, HWM).
 
-    crystallization_freq: 'Quarterly', 'Semi-Annual', or 'Annual'.
+    crystallization_freq: 'Monthly', 'Quarterly', 'Semi-Annual', or 'Annual'
+      \u2014 how often the PERFORMANCE fee is crystallized against the HWM.
+    mgmt_fee_freq: 'Monthly', 'Quarterly', 'Semi-Annual', or 'Annual' \u2014 how
+      often the MANAGEMENT fee is billed/settled. Independent of
+      crystallization_freq: some providers bill both on the same cadence,
+      others differ (e.g. management fee monthly, performance fee quarterly).
+      IMPORTANT: this does NOT change the NAV path \u2014 the management fee is
+      always accrued daily against NAV (standard fund practice, and the only
+      way to match a stated annual rate exactly regardless of billing
+      cadence). mgmt_fee_freq only controls how the already-accrued amounts
+      are grouped into a billing ledger (net.attrs['mgmt_fee_events']) for
+      reporting \u2014 purely a reporting/cash-settlement view, not a mechanism
+      change.
     hurdle_type:
       - 'Hard Hurdle': performance fee charged only on the NAV gain ABOVE the
         hurdle-grown HWM (the hurdle return is fee-free).
@@ -1488,19 +1510,24 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
       - 'No Hurdle (HWM only)': fee on all gains above the HWM (no hurdle).
 
     Returns (net_series, total_mgmt_chf, total_perf_chf, fee_events_df).
+    The management-fee billing ledger is attached as
+    net_series.attrs['mgmt_fee_events'] (DataFrame: date, period, amount).
     """
     if gross_values is None or gross_values.empty:
         return gross_values, 0.0, 0.0, pd.DataFrame()
 
-    if crystallization_freq == "Quarterly":
-        crystal_months = {3, 6, 9, 12}
-        periods_per_year = 4
-    elif crystallization_freq == "Semi-Annual":
-        crystal_months = {6, 12}
-        periods_per_year = 2
-    else:
-        crystal_months = {12}
-        periods_per_year = 1
+    def _months_for(freq):
+        if freq == "Monthly":
+            return set(range(1, 13)), 12
+        elif freq == "Quarterly":
+            return {3, 6, 9, 12}, 4
+        elif freq == "Semi-Annual":
+            return {6, 12}, 2
+        else:
+            return {12}, 1
+
+    crystal_months, periods_per_year = _months_for(crystallization_freq)
+    mgmt_bill_months, _ = _months_for(mgmt_fee_freq)
 
     # Adaptive observation frequency: derive periods-per-year from the actual
     # index (≈252 on an equity calendar, ≈365 on the BTC/RE daily calendar) so
@@ -1518,9 +1545,21 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
     hwm = float(initial_capital)            # plain high water mark (post-fee highs)
     prev_cryst_date = gross_values.index[0]  # for pro-rata hurdle on partial periods
     total_mgmt = 0.0
-    period_mgmt = 0.0   # management fee accrued within the current crystallization period
+    period_mgmt = 0.0        # mgmt fee accrued within the current PERF-crystallization period (for the combined ledger)
+    mgmt_bill_accum = 0.0    # mgmt fee accrued within the current INDEPENDENT mgmt-billing period
     total_perf = 0.0
     fee_events = []
+    mgmt_events = []
+
+    def _period_label(freq, date):
+        if freq == "Monthly":
+            return date.strftime("%b %Y")
+        elif freq == "Semi-Annual":
+            return f"H{1 if date.month <= 6 else 2} {date.year}"
+        elif freq == "Annual":
+            return f"{date.year}"
+        else:  # Quarterly
+            return f"Q{(date.month - 1) // 3 + 1} {date.year}"
 
     for i in range(1, len(gross_values)):
         d = gross_values.index[i]
@@ -1533,6 +1572,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         nv -= mgmt_today
         total_mgmt += mgmt_today
         period_mgmt += mgmt_today
+        mgmt_bill_accum += mgmt_today
 
         is_last = (i == len(gross_values) - 1)
         if is_last:
@@ -1540,10 +1580,21 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         else:
             next_d = gross_values.index[i + 1]
             is_period_end = (d.month in crystal_months and next_d.month != d.month)
+            is_mgmt_bill_end = (d.month in mgmt_bill_months and next_d.month != d.month)
+        if is_last:
+            is_mgmt_bill_end = True
+
+        # Unabhängige Management-Fee-Abrechnungsledger \u2014 rein für die
+        # Zahlungs-/Rechnungsansicht, ändert die tägliche NAV-Belastung NICHT.
+        if is_mgmt_bill_end:
+            mgmt_events.append({
+                "date": d, "period": _period_label(mgmt_fee_freq, d),
+                "year": d.year, "mgmt_fee": mgmt_bill_accum,
+            })
+            mgmt_bill_accum = 0.0
 
         if is_period_end:
-            quarter = (d.month - 1) // 3 + 1
-            period_label = f"Q{quarter} {d.year}"
+            period_label = _period_label(crystallization_freq, d)
 
             # The hurdle-grown threshold the NAV must clear this period.
             # Pro-rated by the ACTUAL elapsed time since the last crystallization
@@ -1594,6 +1645,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
 
         net.iloc[i] = nv
 
+    net.attrs["mgmt_fee_events"] = pd.DataFrame(mgmt_events)
     return net, total_mgmt, total_perf, pd.DataFrame(fee_events)
 
 
@@ -2067,7 +2119,9 @@ if _show_results:
             hwm_hurdle=hwm_hurdle_pct,
             crystallization_freq=crystallization_freq,
             hurdle_type=hurdle_type,
+            mgmt_fee_freq=mgmt_fee_freq,
         )
+        mgmt_fee_events_df = ts_net.attrs.get("mgmt_fee_events", pd.DataFrame())
         ts["total_value_net"] = ts_net
 
     # =====================================================================
@@ -3958,6 +4012,28 @@ if _show_results:
                 "per crystallization period; perf fee crystallizes at period end on "
                 "gains above the HWM. Transaction costs and the dividend withholding "
                 "tax are already reflected in the NAV (see panel at left).")
+
+    if not mgmt_fee_events_df.empty:
+        st.markdown(f"##### Management-Fee-Abrechnung ({mgmt_fee_freq})")
+        st.caption(
+            "Unabhängig von der Performance-Fee-Kristallisation frei wählbar — "
+            "manche Anbieter rechnen beide Gebühren auf derselben Frequenz ab, "
+            "andere unterschiedlich. Ändert NICHT die tägliche NAV-Belastung "
+            "(die immer exakt dem angegebenen Jahressatz entspricht) — gruppiert "
+            "nur die bereits korrekt aufgelaufenen Beträge zu den tatsächlichen "
+            "Zahlungsterminen des Anbieters.")
+        _mfe = mgmt_fee_events_df.copy()
+        _mfe["date"] = pd.to_datetime(_mfe["date"]).dt.strftime("%Y-%m-%d")
+        _mfe_disp = _mfe.rename(columns={
+            "date": "Abrechnungsdatum", "period": "Periode",
+            "mgmt_fee": "Management Fee",
+        })
+        _mfe_disp["Management Fee"] = _mfe_disp["Management Fee"].apply(lambda x: f"CHF {x:,.0f}")
+        st.dataframe(_mfe_disp[["Periode", "Abrechnungsdatum", "Management Fee"]],
+                     use_container_width=True, hide_index=True, height=min(320, 40 + 35 * len(_mfe_disp)))
+        st.caption(f"{len(_mfe_disp)} Abrechnungstermine · Summe: "
+                   f"CHF {mgmt_fee_events_df['mgmt_fee'].sum():,.0f} "
+                   f"(entspricht Total Management Fee links)")
 
     # =====================================================================
     # BTC Weight Over Time
