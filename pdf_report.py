@@ -1929,21 +1929,46 @@ def build_tearsheet(
     if fee_table_rows:
         for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
             story.append(fl)
-        # Left: compact per-period cost ledger. Right: fee-summary KPI cards
-        # (same figures as the page-2 fee summary) as a sidebar total.
-        ledger = _compact_fee_table(
-            fee_table_headers, fee_table_rows, styles,
-            col_widths=[20 * mm, 24 * mm, 24 * mm, 24 * mm])
-        sidebar = _kpi_stack(fee_summary, styles) if fee_summary else Spacer(1, 1)
-        side_col = [Paragraph(S("fee_summary_side"), styles["h3"]),
-                    Spacer(1, 3), sidebar]
-        layout = Table([[ledger, side_col]], colWidths=[96 * mm, 74 * mm])
-        layout.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (0, 0), 10),
-        ]))
-        story.append(layout)
+        # SIZE-AWARE LAYOUT: the side-by-side (ledger + KPI sidebar) layout is
+        # a single-row nested table and therefore atomic — it cannot split
+        # across pages (confirmed by a production crash: 48 monthly-
+        # crystallization rows ≈ 663pt vs. a ~700pt frame, "too large on
+        # page 8"). ~13.7pt/row × (n_rows+1) is the measured row height. Below
+        # a safe threshold, keep the compact atomic side-by-side layout
+        # (unchanged, zero regression for the common Quarterly/Semi-Annual/
+        # Annual cases it was already tuned for). Above it (e.g. Monthly
+        # crystallization over several years), fall back to a full-width
+        # table that Platypus CAN split naturally across pages, with the KPI
+        # summary as a compact row above instead of a side column.
+        _est_ledger_height_pt = (len(fee_table_rows) + 1) * 13.8
+        _SAFE_LEDGER_HEIGHT_PT = 480  # matches the original side-by-side tuning
+        if _est_ledger_height_pt <= _SAFE_LEDGER_HEIGHT_PT:
+            ledger = _compact_fee_table(
+                fee_table_headers, fee_table_rows, styles,
+                col_widths=[20 * mm, 24 * mm, 24 * mm, 24 * mm])
+            sidebar = _kpi_stack(fee_summary, styles) if fee_summary else Spacer(1, 1)
+            side_col = [Paragraph(S("fee_summary_side"), styles["h3"]),
+                        Spacer(1, 3), sidebar]
+            layout = Table([[ledger, side_col]], colWidths=[96 * mm, 74 * mm])
+            layout.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (0, 0), 10),
+            ]))
+            story.append(layout)
+        else:
+            if fee_summary:
+                story.append(Paragraph(S("fee_summary_side"), styles["h3"]))
+                story.append(Spacer(1, 3))
+                story.append(_data_table(
+                    [k for k, _ in fee_summary], [[v for _, v in fee_summary]],
+                    styles, highlight_first_col=False))
+                story.append(Spacer(1, 10))
+            # Full-width, naturally page-splittable ledger (repeatRows=1 in
+            # _compact_fee_table re-prints the header row on every new page).
+            story.append(_compact_fee_table(
+                fee_table_headers, fee_table_rows, styles,
+                col_widths=[34 * mm, 42 * mm, 42 * mm, 42 * mm]))
     else:
         for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
             story.append(fl)
