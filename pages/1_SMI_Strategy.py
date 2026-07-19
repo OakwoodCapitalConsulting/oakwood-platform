@@ -2006,10 +2006,20 @@ if _show_results:
             # Für jeden auffälligen AKTIENTITEL (nicht BTC/FX) zusätzlich die
             # ROHEN Split-Ereignisse zeigen, die Yahoo für diesen Ticker meldet —
             # damit sichtbar wird, ob eine Split-Ratio die Ursache ist, statt es
-            # zu vermuten.
+            # zu vermuten. TEUER (Netzwerk-Aufrufe pro Titel) — deshalb hinter
+            # einem Button, läuft NICHT mehr automatisch bei jedem Skript-
+            # Durchlauf (das hatte die ganze Plattform spürbar verlangsamt).
             _flagged_tickers = sorted(set(
                 r["Ticker"] for r in _outlier_rows if r["Ticker"] != "—"))
             if _flagged_tickers:
+                st.caption(f"{len(_flagged_tickers)} auffällige(r) Aktientitel. Rohkurs-"
+                           "Diagnose lädt zusätzliche Daten von Yahoo Finance nach — "
+                           "nur auf Wunsch, um die Seite nicht bei jedem Aufruf zu verlangsamen.")
+                if st.button("🔍 Rohe Split-Ereignisse nachladen und prüfen",
+                            key="smi_dq_raw_go"):
+                    st.session_state["smi_dq_raw_has_run"] = True
+
+            if _flagged_tickers and st.session_state.get("smi_dq_raw_has_run"):
                 st.markdown("###### Rohe Split-Ereignisse der auffälligen Titel (Yahoo Finance)")
                 for _ft in _flagged_tickers:
                     _sp = _get_split_series(_ft)
