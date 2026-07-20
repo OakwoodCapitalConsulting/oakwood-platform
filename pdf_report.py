@@ -644,6 +644,7 @@ STRINGS = {
         "risk_metrics":          "Risk &amp; Risk-Adjusted Metrics",
         "fee_summary":           "Fee Summary",
         "fee_summary_side":      "Total Fees",
+        "fee_cagr_note":         "CAGR Impact is the difference between gross and net CAGR. It exceeds the stated management fee because fees are deducted continuously, so the amounts withdrawn no longer compound — it is an effect of compounding, not an additional charge.",
         "snapshot":              "Strategy Snapshot",
         "period_returns":        "Performance per Period",
         "period_returns_sub":    "Cumulative net returns over standard reporting horizons",
@@ -660,7 +661,7 @@ STRINGS = {
         "perf_fee_crystal":      "Cost Breakdown per Period",
         "methodology":           "Methodology &amp; Parameters",
         "universe":              "Investment Universe",
-        "universe_sub":          "Two sleeves: a structural Bitcoin allocation and an SMI equity replication using fixed target weights (a current-constituent approximation, not the index's historical composition). BTC weight is shown at portfolio level (target / cap); SMI weights are within the equity sleeve. See Methodology and Disclosures.",
+        "universe_sub":          "Two sleeves: a structural Bitcoin allocation and an SMI equity replication using fixed target weights (a current-constituent approximation, not the index's historical composition). Bitcoin exposure is held via a physically backed exchange-traded product, NOT through direct holding of Bitcoin; see Methodology for the instrument and its ongoing charge. BTC weight is shown at portfolio level (target / cap); SMI weights are within the equity sleeve. See Methodology and Disclosures.",
         "disclosures":           "Important Disclosures",
         # Snapshot labels
         "sn_inception":          "Inception",
@@ -711,6 +712,8 @@ STRINGS = {
         "eyebrow_05":            "FEES",
         "eyebrow_06":            "UNIVERSE",
         "eyebrow_07":            "DISCLOSURES",
+        "eyebrow_08":            "ATTRIBUTION",
+        "eyebrow_09":            "ROBUSTNESS",
     },
     # German values are intentionally left empty — Phase 2 fills them.
     # During Phase 1, lang="de" falls back to the EN values automatically.
@@ -731,6 +734,7 @@ STRINGS = {
         "risk_metrics":          "Risiko und risikoadjustierte Kennzahlen",
         "fee_summary":           "Gebührenübersicht",
         "fee_summary_side":      "Gesamtgebühren",
+        "fee_cagr_note":         "Die CAGR-Wirkung ist die Differenz zwischen Brutto- und Netto-CAGR. Sie liegt über dem angegebenen Gebührensatz, weil Gebühren laufend entnommen werden und die entnommenen Beträge nicht mehr mitverzinsen — ein Zinseszinseffekt, keine zusätzliche Gebühr.",
         "snapshot":              "Strategie-Eckdaten",
         "period_returns":        "Performance nach Zeitraum",
         "period_returns_sub":    "Kumulierte Nettorenditen über Standard-Reporting-Zeiträume",
@@ -747,7 +751,7 @@ STRINGS = {
         "perf_fee_crystal":      "Kostenaufstellung je Periode",
         "methodology":           "Methodik &amp; Parameter",
         "universe":              "Anlageuniversum",
-        "universe_sub":          "Zwei Sleeves: eine strukturelle Bitcoin-Allokation und eine SMI-Replikation mit festen Zielgewichten (Näherung auf Basis der aktuellen Mitglieder, nicht der historischen Index-Zusammensetzung). Das BTC-Gewicht ist auf Portfolio-Ebene angegeben (Ziel / Obergrenze); die SMI-Gewichte beziehen sich auf den Equity-Teil. Siehe Methodik und Hinweise.",
+        "universe_sub":          "Zwei Sleeves: eine strukturelle Bitcoin-Allokation und eine SMI-Replikation mit festen Zielgewichten (Näherung auf Basis der aktuellen Mitglieder, nicht der historischen Index-Zusammensetzung). Die Bitcoin-Exposure wird über ein physisch besichertes börsengehandeltes Produkt gehalten, NICHT durch Direkthaltung von Bitcoin; Instrument und laufende Gebühr siehe Methodik. Das BTC-Gewicht ist auf Portfolio-Ebene angegeben (Ziel / Obergrenze); die SMI-Gewichte beziehen sich auf den Equity-Teil. Siehe Methodik und Hinweise.",
         "disclosures":           "Wichtige Hinweise",
         # Snapshot labels
         "sn_inception":          "Auflagedatum",
@@ -798,6 +802,8 @@ STRINGS = {
         "eyebrow_05":            "GEBÜHREN",
         "eyebrow_06":            "UNIVERSUM",
         "eyebrow_07":            "HINWEISE",
+        "eyebrow_08":            "ATTRIBUTION",
+        "eyebrow_09":            "ROBUSTHEIT",
     },
 }
 
@@ -1025,6 +1031,11 @@ def _section_heading(eyebrow_num, title, styles, lang):
     """
     S = _S(lang)
     eyebrow_text = S(f"eyebrow_{eyebrow_num}")
+    # Fallback: fehlt der Schluessel im Sprachdict, gibt _S den Schluessel selbst
+    # zurueck ("eyebrow_08") und der Platzhalter landet sichtbar im PDF. Lieber
+    # gar kein Label als ein technischer Bezeichner im Kundendokument.
+    if eyebrow_text.startswith("eyebrow_"):
+        eyebrow_text = ""
     # Tracked small-caps via hair-spaces between glyphs
     spaced_label = "&#8202;".join(eyebrow_text)
     eyebrow_html = (
@@ -1975,6 +1986,8 @@ def build_tearsheet(
             story.append(_compact_fee_table(
                 fee_table_headers, fee_table_rows, styles,
                 col_widths=[34 * mm, 42 * mm, 42 * mm, 42 * mm]))
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(S("fee_cagr_note"), styles["small"]))
     else:
         for fl in _section_heading("05", S("perf_fee_crystal"), styles, lang):
             story.append(fl)

@@ -3364,6 +3364,178 @@ if _show_results:
     # (2) Rangstabilitaet ueber die Fenster, (3) Out-of-sample-Persistenz.
     # ======================================================================
     st.markdown("---")
+    # ======================================================================
+    # HALTEDAUER-ANALYSE — Trefferquote und Mechanismus-Beitrag
+    # Beantwortet die zwei Aussagen, mit denen das Produkt verkauft wird:
+    #   1) "Wir schlagen die reine Indexanlage" -> ueber WELCHE Haltedauer?
+    #   2) "Der Mechanismus traegt bei"         -> ab WELCHER Haltedauer?
+    # Beides ist haltedauerabhaengig; eine pauschale Aussage ("fast immer")
+    # haelt der Pruefung nicht stand, eine nach Haltedauer aufgeschluesselte
+    # schon.
+    #
+    # METHODIK Trefferquote: Ein Anleger kauft in ein LAUFENDES Produkt und
+    # haelt N Jahre. Es wird daher die bestehende NAV-Reihe in Fenster
+    # geschnitten, NICHT die Engine je Fenster neu gestartet — Letzteres
+    # unterstellte, das Produkt starte fuer jeden Anleger neu, was falsch waere.
+    # METHODIK DCA-Anteil: hier IST ein Neustart korrekt, denn die Attribution
+    # misst, wie viel des Bitcoin-Gewinns AB Auflage aus dem Ertragsmechanismus
+    # stammt. Deshalb je Fenster ein echter Engine-Lauf.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Haltedauer — Trefferquote & Beitrag des Mechanismus")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Beide Kernaussagen des "
+        "Produkts sind haltedauerabhängig. Kurzfristig verliert eine Strategie "
+        "mit Bitcoin-Anteil regelmässig gegen einen reinen Aktienindex; "
+        "langfristig wächst zugleich der Beitrag des ertragsfinanzierten "
+        "Mechanismus, weil sich mehr Dividenden angesammelt haben. Diese "
+        "Sektion beziffert beides.</p>", unsafe_allow_html=True)
+
+    hd1, hd2 = st.columns([1, 2])
+    with hd1:
+        _hd_step = st.selectbox("Fenster-Schritt", ["monatlich", "quartalsweise"],
+                                index=0, key="smi_hd_step")
+    with hd2:
+        st.caption("")
+        _hdgo = st.button("Haltedauer-Analyse starten", key="smi_hd_go")
+    if _hdgo:
+        st.session_state["smi_hd_run"] = True
+
+    if st.session_state.get("smi_hd_run"):
+        _hd_periods = [1, 2, 3, 5]
+        _hd_freq = "MS" if _hd_step == "monatlich" else "3MS"
+        _net = ts["total_value_net"].dropna()
+        _bm = bench["smi_tr"].dropna() if not bench.empty else pd.Series(dtype=float)
+
+        if _bm.empty or len(_net) < 300:
+            st.warning("Benchmark- oder Strategiereihe zu kurz für die Analyse.")
+        else:
+            _rows = []
+            for _yrs in _hd_periods:
+                _starts = pd.date_range(_net.index[0],
+                                        _net.index[-1] - pd.DateOffset(years=_yrs),
+                                        freq=_hd_freq)
+                _wins, _exc = 0, []
+                for _s in _starts:
+                    _e = _s + pd.DateOffset(years=_yrs)
+                    _ns = _net[(_net.index >= _s) & (_net.index <= _e)]
+                    _bs = _bm[(_bm.index >= _s) & (_bm.index <= _e)]
+                    if len(_ns) < 100 or len(_bs) < 100:
+                        continue
+                    _t = max((_ns.index[-1] - _ns.index[0]).days / 365.25, 1e-9)
+                    _cs = (_ns.iloc[-1] / _ns.iloc[0]) ** (1 / _t) - 1
+                    _cb = (_bs.iloc[-1] / _bs.iloc[0]) ** (1 / _t) - 1
+                    _exc.append(_cs - _cb)
+                    if _cs > _cb:
+                        _wins += 1
+                if _exc:
+                    _rows.append({
+                        "Haltedauer": f"{_yrs} Jahr" + ("" if _yrs == 1 else "e"),
+                        "Fenster": len(_exc),
+                        "Trefferquote": _wins / len(_exc),
+                        "Median-Mehrrendite": float(np.median(_exc)),
+                        "P25": float(np.percentile(_exc, 25)),
+                        "Schlechtestes": float(np.min(_exc)),
+                    })
+            _hd = pd.DataFrame(_rows)
+
+            if _hd.empty:
+                st.warning("Keine auswertbaren Fenster.")
+            else:
+                st.markdown("##### Trefferquote gegenüber dem SMI Total Return")
+                _d = _hd.copy()
+                _d["Trefferquote"] = (_d["Trefferquote"] * 100).round(1).astype(str) + "%"
+                _d["Median-Mehrrendite"] = (_d["Median-Mehrrendite"] * 100).round(2).astype(str) + "pp p.a."
+                _d["P25"] = (_d["P25"] * 100).round(2).astype(str) + "pp"
+                _d["Schlechtestes"] = (_d["Schlechtestes"] * 100).round(2).astype(str) + "pp"
+                st.dataframe(_d, use_container_width=True, hide_index=True)
+
+                figh = go.Figure()
+                figh.add_trace(go.Bar(
+                    x=_hd["Haltedauer"], y=_hd["Trefferquote"] * 100,
+                    marker_color=OAK_GOLD,
+                    text=[f"{v*100:.0f}%" for v in _hd["Trefferquote"]],
+                    textposition="outside"))
+                figh.add_hline(y=50, line=dict(color=OAK_CREAM_DIM, dash="dot"),
+                               annotation_text="50% — Münzwurf")
+                figh.update_yaxes(title_text="Anteil Fenster vor dem Index (%)",
+                                  range=[0, 105])
+                figh.update_xaxes(title_text="Haltedauer")
+                figh = style_plotly(figh, height=340)
+                st.plotly_chart(figh, use_container_width=True)
+                st.caption(
+                    "Ein Anleger kauft in das LAUFENDE Produkt und hält die "
+                    "angegebene Dauer. Gerechnet auf der bestehenden NAV-Reihe "
+                    "gegen den SMI Total Return über identische Zeiträume, "
+                    "netto nach allen Gebühren.")
+
+                # ---- Beitrag des Mechanismus nach Haltedauer ----
+                st.markdown("##### Beitrag des Ertragsmechanismus nach Haltedauer")
+                with st.spinner("Rechne Attribution je Haltedauer…"):
+                    _att_rows = []
+                    for _yrs in _hd_periods:
+                        _starts = pd.date_range(prices.index[0],
+                                                prices.index[-1] - pd.DateOffset(years=_yrs),
+                                                freq="6MS")
+                        _shares = []
+                        for _s in _starts:
+                            _w = prices.index[(prices.index >= _s) &
+                                              (prices.index <= _s + pd.DateOffset(years=_yrs))]
+                            if len(_w) < 100:
+                                continue
+                            try:
+                                _tsx, _, _ = run_strategy(
+                                    prices.loc[_w], divs, btc_series, fx,
+                                    initial_capital=initial_capital, weights=weights,
+                                    initial_btc_pct=initial_btc_pct,
+                                    upper_threshold=upper_threshold,
+                                    target_btc_pct=target_btc_pct,
+                                    rebalance_dates_set=rebal_dates, dca_months=dca_months,
+                                    tx_cost_bps=tx_cost_bps, cap_dates_set=cap_dates,
+                                    weight_cap=weight_cap_val)
+                            except Exception:
+                                continue
+                            if _tsx.empty:
+                                continue
+                            _sh = _tsx.attrs.get("attribution", {}).get("dca_share")
+                            if _sh is not None and _sh == _sh:
+                                _shares.append(_sh)
+                        if _shares:
+                            _att_rows.append({
+                                "Haltedauer": f"{_yrs} Jahr" + ("" if _yrs == 1 else "e"),
+                                "Fenster": len(_shares),
+                                "Median DCA-Anteil": float(np.median(_shares)),
+                            })
+                    # Volle Periode als Referenzpunkt ergaenzen
+                    _full = ts.attrs.get("attribution", {}).get("dca_share")
+                    _full_yrs = (ts.index[-1] - ts.index[0]).days / 365.25
+                    if _full is not None and _full == _full:
+                        _att_rows.append({
+                            "Haltedauer": f"{_full_yrs:.1f} Jahre (voll)",
+                            "Fenster": 1, "Median DCA-Anteil": float(_full)})
+                _att = pd.DataFrame(_att_rows)
+                if not _att.empty:
+                    _ad = _att.copy()
+                    _ad["Median DCA-Anteil"] = (_ad["Median DCA-Anteil"] * 100).round(1).astype(str) + "%"
+                    st.dataframe(_ad, use_container_width=True, hide_index=True)
+                    figa = go.Figure()
+                    figa.add_trace(go.Bar(
+                        x=_att["Haltedauer"], y=_att["Median DCA-Anteil"] * 100,
+                        marker_color=OAK_SAGE,
+                        text=[f"{v*100:.0f}%" for v in _att["Median DCA-Anteil"]],
+                        textposition="outside"))
+                    figa.update_yaxes(title_text="Anteil des BTC-Gewinns aus dem Mechanismus (%)")
+                    figa.update_xaxes(title_text="Haltedauer")
+                    figa = style_plotly(figa, height=340)
+                    st.plotly_chart(figa, use_container_width=True)
+                    st.caption(
+                        "Anteil des Bitcoin-Gewinns, der aus dem dividendenfinanzierten "
+                        "Mechanismus stammt statt aus der Startallokation — je Haltedauer "
+                        "über mehrere Startzeitpunkte, Median. Hier ist ein Neustart je "
+                        "Fenster korrekt, weil die Attribution ab Auflage misst. Der "
+                        "Anteil wächst mit der Haltedauer, weil sich über die Zeit mehr "
+                        "Dividenden ansammeln.")
+
     st.markdown("## Kalibrierung — Ausführungskonvention (Indifferenz-Test)")
     st.markdown(
         "<p style='color:#A9B5A4;margin-top:-6px'>Prüft, ob der gewählte "
@@ -4834,8 +5006,18 @@ if _show_results:
                 # (target + cap); SMI weights are within the equity sleeve.
                 btc_weight_label = (
                     f"{target_btc_pct*100:.0f}% \u00b7 cap {upper_threshold*100:.0f}%")
+                # WICHTIG: das Produkt haelt Bitcoin NICHT direkt, sondern ueber ein
+                # physisch besichertes ETP (Handelsreglement Abschnitt 1a). Frueher
+                # stand hier nur "Bitcoin / BTC", was dem Reglement direkt
+                # widersprach — wer beide Dokumente nebeneinanderlegt, haette den
+                # Widerspruch sofort gefunden.
+                _btc_instr_name = ("iShares Bitcoin ETP" if btc_source.startswith("IB1T")
+                                   else "Bitcoin")
+                _btc_instr_ticker = ("IB1T" if btc_source.startswith("IB1T") else "BTC")
+                _btc_sector = ("Digital Assets \u00b7 ETP" if btc_source.startswith("IB1T")
+                               else "Digital Assets")
                 universe_rows = (
-                    [["Bitcoin", "BTC", "Digital Assets", btc_weight_label]]
+                    [[_btc_instr_name, _btc_instr_ticker, _btc_sector, btc_weight_label]]
                     + [[v[0], t, v[2], v[1]] for t, v in SMI_CONSTITUENTS.items()]
                 )
 
@@ -5006,6 +5188,33 @@ if _show_results:
                         })
                     return _out
 
+                # --- Bausteine fuer die Methodik-Tabelle -------------------
+                # Diese Tabelle ist in BEIDEN Sprachfassungen englisch beschriftet
+                # (siehe uebrige Zeilen), daher auch die Werte englisch — und
+                # NICHT ueber die Variable `de`, die nur innerhalb von
+                # _xtabs_smi(lang) existiert.
+                if btc_source.startswith("IB1T ETP"):
+                    _btc_instrument_line = ("iShares Bitcoin ETP (IB1T, ISIN XS2940466316) — "
+                                            "physically backed, Swiss-domiciled, USD-denominated")
+                    _btc_ter_line = f"{etp_ter_pct*100:.2f}% p.a. (within the instrument, modelled)"
+                elif btc_source.startswith("IBIT"):
+                    _btc_instrument_line = "iShares Bitcoin Trust (IBIT) — actual prices from 2024"
+                    _btc_ter_line = "embedded in price history"
+                else:
+                    _btc_instrument_line = "Bitcoin spot (reference only, no instrument cost)"
+                    _btc_ter_line = "none"
+
+                # Gebuehrenlabel: bisher deutsch ("ab 15 Mio.") auch in der
+                # englischen Fassung — jetzt durchgaengig englisch wie die
+                # uebrigen Werte dieser Tabelle.
+                if isinstance(mgmt_fee_pct, list):
+                    _fee_label = " / ".join(
+                        (f"{r*100:.2f}%" if th <= 0
+                         else f"{r*100:.2f}% above CHF {th/1e6:.0f}m")
+                        for th, r in mgmt_fee_pct)
+                else:
+                    _fee_label = f"{mgmt_fee_pct*100:.2f}% p.a."
+
                 _rebal_label_map_de = {
                     "Jährlich": "jährlich (September)", "Halbjährlich": "halbjährlich",
                     "Quartalsweise": "quartalsweise", "Keine": "nicht rebalanciert",
@@ -5046,7 +5255,7 @@ if _show_results:
                         ("Mgmt Fees", f"CHF {total_mgmt_fees:,.0f}"),
                         ("Perf Fees", f"CHF {total_perf_fees:,.0f}"),
                         ("Total Fees", f"CHF {fees_total:,.0f}"),
-                        ("Fee Drag", f"{fee_drag*100:.2f}% p.a."),
+                        ("CAGR Impact", f"{fee_drag*100:.2f}% p.a."),
                     ],
                     risk_table_headers=["Metric", "Strategy (Net)", "SMI Total Return", "SMI Price Index"],
                     risk_table_rows=risk_rows,
@@ -5075,9 +5284,18 @@ if _show_results:
                         ("DCA Window", f"{dca_months} months per dividend"),
                         ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
                         ("Dividend Withholding Tax", f"{int(WITHHOLDING_TAX*100)}% (non-reclaimable, AMC)"),
+                        ("Bitcoin Instrument", _btc_instrument_line),
+                        ("Bitcoin Instrument Charge", _btc_ter_line),
                         ("Management Fee", _fee_label),
+                    ] + ([
+                        # Kristallisationsfrequenz und Hurdle sind bei einer
+                        # Performance Fee von 0% gegenstandslos und stiften nur
+                        # Verwirrung — daher nur zeigen, wenn es sie wirklich gibt.
                         ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({_crystallization_en})"),
                         ("Hurdle", f"{hurdle_type}, {hwm_hurdle_pct*100:.1f}% (Year 1)"),
+                    ] if perf_fee_pct > 0 else [
+                        ("Performance Fee", "none"),
+                    ]) + [
                         ("Risk-Free Rate", f"{risk_free_rate*100:.2f}%"),
                     ],
                     universe_rows=universe_rows,
