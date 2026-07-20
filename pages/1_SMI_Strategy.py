@@ -665,12 +665,15 @@ with st.sidebar:
         st.session_state["smi_has_run"] = True
     _show_results = run_btn or st.session_state.get("smi_has_run", False)
 
+    _tcf_footer = {"Monatlich (Standard)": "monthly", "Quartalsweise": "quarterly",
+                   "Halbjährlich": "semi-annual"}.get(threshold_check_freq, "monthly")
+
     st.markdown(
         f"<div style='font-size:10px; color:{OAK_SAGE_DIM}; text-transform:uppercase; "
         f"letter-spacing:0.12em; padding-top:24px; margin-top:24px; "
         f"border-top:1px solid {OAK_BORDER};'>"
-        "Data Source: Yahoo Finance · Adj. Close<br>"
-        "FX: USDCHF Spot · Threshold checks: monthly"
+        "Data Source: Yahoo Finance · Raw Close (split-adjusted only)<br>"
+        f"FX: USDCHF Spot · Threshold checks: {_tcf_footer}"
         "</div>", unsafe_allow_html=True
     )
 
@@ -987,9 +990,10 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     threshold_check_dates_set: dates on which the Bitcoin band (upper_threshold
     -> target_btc_pct) is evaluated. Defaults to EVERY month-end (None ->
-    falls back to month_ends below), matching the original verified design
-    (documented decision: "Rebalancing: Quarterly (SMI) · Monthly (BTC
-    check)"). Pass a coarser date set (e.g. via get_rebalance_dates) to check
+    falls back to month_ends below) — the finalized, calibrated rule
+    (Handelsreglement §6.1: monthly check; equity rebalancing is separately
+    annual/September per §7). Pass a coarser date set (e.g. via
+    get_rebalance_dates) to check
     less often — this only changes HOW OFTEN the band is evaluated, never
     whether DCA purchases happen (DCA always executes at every month-end,
     independent of this parameter).
@@ -4693,26 +4697,33 @@ Proceeds reinvested across SMI titles by current target weights.<br><br>
 with mechanical profit-taking on outsized crypto appreciation.<br><br>
 <strong style='color:{OAK_CREAM};'>Benchmarks.</strong> Strategy (net of fees) is compared against
 <em>SMI Total Return</em> (dividends, net of the same 35% withholding tax, reinvested into the
-same stocks, quarterly rebalanced) and the <em>SMI Price Index</em> (no dividend reinvestment).<br><br>
+same stocks, rebalanced on the same schedule as the strategy's equity core) and the
+<em>SMI Price Index</em> (no dividend reinvestment).<br><br>
 <strong style='color:{OAK_CREAM};'>Fees.</strong> Management fee accrued daily, performance fee
-charged annually on returns above a High Water Mark with a Year-1 hurdle. All risk metrics
-computed on the net-of-fees series.
+crystallized at the configured frequency on returns above a High Water Mark with a Year-1 hurdle.
+All risk metrics computed on the net-of-fees series.
 </div>
         """, unsafe_allow_html=True)
     with col_b:
-        st.markdown("### Default Parameters")
+        _en_rebal = {"Jährlich": "Annual (September)", "Halbjährlich": "Semi-Annual",
+                     "Quartalsweise": "Quarterly", "Keine": "None"}.get(rebalance_freq, rebalance_freq)
+        _en_tcf = {"Monatlich (Standard)": "Monthly", "Quartalsweise": "Quarterly",
+                   "Halbjährlich": "Semi-Annual"}.get(threshold_check_freq, "Monthly")
+        st.markdown("### Active Parameters")
+        st.caption("Live values from the current sidebar configuration — the defaults "
+                   "are the calibrated values per Handelsreglement.")
         st.markdown(f"""
 <div style='color:{OAK_CREAM_DIM}; line-height:1.9;'>
 <strong style='color:{OAK_SAGE};'>Initial Allocation</strong><br>
-85% SMI · 15% BTC<br><br>
+{(1-initial_btc_pct)*100:.0f}% SMI · {initial_btc_pct*100:.0f}% BTC<br><br>
 <strong style='color:{OAK_SAGE};'>Upper Threshold</strong><br>
-25% — sell-down trigger<br><br>
+{upper_threshold*100:.0f}% — sell-down trigger<br><br>
 <strong style='color:{OAK_SAGE};'>Target</strong><br>
-15% — post-rebalance weight<br><br>
+{target_btc_pct*100:.0f}% — post-rebalance weight<br><br>
 <strong style='color:{OAK_SAGE};'>DCA Window</strong><br>
-12 months per dividend<br><br>
+{dca_months} months per dividend<br><br>
 <strong style='color:{OAK_SAGE};'>Rebalancing</strong><br>
-Quarterly (SMI) · Monthly (BTC check)
+{_en_rebal} (SMI) · {_en_tcf} (BTC check)
 </div>
         """, unsafe_allow_html=True)
 

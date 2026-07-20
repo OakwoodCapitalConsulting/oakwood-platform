@@ -259,7 +259,7 @@ with col1:
     <span class="strat-tag">Strategie 01 · Kern: Schweizer Blue Chips</span>
     <h3>OAK Swiss Blue Chip / Bitcoin</h3>
     <p>Vollständige SMI-Replikation mit 20 Schweizer Blue Chips. Die Dividenden
-    werden vereinnahmt und über einen 12-Monats-DCA in Bitcoin investiert. Eine
+    werden vereinnahmt und über einen 6-Monats-DCA in Bitcoin investiert. Eine
     Threshold-Regel begrenzt die BTC-Quote zur Risikokontrolle.</p>
     <div class="strat-meta">
         Universum: <strong>SMI 20</strong> ·
