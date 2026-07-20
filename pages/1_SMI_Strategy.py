@@ -596,12 +596,28 @@ with st.sidebar:
                                 "Grid über 3/6/9/12 Monate — 6 Monate lag "
                                 "gleichauf mit dem Sharpe-Optimum und zugleich "
                                 "in der besseren Calmar-Gruppe).")
-    btc_source = st.radio("BTC-Quelle",
-        ["BTC-USD (gesamte Historie)", "IBIT ETF (ab Jan 2024)", "BTC-USD bis 2024, dann IBIT"],
+    st.markdown("### Bitcoin-Instrument")
+    btc_source = st.radio("Bitcoin-Exposure",
+        ["IB1T ETP (Spot − TER, volle Historie)",
+         "BTC-USD Spot (ohne TER, Referenz)",
+         "IBIT tatsächliche Kurse (ab Jan 2024)",
+         "BTC-USD bis 2024, dann IBIT"],
         index=0,
-        help="Standard auf die durchgängige BTC-USD-Reihe gesetzt — maximale "
-             "historische Tiefe für die Kalibrierung, keine Quellenwechsel-"
-             "Artefakte.")
+        help="Das Produkt hält Bitcoin NICHT direkt, sondern über das iShares "
+             "Bitcoin ETP (IB1T, physisch besichert, Schweizer Domizil, "
+             "USD-denominiert, Handel u.a. Xetra in EUR). Standard modelliert "
+             "dieses Instrument über die volle Spot-Historie abzüglich der "
+             "laufenden TER — das erhält 11 Jahre Kalibrierungstiefe UND "
+             "bildet die Kostenbelastung korrekt ab. Die tatsächlichen "
+             "Instrumentenkurse existieren erst ab 2024 (IBIT) bzw. 2025 "
+             "(IB1T) und reichen für kein einziges vollständiges "
+             "3-Jahres-Fenster.")
+    etp_ter_pct = st.slider("ETP-TER (% p.a.)", min_value=0.0, max_value=1.0,
+                            value=0.25, step=0.05,
+                            help="Laufende Gebühr des Bitcoin-ETP, täglich auf die "
+                                 "Bitcoin-Position abgegrenzt. IB1T: 0.15% während "
+                                 "des Waivers, danach 0.25%. Standard 0.25% = der "
+                                 "dauerhafte Satz (konservativ).") / 100.0
 
     st.markdown("### Risikoanalyse")
     risk_free_rate = st.slider("Risk-Free Rate (%)", min_value=0.0, max_value=5.0,
@@ -614,12 +630,39 @@ with st.sidebar:
                             help="Cost in basis points applied to traded notional at each "
                                  "trade (initial allocation, DCA buys, threshold sells, "
                                  "rebalancing turnover). 10 bps = 0.10%.")
-    mgmt_fee_pct = st.slider("Management Fee (% p.a.)", min_value=0.0, max_value=3.0,
-                             value=1.5, step=0.05,
-                             help="Daily accrual, deducted from NAV (1/252 per trading day).") / 100.0
+    use_tiered_fee = st.checkbox("Gestaffelte Management Fee (volumenabhängig)",
+                                 value=True,
+                                 help="Festgelegte Gebührenstruktur: 2.00% p.a. als "
+                                      "Basissatz, ab CHF 15 Mio. verwaltetem Vermögen "
+                                      "1.75%, ab CHF 25 Mio. 1.50%. Der Satz wird "
+                                      "täglich anhand des aktuellen NAV bestimmt. "
+                                      "Ausschalten, um einen fixen Satz zu testen.")
+    if use_tiered_fee:
+        _t1 = st.number_input("Basissatz (% p.a.)", 0.0, 5.0, 2.00, 0.05) / 100.0
+        _t2 = st.number_input("Satz ab Schwelle 1 (% p.a.)", 0.0, 5.0, 1.75, 0.05) / 100.0
+        _s2 = st.number_input("Schwelle 1 (Mio.)", 0.0, 500.0, 15.0, 1.0) * 1e6
+        _t3 = st.number_input("Satz ab Schwelle 2 (% p.a.)", 0.0, 5.0, 1.50, 0.05) / 100.0
+        _s3 = st.number_input("Schwelle 2 (Mio.)", 0.0, 500.0, 25.0, 1.0) * 1e6
+        mgmt_fee_pct = [(0.0, _t1), (_s2, _t2), (_s3, _t3)]
+        mgmt_fee_display = _t1
+        st.caption(f"Aktive Staffel: {_t1*100:.2f}% → {_t2*100:.2f}% ab "
+                   f"{_s2/1e6:.0f} Mio. → {_t3*100:.2f}% ab {_s3/1e6:.0f} Mio.")
+    else:
+        mgmt_fee_pct = st.slider("Management Fee (% p.a.)", min_value=0.0, max_value=3.0,
+                                 value=2.0, step=0.05,
+                                 help="Daily accrual, deducted from NAV.") / 100.0
+        mgmt_fee_display = mgmt_fee_pct
+    if isinstance(mgmt_fee_pct, list):
+        _fee_label = " / ".join(
+            (f"{r*100:.2f}%" if th <= 0 else f"{r*100:.2f}% ab {th/1e6:.0f} Mio.")
+            for th, r in mgmt_fee_pct)
+    else:
+        _fee_label = f"{mgmt_fee_pct*100:.2f}% p.a."
     perf_fee_pct = st.slider("Performance Fee (%)", min_value=0.0, max_value=30.0,
-                             value=15.0, step=1.0,
-                             help="Charged on gains above the High Water Mark.") / 100.0
+                             value=0.0, step=1.0,
+                             help="Festgelegt auf 0%: das Produkt erhebt ausschliesslich "
+                                  "eine Management Fee, keine erfolgsabhängige "
+                                  "Komponente.") / 100.0
     hurdle_type = st.selectbox("Hurdle Type",
                                ["Hard Hurdle", "Soft Hurdle", "No Hurdle (HWM only)"], index=0,
                                help="Hard: performance fee only on returns ABOVE the hurdle rate. "
@@ -944,9 +987,83 @@ def fetch_series(ticker, start, end):
     return s.dropna()
 
 
+def apply_etp_ter(spot_series, ter_annual):
+    """Model a physically-backed Bitcoin ETP (IB1T / IBIT) from a spot series.
+
+    WHY THIS EXISTS: the product does NOT hold Bitcoin directly — it holds the
+    iShares Bitcoin ETP (IB1T: physically backed, Swiss-domiciled, USD-
+    denominated, traded on Xetra/Euronext/LSE). An ETP's Bitcoin entitlement
+    per share DECLINES over time because the sponsor sells Bitcoin to pay the
+    fee, so the ETP price systematically lags spot by the accrued TER.
+
+    Using the ACTUAL instrument's price history is not viable for calibration:
+    IBIT starts 2024-01-11 and IB1T 2025-03-25 — neither covers a single full
+    3-year rolling window of the 2015-2026 calibration period. Splicing spot
+    onto instrument data (the legacy "BTC-USD bis 2024, dann IBIT" option)
+    silently applies ZERO cost for the pre-2024 stretch, which understates the
+    true drag over most of the backtest.
+
+    So instead: keep the full spot history and accrue the TER synthetically.
+
+        entitlement(t) = entitlement(0) * (1 - ter)^(years elapsed)
+        etp_price(t)   = spot(t) * entitlement(t)
+
+    This is exactly how the real instrument behaves, is conservative (assumes
+    the full standing TER, not the temporary waiver), and preserves 11 years
+    of calibration depth. Tracking difference, premium/discount and the small
+    gap between the CME CF Reference Rate and the spot exchange print are NOT
+    modelled — they are second-order and disclosed as a model assumption.
+    """
+    if spot_series is None or spot_series.empty or ter_annual <= 0:
+        return spot_series
+    idx = spot_series.index
+    years_elapsed = (idx - idx[0]).days / 365.25
+    drag = (1.0 - ter_annual) ** years_elapsed
+    return spot_series * pd.Series(drag, index=idx)
+
+
 # ---------------------------------------------------------------------------
 # Integrated Strategy Simulation
 # ---------------------------------------------------------------------------
+def get_execution_dates(idx, convention):
+    """Ausfuehrungstermine fuer die DCA-Tranchen nach einer benannten Konvention.
+
+    Dient dem INDIFFERENZ-TEST: nicht um den historisch besten Tag zu suchen
+    (das waere Market-Timing und widerspraeche der prognosefreien Positionierung),
+    sondern um zu pruefen, OB die Wahl des Tages ueberhaupt einen materiellen
+    Unterschied macht. Ist der Unterschied zwischen den Konventionen klein
+    gegenueber der Streuung zwischen den Zeitfenstern, ist die Wahl operativ
+    frei und kann im Reglement mit Betriebsargumenten begruendet werden.
+
+    Alle Konventionen liefern genau EINEN Termin je Kalendermonat und fallen
+    auf einen tatsaechlichen Handelstag des uebergebenen Index.
+    """
+    df = pd.DataFrame(index=idx)
+    df["ym"] = df.index.to_period("M")
+    out = set()
+    for _ym, sub in df.groupby("ym"):
+        days = sub.index
+        if len(days) == 0:
+            continue
+        if convention == "Monatsultimo":
+            out.add(days[-1])
+        elif convention == "Monatsanfang":
+            out.add(days[0])
+        elif convention == "Monatsmitte":
+            # Handelstag am naechsten zum 15. des Monats
+            target = pd.Timestamp(year=days[0].year, month=days[0].month, day=15)
+            out.add(min(days, key=lambda d: abs((d - target).days)))
+        elif convention == "Letzter Montag":
+            mondays = [d for d in days if d.weekday() == 0]
+            out.add(mondays[-1] if mondays else days[-1])
+        elif convention == "Erster Montag":
+            mondays = [d for d in days if d.weekday() == 0]
+            out.add(mondays[0] if mondays else days[0])
+        else:
+            out.add(days[-1])
+    return out
+
+
 def get_rebalance_dates(idx, freq):
     """Rebalance-Kalender für den SMI-Aktienkern.
 
@@ -984,7 +1101,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                  initial_capital, weights,
                  initial_btc_pct, upper_threshold, target_btc_pct,
                  rebalance_dates_set, dca_months, tx_cost_bps=0.0,
-                 threshold_check_dates_set=None):
+                 threshold_check_dates_set=None, cap_dates_set=None,
+                 weight_cap=None, dca_execution_dates_set=None):
     """Integrated daily simulation.
     Returns: timeseries_df, transactions_df, threshold_events_df
 
@@ -1010,6 +1128,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     # consistent under pandas 3.x.
     prices = _clean_index(prices.copy())
     rebalance_dates_set = {_norm_ts(x) for x in rebalance_dates_set}
+    cap_dates_set = {_norm_ts(x) for x in (cap_dates_set or set())}
     available = [t for t in weights if t in prices.columns]
     if not available:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -1057,6 +1176,14 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     df_idx["ym"] = df_idx.index.to_period("M")
     for ym, sub in df_idx.groupby("ym"):
         month_ends.add(sub.index[-1])
+    # AUSFUEHRUNGSKONVENTION: standardmaessig der Monatsultimo (kalibrierte
+    # Regel, Handelsreglement 5.1). Wird eine alternative Terminmenge
+    # uebergeben, ersetzt sie den Monatsultimo als DCA-Ausfuehrungstag —
+    # ausschliesslich fuer den Indifferenz-Test, der prueft, OB der gewaehlte
+    # Tag ueberhaupt einen Unterschied macht. Die Schwellenpruefung bleibt
+    # davon unberuehrt (eigener Parameter).
+    if dca_execution_dates_set:
+        month_ends = {_norm_ts(x) for x in dca_execution_dates_set}
 
     first_day = prices_clean.index[0]
     btc_price_0 = get_btc_price(first_day)
@@ -1266,6 +1393,67 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     shrink = (smi_value - cost) / smi_value
                     for t in active_today:
                         smi_shares[t] *= shrink
+
+        # 4b. QUARTERLY CAP-ONLY ADJUSTMENT (real SIX two-tier mechanic).
+        # SIX runs two DISTINCT operations, and this models both faithfully:
+        #   - Annually (3rd Friday September): full review — composition change
+        #     plus complete re-weighting. That is block 4 above.
+        #   - Quarterly (3rd Friday Mar/Jun/Sep/Dec): capping ONLY — any single
+        #     constituent whose weight has drifted above the cap is trimmed back
+        #     to the cap and the excess redistributed across the others. Weights
+        #     BELOW the cap are left to drift; there is no full reset.
+        # Modelling only the annual reset (the previous behaviour) would let a
+        # single title run far above the cap for up to a year, which the real
+        # index never permits. September is skipped here because the full
+        # reset that same day already enforces the cap.
+        if (weight_cap and d in cap_dates_set and d not in rebalance_dates_set
+                and d != first_day and active_today):
+            smi_value = _smi_value_on(d, row)
+            # FEASIBILITY GUARD: with n active titles, a cap of c is only
+            # satisfiable if n * c >= 1. For the SMI (20 titles, 18% cap) that
+            # holds comfortably (3.6), but a shrunken active set — heavy data
+            # outage, or a stress configuration — can make it impossible. In
+            # that case the capping loop would cap everything and silently
+            # DROP the unallocatable remainder, destroying NAV. Skip instead.
+            _n_act = len(active_today)
+            _feasible = (_n_act * weight_cap) >= (1.0 - 1e-9)
+            if smi_value > 0 and _feasible:
+                cur_val = {t: smi_shares[t] * row[t] for t in active_today}
+                cur_w = {t: cur_val[t] / smi_value for t in active_today}
+                if any(v > weight_cap + 1e-12 for v in cur_w.values()):
+                    # Iterative capping: trimming one title raises the others,
+                    # which can push a second title over the cap in turn.
+                    target_w = dict(cur_w)
+                    for _ in range(_n_act + 2):
+                        over = [t for t in active_today if target_w[t] > weight_cap + 1e-12]
+                        if not over:
+                            break
+                        excess = sum(target_w[t] - weight_cap for t in over)
+                        for t in over:
+                            target_w[t] = weight_cap
+                        under = [t for t in active_today if target_w[t] < weight_cap - 1e-12]
+                        base = sum(target_w[t] for t in under)
+                        if not under or base <= 0:
+                            break
+                        for t in under:
+                            target_w[t] += excess * (target_w[t] / base)
+                    # SAFETY NET: whatever the loop did (converged, hit the
+                    # iteration limit, or broke out early), the weights MUST
+                    # still sum to 1 — renormalise so no NAV can ever leak out
+                    # of this block.
+                    _wsum = sum(target_w.values())
+                    if _wsum > 0:
+                        for t in active_today:
+                            target_w[t] /= _wsum
+                        turnover_chf = sum(
+                            abs(smi_value * target_w[t] - cur_val[t]) for t in active_today) / 2.0
+                        cost = turnover_chf * tx_cost
+                        total_tx_costs += cost
+                        for t in active_today:
+                            smi_shares[t] = (smi_value * target_w[t]) / row[t]
+                        shrink = (smi_value - cost) / smi_value
+                        for t in active_today:
+                            smi_shares[t] *= shrink
 
         # 5. Record state of day
         smi_value = _smi_value_on(d, row)
@@ -1569,7 +1757,30 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
                       / 365.25, 1e-9)
     obs_per_year = max((len(gross_values) - 1) / _span_years, 1.0)
 
-    daily_mgmt = mgmt_fee_annual / obs_per_year
+    # GESTAFFELTE MANAGEMENT FEE (volumenabhaengig).
+    # mgmt_fee_annual kann entweder eine Zahl sein (fixer Satz, Altverhalten)
+    # oder eine aufsteigend sortierte Staffel [(AuM-Schwelle, Satz), ...].
+    # Bei einer Staffel wird der Satz TAEGLICH anhand des aktuellen NAV
+    # bestimmt: waechst das Produkt ueber eine Schwelle, greift der guenstigere
+    # Satz ab diesem Tag; faellt es zurueck, greift wieder der hoehere. Das
+    # bildet ab, wie eine volumenabhaengige Gebuehr real abgerechnet wird.
+    _fee_tiers = None
+    if isinstance(mgmt_fee_annual, (list, tuple)):
+        _fee_tiers = sorted(mgmt_fee_annual, key=lambda x: x[0])
+        _flat_mgmt = _fee_tiers[0][1]
+    else:
+        _flat_mgmt = float(mgmt_fee_annual)
+
+    def _mgmt_rate_for(nav):
+        if not _fee_tiers:
+            return _flat_mgmt
+        rate = _fee_tiers[0][1]
+        for threshold, r in _fee_tiers:
+            if nav >= threshold:
+                rate = r
+        return rate
+
+    daily_mgmt = _flat_mgmt / obs_per_year
     net = pd.Series(index=gross_values.index, dtype=float)
     # Start the net series at the actual day-0 gross value so the initial
     # transaction-cost drag is reflected in the net NAV as well (previously
@@ -1601,7 +1812,7 @@ def apply_fees(gross_values, initial_capital, mgmt_fee_annual=0.015,
         gross_ret = (gross_today / gross_prev - 1.0) if gross_prev > 0 else 0.0
 
         nv = net.iloc[i - 1] * (1.0 + gross_ret)
-        mgmt_today = nv * daily_mgmt
+        mgmt_today = nv * (_mgmt_rate_for(nv) / obs_per_year)
         nv -= mgmt_today
         total_mgmt += mgmt_today
         period_mgmt += mgmt_today
@@ -1910,7 +2121,15 @@ if _show_results:
         fx = fetch_series("USDCHF=X", start_str, end_str)
     with st.spinner("Loading Bitcoin series ..."):
         btc_spot = fetch_series("BTC-USD", start_str, end_str)
-        if btc_source.startswith("IBIT"):
+        if btc_source.startswith("IB1T ETP"):
+            # DEFAULT: model the actual instrument (IB1T ETP) from the full
+            # spot history minus the accrued TER. See apply_etp_ter().
+            btc_series = apply_etp_ter(btc_spot, etp_ter_pct)
+        elif btc_source.startswith("BTC-USD Spot"):
+            # Reference only: raw spot, no instrument cost. Useful to quantify
+            # exactly what the ETP wrapper costs, not for the official figures.
+            btc_series = btc_spot
+        elif btc_source.startswith("IBIT tatsächliche"):
             ibit = fetch_series("IBIT", "2024-01-11", end_str)
             if not btc_spot.empty and not ibit.empty:
                 overlap = pd.concat([btc_spot, ibit], axis=1, join="inner").dropna()
@@ -1977,6 +2196,13 @@ if _show_results:
             weights = {t: w / total_w * 100.0 for t, w in weights.items()}
 
     rebal_dates = get_rebalance_dates(prices.index, rebalance_freq)
+    # SIX-Zweistufigkeit: neben dem jaehrlichen Voll-Reset zusaetzlich die
+    # quartalsweisen Kappungstermine. Der 18%-Cap ist Bestandteil der
+    # Marktkapitalisierungs-Methode; bei Gleichgewichtung (5% je Titel) gibt
+    # es nichts zu kappen.
+    _uses_cap = weighting_method.startswith("Marktkapitalisierung")
+    cap_dates = get_rebalance_dates(prices.index, "Quartalsweise") if _uses_cap else set()
+    weight_cap_val = 0.18 if _uses_cap else None
 
     # =====================================================================
     # DATENQUALITÄT — Ausreisser-Diagnose
@@ -1987,6 +2213,61 @@ if _show_results:
     # auffällige Bewegung wird mit Titel, Datum und Vorher/Nachher-Kurs
     # ausgewiesen.
     # =====================================================================
+    with st.expander("🧪 Instrument — Validierung des ETP-Modells gegen echte Kurse"):
+        st.caption(
+            "Das Produkt hält Bitcoin über das iShares Bitcoin ETP (IB1T), nicht "
+            "direkt. Da IB1T erst seit 25.03.2025 und IBIT erst seit 11.01.2024 "
+            "handelt, deckt kein tatsächlicher Instrumentenkurs auch nur ein "
+            "vollständiges 3-Jahres-Fenster der Kalibrierung ab. Das Modell "
+            "bildet das Instrument daher aus der vollen Spot-Historie abzüglich "
+            "laufender TER nach. Dieser Test prüft empirisch, ob diese Annahme "
+            "das reale Instrumentenverhalten trifft — gemessen an IBIT, das die "
+            "längste verfügbare Historie hat.")
+        if st.button("Modell gegen echte IBIT-Kurse prüfen", key="smi_etp_val_go"):
+            st.session_state["smi_etp_val_run"] = True
+        if st.session_state.get("smi_etp_val_run"):
+            _ib = fetch_series("IBIT", "2024-01-11", end_str)
+            if _ib.empty or btc_spot.empty:
+                st.warning("IBIT- oder Spot-Kurse nicht verfügbar — Prüfung übersprungen.")
+            else:
+                _ov = pd.concat([btc_spot, _ib], axis=1, join="inner").dropna()
+                _ov.columns = ["spot", "ibit"]
+                if len(_ov) < 60:
+                    st.warning(f"Nur {len(_ov)} gemeinsame Handelstage — zu wenig für eine "
+                               "belastbare Aussage.")
+                else:
+                    _yrs = max((_ov.index[-1] - _ov.index[0]).days / 365.25, 1e-9)
+                    _rel = (_ov["ibit"] / _ov["ibit"].iloc[0]) / (_ov["spot"] / _ov["spot"].iloc[0])
+                    _implied = 1 - _rel.iloc[-1] ** (1 / _yrs)
+                    v1, v2, v3 = st.columns(3)
+                    with v1:
+                        st.metric("Implizierte Gebühr (real)", f"{_implied*100:.3f}% p.a.")
+                        st.caption(f"aus {len(_ov)} Handelstagen, {_yrs:.2f} Jahre")
+                    with v2:
+                        st.metric("Im Modell angesetzt", f"{etp_ter_pct*100:.3f}% p.a.")
+                        st.caption("Sidebar-Einstellung")
+                    with v3:
+                        _gap_bp = (_implied - etp_ter_pct) * 10000
+                        st.metric("Abweichung", f"{_gap_bp:+.1f} bp p.a.")
+                        st.caption("real minus Modell")
+                    st.caption(
+                        f"Kumulative Abweichung IBIT gegenüber Spot über den "
+                        f"Überlappungszeitraum: {(_rel.iloc[-1]-1)*100:+.2f}%. "
+                        "Eine implizierte Gebühr nahe der offiziellen TER bestätigt "
+                        "die Modellannahme. Grössere Abweichungen sind erwartbar und "
+                        "stammen aus Prämie/Abschlag zum NAV, dem Unterschied zwischen "
+                        "CME-CF-Referenzkurs und Spot-Börsenkurs sowie den "
+                        "unterschiedlichen Handelszeiten (Spot 24/7, ETP nur "
+                        "Börsenstunden) — allesamt zweitrangig und im Reglement als "
+                        "Modellannahme offengelegt.")
+                    if abs(_gap_bp) > 25:
+                        st.warning(
+                            f"⚑ Abweichung über 25 bp p.a. — vor der Einreichung prüfen, "
+                            "ob der angesetzte TER-Wert noch zum tatsächlichen Instrument "
+                            "passt (Waiver ausgelaufen? falsches Instrument gewählt?).")
+                    else:
+                        st.success("✓ Modellannahme durch reale Instrumentenkurse gestützt.")
+
     with st.expander("🔍 Datenqualität — Ausreisser-Diagnose (Kurssprünge)"):
         st.caption(
             "Prüft jeden geladenen Titel sowie Bitcoin und den USD/CHF-Kurs auf "
@@ -2141,6 +2422,7 @@ if _show_results:
             initial_btc_pct, upper_threshold, target_btc_pct,
             rebal_dates, dca_months, tx_cost_bps=tx_cost_bps,
             threshold_check_dates_set=threshold_dates,
+            cap_dates_set=cap_dates, weight_cap=weight_cap_val,
         )
 
     if ts is None or ts.empty or "total_value" not in ts.columns:
@@ -2219,7 +2501,7 @@ if _show_results:
 
     c9, c10, c11, c12 = st.columns(4)
     c9.metric("Management-Gebühren", fmt_chf(total_mgmt_fees),
-              f"{mgmt_fee_pct*100:.2f}% p.a. on NAV", delta_color="off")
+              f"{mgmt_fee_display*100:.2f}% p.a. on NAV", delta_color="off")
     c10.metric("Performance-Gebühren", fmt_chf(total_perf_fees),
                f"{perf_fee_pct*100:.0f}% × excess · {n_perf_periods} of {n_perf_total_periods} {crystallization_freq.lower()} periods charged", delta_color="off")
     c11.metric("Transaktionskosten", fmt_chf(total_tx_costs),
@@ -2756,7 +3038,7 @@ if _show_results:
             dwres = compute_start_date_sensitivity(
                 prices, divs, btc_series, fx, weights, initial_capital,
                 _dw_candidates, [0.10, 0.20], 0.10, 3, 12, _dw_dd,
-                cache_token=(weighting_method, start_str, end_str, btc_source))
+                cache_token=(weighting_method, start_str, end_str, btc_source, etp_ter_pct))
 
         if dwres.empty:
             st.warning("Zu wenig Daten für den Sensitivitätstest.")
@@ -2958,7 +3240,7 @@ if _show_results:
                 prices, divs, btc_series, fx, weights, initial_capital,
                 _sallocs, _sfees, upper_threshold, target_btc_pct, dca_months,
                 tx_cost_bps, _sw, _sm, crystallization_freq, hurdle_type,
-                hwm_hurdle_pct, perf_fee_pct, cache_token=(weighting_method, start_str, end_str, btc_source))
+                hwm_hurdle_pct, perf_fee_pct, cache_token=(weighting_method, start_str, end_str, btc_source, etp_ter_pct))
 
         if sgrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
@@ -3034,7 +3316,7 @@ if _show_results:
             st.markdown("##### Worst-Entry — der Investor mit dem schlechtesten Einstieg")
             _cur = min(_sallocs, key=lambda a: abs(a - initial_btc_pct))
             _sg = sgrid[(sgrid["alloc"] == _cur)
-                        & (np.isclose(sgrid["fee"], mgmt_fee_pct))]
+                        & (np.isclose(sgrid["fee"], mgmt_fee_display))]
             if _sg.empty:
                 _sg = sgrid[sgrid["alloc"] == _cur]
             if not _sg.empty:
@@ -3056,7 +3338,7 @@ if _show_results:
                     st.metric("Streuung", f"{_sp:.0f} pp")
                     st.caption("Max − Min über alle Fenster")
                 st.caption(
-                    f"Bei {_cur*100:.0f}% Startallokation und {mgmt_fee_pct*100:.2f}% Fee. "
+                    f"Bei {_cur*100:.0f}% Startallokation und {mgmt_fee_display*100:.2f}% Fee. "
                     "Je schlechter der Einstieg, desto wichtiger wird der "
                     "dividendenfinanzierte DCA — er kauft antizyklisch nach, während "
                     "der Aktienkern unangetastet weiterläuft.")
@@ -3161,8 +3443,8 @@ if _show_results:
             tfgrid = compute_smi_threshold_freq_grid(
                 prices, divs, btc_series, fx, weights, initial_capital,
                 _tf_allocs, _tf_freqs, upper_threshold, target_btc_pct, dca_months,
-                tx_cost_bps, _tfw, _tf_sm, mgmt_fee_pct,
-                cache_token=(weighting_method, start_str, end_str, btc_source))
+                tx_cost_bps, _tfw, _tf_sm, mgmt_fee_display,
+                cache_token=(weighting_method, start_str, end_str, btc_source, etp_ter_pct))
 
         if tfgrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
@@ -3339,8 +3621,8 @@ if _show_results:
                          "(2 Engine-Läufe je Kombination)"):
             agrid = compute_smi_alpha_grid(
                 prices, divs, btc_series, fx, weights, initial_capital,
-                _ac_allocs, 0.10, dca_months, tx_cost_bps, _acw, _ac_sm, mgmt_fee_pct,
-                cache_token=(weighting_method, start_str, end_str, btc_source))
+                _ac_allocs, 0.10, dca_months, tx_cost_bps, _acw, _ac_sm, mgmt_fee_display,
+                cache_token=(weighting_method, start_str, end_str, btc_source, etp_ter_pct))
 
         if agrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
@@ -3608,7 +3890,7 @@ if _show_results:
             _rows = compute_smi_sharpe_one_combo(
                 prices, divs, btc_series, fx, weights, initial_capital,
                 _a, _w, _d, tx_cost_bps, _shw, _sh_sm,
-                cache_token=(weighting_method, start_str, end_str, btc_source))
+                cache_token=(weighting_method, start_str, end_str, btc_source, etp_ter_pct))
             _all_rows.extend(_rows)
             _elapsed = _time.time() - _t0
             _eta = (_elapsed / (_i + 1)) * (len(_combos) - _i - 1)
@@ -4009,7 +4291,7 @@ if _show_results:
             f"<div style='color:{OAK_SAGE}; font-size:10px; text-transform:uppercase; "
             f"letter-spacing:0.14em; font-weight:600;'>Fee Structure</div>"
             f"<div style='color:{OAK_CREAM_DIM}; font-size:13px; margin-top:12px; line-height:1.8;'>"
-            f"<strong style='color:{OAK_CREAM};'>Management Fee:</strong> {mgmt_fee_pct*100:.2f}% p.a. "
+            f"<strong style='color:{OAK_CREAM};'>Management Fee:</strong> {_fee_label} "
             f"· CHF {total_mgmt_fees:,.0f}<br>"
             f"<span style='font-size:11px; color:{OAK_SAGE_DIM};'>Accrued daily (1/252 per trading day)</span><br><br>"
             f"<strong style='color:{OAK_CREAM};'>Performance Fee:</strong> {perf_fee_pct*100:.0f}% "
@@ -4633,7 +4915,7 @@ if _show_results:
                         ("DCA Window", f"{dca_months} months per dividend"),
                         ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
                         ("Dividend Withholding Tax", f"{int(WITHHOLDING_TAX*100)}% (non-reclaimable, AMC)"),
-                        ("Management Fee", f"{mgmt_fee_pct*100:.2f}% p.a."),
+                        ("Management Fee", _fee_label),
                         ("Performance Fee", f"{perf_fee_pct*100:.0f}% ({_crystallization_en})"),
                         ("Hurdle", f"{hurdle_type}, {hwm_hurdle_pct*100:.1f}% (Year 1)"),
                         ("Risk-Free Rate", f"{risk_free_rate*100:.2f}%"),
