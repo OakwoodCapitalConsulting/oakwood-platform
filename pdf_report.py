@@ -829,7 +829,7 @@ DISCLAIMER_PARAGRAPHS = {
         "historical membership or weight changes, and is therefore subject to "
         "survivorship and look-ahead bias. The SMI Total Return benchmark shown is a "
         "rule-based replication built on the same fixed-weight basis (rebalanced "
-        "quarterly, dividends net of withholding tax) rather than the official SMI "
+        "{rebal_freq}, dividends net of withholding tax) rather than the official SMI "
         "index series; the reported excess return therefore isolates the effect of "
         "the Bitcoin sleeve and fees, not the tracking error versus the live index. "
         "Performance figures are shown net of the stated management and "
@@ -872,7 +872,7 @@ DISCLAIMER_PARAGRAPHS = {
         "Mitgliedschafts- und Gewichtsänderungen des Index nicht nach und unterliegt "
         "daher einem Survivorship- und Look-ahead-Bias. Der ausgewiesene SMI Total "
         "Return Benchmark ist eine regelbasierte Nachbildung auf derselben "
-        "Festgewichts-Basis (quartalsweises Rebalancing, Dividenden nach Quellensteuer) "
+        "Festgewichts-Basis ({rebal_freq}, Dividenden nach Quellensteuer) "
         "und nicht die offizielle SMI-Indexreihe; die ausgewiesene Mehrrendite "
         "isoliert somit den Effekt der Bitcoin-Allokation und der Gebühren, nicht den "
         "Tracking Error gegenüber dem realen Index. Die Performance-Zahlen werden nach "
@@ -1703,6 +1703,12 @@ def build_tearsheet(
     # --- Per-product overrides (so non-SMI products don't inherit SMI wording) ---
     perf_summary_sub=None,     # optional str: replaces the "Net of fees …35% WHT" subtitle
     disclaimer_paragraphs=None,  # optional list[str]: replaces DISCLAIMER_PARAGRAPHS[lang]
+    rebal_freq_label="quarterly",  # substituted into the SMI-benchmark disclosure
+                                    # paragraph's "{rebal_freq}" placeholder — pass the
+                                    # ACTUAL equity-rebalancing frequency used in the
+                                    # backtest (e.g. "annually (September)"), not a
+                                    # hardcoded default, so the disclosure stays
+                                    # congruent with the sidebar/Reglement.
     benchmark_label=None,      # optional str: benchmark column label in the
                                # Performance-per-Period table (default: SMI Total Return)
     universe_sub=None,         # optional str: subtitle above the universe table
@@ -2001,6 +2007,8 @@ def build_tearsheet(
     disclaimer_paragraphs = (disclaimer_paragraphs
                              or DISCLAIMER_PARAGRAPHS.get(lang)
                              or DISCLAIMER_PARAGRAPHS["en"])
+    disclaimer_paragraphs = [
+        p.replace("{rebal_freq}", rebal_freq_label) for p in disclaimer_paragraphs]
     for p in disclaimer_paragraphs:
         story.append(Paragraph(p, styles["disclaimer"]))
 
@@ -2091,6 +2099,8 @@ def build_bilingual_tearsheet(
     perf_summary_sub_en=None,
     disclaimer_paragraphs_de=None,
     disclaimer_paragraphs_en=None,
+    rebal_freq_label_de="quartalsweise",
+    rebal_freq_label_en="quarterly",
     benchmark_label_de=None,
     benchmark_label_en=None,
     universe_sub_de=None,
@@ -2150,6 +2160,7 @@ def build_bilingual_tearsheet(
         lang="de",
         perf_summary_sub=perf_summary_sub_de,
         disclaimer_paragraphs=disclaimer_paragraphs_de,
+        rebal_freq_label=rebal_freq_label_de,
         benchmark_label=benchmark_label_de,
         universe_sub=universe_sub_de,
         extra_tables=extra_tables_de,
@@ -2162,6 +2173,7 @@ def build_bilingual_tearsheet(
         lang="en",
         perf_summary_sub=perf_summary_sub_en,
         disclaimer_paragraphs=disclaimer_paragraphs_en,
+        rebal_freq_label=rebal_freq_label_en,
         benchmark_label=benchmark_label_en,
         universe_sub=universe_sub_en,
         extra_tables=extra_tables_en,

@@ -2,11 +2,13 @@
 SMI/BTC Strategy Backtester — Oakwood Capital
 =============================================
 Integrated daily simulation with:
-  - Initial allocation (default 85% SMI / 15% BTC)
-  - Dividend harvesting → 12-month DCA into BTC
-  - Threshold-based rebalancing: when BTC > upper threshold,
-    sell down to target and reallocate to SMI by weight
-  - Quarterly SMI rebalancing to target weights
+  - Initial allocation (calibrated default 85% SMI / 15% BTC)
+  - Dividend harvesting → 6-month DCA into BTC (calibrated; Sharpe/Calmar-
+    optimal among 3/6/9/12-month windows tested)
+  - Threshold-based rebalancing: when BTC > upper threshold (25%, calibrated),
+    sell down to target (15%) and reallocate to SMI by weight
+  - Annual SMI rebalancing to target weights (September, calibrated —
+    aligned with the real SIX index-review date)
 """
 
 import base64
@@ -547,7 +549,7 @@ with st.sidebar:
             st.session_state["smi_has_run"] = True  # auto-show results
 
     st.markdown("### Backtest-Zeitraum")
-    _default_start = st.session_state.get("scenario_start", date(2018, 1, 1))
+    _default_start = st.session_state.get("scenario_start", date(2015, 1, 1))
     _default_end = st.session_state.get("scenario_end", date.today())
     start_date = st.date_input("Startdatum", value=_default_start,
                                min_value=date(2010, 1, 1),
@@ -584,13 +586,22 @@ with st.sidebar:
     weighting_method = st.radio("SMI Gewichtung",
         ["Marktkapitalisierung (Approx. + 18% Cap)", "Equal Weight (5 % je Titel)"])
     rebalance_freq = st.selectbox("SMI Rebalancing-Frequenz",
-        ["Quartalsweise", "Halbjährlich", "Jährlich", "Keine"], index=0)
+        ["Jährlich", "Halbjährlich", "Quartalsweise", "Keine"], index=0,
+        help="Final kalibriert auf Jährlich (September) — an den echten SIX-"
+             "Indexreview-Termin angelehnt. Siehe Handelsreglement §7.")
 
     st.markdown("### Dividenden-Wiederanlage")
-    dca_months = st.slider("DCA-Zeitraum (Monate)", 1, 24, 12)
+    dca_months = st.slider("DCA-Zeitraum (Monate)", 1, 24, 6,
+                           help="Final kalibriert auf 6 Monate (Sharpe-/Calmar-"
+                                "Grid über 3/6/9/12 Monate — 6 Monate lag "
+                                "gleichauf mit dem Sharpe-Optimum und zugleich "
+                                "in der besseren Calmar-Gruppe).")
     btc_source = st.radio("BTC-Quelle",
         ["BTC-USD (gesamte Historie)", "IBIT ETF (ab Jan 2024)", "BTC-USD bis 2024, dann IBIT"],
-        index=2)
+        index=0,
+        help="Standard auf die durchgängige BTC-USD-Reihe gesetzt — maximale "
+             "historische Tiefe für die Kalibrierung, keine Quellenwechsel-"
+             "Artefakte.")
 
     st.markdown("### Risikoanalyse")
     risk_free_rate = st.slider("Risk-Free Rate (%)", min_value=0.0, max_value=5.0,
@@ -687,27 +698,59 @@ def _download_with_retry(tickers, start, end, attempts=3):
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
-def _get_split_series(ticker_symbol):
-    """Fetch stock-split events (ratio per split date), independent of
-    dividends. Mirrors _get_dividend_series' fallback chain for robustness
-    across yfinance versions."""
+def _get_actions(ticker_symbol):
+    """Fetch dividends AND stock splits for a ticker in a SINGLE network
+    request (tk.history(actions=True) returns both in one response), instead
+    of two separate yf.Ticker calls. On a cold cache (after a reboot / cache
+    clear) this halves the per-ticker round-trips to Yahoo Finance across
+    20 SMI names — previously up to 40 sequential calls (dividends + splits
+    each separately), now up to 20. This was a major contributor to slow
+    cold-start page loads, worsened by frequent reboots during today's
+    calibration/debugging session.
+
+    Returns (dividends_series, splits_series), each possibly empty. Both are
+    consumed by _get_dividend_series() and _get_split_series() below, which
+    stay as thin, separately-cached wrappers so no other call site needs to
+    change.
+    """
     tk = yf.Ticker(ticker_symbol)
-    try:
-        splits = tk.splits
-        if splits is not None and not splits.empty:
-            return splits
-    except Exception:
-        pass
+    divs, splits = pd.Series(dtype=float), pd.Series(dtype=float)
     try:
         hist = tk.history(period="max", actions=True, auto_adjust=False)
-        if hist is not None and not hist.empty and "Stock Splits" in hist.columns:
-            s = hist["Stock Splits"]
-            s = s[s > 0]
-            if not s.empty:
-                return s
+        if hist is not None and not hist.empty:
+            if "Dividends" in hist.columns:
+                d = hist["Dividends"]
+                divs = d[d > 0]
+            if "Stock Splits" in hist.columns:
+                s = hist["Stock Splits"]
+                splits = s[s > 0]
     except Exception:
         pass
-    return pd.Series(dtype=float)
+    # Fallbacks ONLY for whichever piece came back empty — avoids a second
+    # network round-trip when the combined call already succeeded for both.
+    if divs.empty:
+        try:
+            d = tk.dividends
+            if d is not None and not d.empty:
+                divs = d
+        except Exception:
+            pass
+    if splits.empty:
+        try:
+            s = tk.splits
+            if s is not None and not s.empty:
+                splits = s
+        except Exception:
+            pass
+    return divs, splits
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _get_split_series(ticker_symbol):
+    """Stock-split events (ratio per split date). Thin wrapper around the
+    shared _get_actions() fetch \u2014 see its docstring."""
+    _, splits = _get_actions(ticker_symbol)
+    return splits
 
 
 def _apply_split_adjustment(raw_close, splits):
@@ -834,33 +877,17 @@ def fetch_prices(tickers, start, end):
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def _get_dividend_series(ticker_symbol):
-    """Robustly fetch a dividend Series across yfinance versions.
-    Newer yfinance versions changed internals ('PriceHistory' object has no
-    attribute '_dividends'), so we try several access paths and fall back
-    to parsing the 'Dividends' column from full history."""
-    tk = yf.Ticker(ticker_symbol)
-    # Method 1: the .dividends property (works on most versions)
+    """Dividend history. Thin wrapper around the shared _get_actions() fetch
+    (see its docstring) \u2014 falls back to the older get_dividends() API only
+    if that combined call came back empty."""
+    divs, _ = _get_actions(ticker_symbol)
+    if divs is not None and not divs.empty:
+        return divs
     try:
-        divs = tk.dividends
-        if divs is not None and not divs.empty:
-            return divs
-    except Exception:
-        pass
-    # Method 2: extract from .history(actions=True) Dividends column
-    try:
-        hist = tk.history(period="max", actions=True, auto_adjust=False)
-        if hist is not None and not hist.empty and "Dividends" in hist.columns:
-            divs = hist["Dividends"]
-            divs = divs[divs > 0]
-            if not divs.empty:
-                return divs
-    except Exception:
-        pass
-    # Method 3: get_dividends() method (older/alternative API)
-    try:
-        divs = tk.get_dividends()
-        if divs is not None and not divs.empty:
-            return divs
+        tk = yf.Ticker(ticker_symbol)
+        d = tk.get_dividends()
+        if d is not None and not d.empty:
+            return d
     except Exception:
         pass
     return pd.Series(dtype=float)
@@ -4524,6 +4551,17 @@ if _show_results:
                         })
                     return _out
 
+                _rebal_label_map_de = {
+                    "Jährlich": "jährlich (September)", "Halbjährlich": "halbjährlich",
+                    "Quartalsweise": "quartalsweise", "Keine": "nicht rebalanciert",
+                }
+                _rebal_label_map_en = {
+                    "Jährlich": "annually (September)", "Halbjährlich": "semi-annually",
+                    "Quartalsweise": "quarterly", "Keine": "not rebalanced",
+                }
+                _rebal_label_de = _rebal_label_map_de.get(rebalance_freq, rebalance_freq.lower())
+                _rebal_label_en = _rebal_label_map_en.get(rebalance_freq, rebalance_freq.lower())
+
                 pdf_bytes = build_bilingual_tearsheet(
                     strategy_name="OAK Swiss Blue Chip / Bitcoin",
                     strategy_subtitle_de=(
@@ -4534,6 +4572,8 @@ if _show_results:
                         "Disciplined SMI replication with structural BTC allocation, "
                         "dividend-funded DCA and threshold-based risk management."
                     ),
+                    rebal_freq_label_de=_rebal_label_de,
+                    rebal_freq_label_en=_rebal_label_en,
                     period_str=f"{ts.index[0].strftime('%Y-%m-%d')} to {ts.index[-1].strftime('%Y-%m-%d')}",
                     kpis_performance=[
                         ("Strategy (Net)", f"CHF {strategy_net:,.0f}"),
