@@ -4678,6 +4678,12 @@ if _show_results:
     footer()
 
 else:
+    _en_rebal = {"Jährlich": "Annual (September)", "Halbjährlich": "Semi-Annual",
+                 "Quartalsweise": "Quarterly", "Keine": "None"}.get(rebalance_freq, rebalance_freq)
+    _en_rebal_logic = {"Jährlich": "Annual (September)", "Halbjährlich": "Semi-annual",
+                       "Quartalsweise": "Quarterly", "Keine": "No scheduled"}.get(rebalance_freq, rebalance_freq)
+    _en_tcf = {"Monatlich (Standard)": "Monthly", "Quartalsweise": "Quarterly",
+               "Halbjährlich": "Semi-Annual"}.get(threshold_check_freq, "Monthly")
     col_a, col_b = st.columns([2, 1])
     with col_a:
         st.markdown("### Strategy Logic")
@@ -4688,8 +4694,9 @@ between Equity Sleeve (SMI 20 by chosen weighting) and Bitcoin Sleeve (target % 
 <strong style='color:{OAK_CREAM};'>Dividend harvesting.</strong> Each dividend collected in CHF,
 reduced by the 35% Swiss withholding tax (non-reclaimable in the AMC wrapper, so only the
 net 65% is available), and split into N monthly tranches (DCA), bought at month-end into BTC via USDCHF FX.<br><br>
-<strong style='color:{OAK_CREAM};'>Equity rebalancing.</strong> Quarterly return to target SMI weights —
-mirroring the SIX index review cycle.<br><br>
+<strong style='color:{OAK_CREAM};'>Equity rebalancing.</strong> {_en_rebal_logic} return to target SMI weights.
+The calibrated default (annual, September) aligns with the real SIX composition-review date
+(third Friday of September).<br><br>
 <strong style='color:{OAK_CREAM};'>Risk management — Threshold rebalance.</strong>
 At each month-end, if BTC sleeve exceeds upper threshold, sell down to target weight.
 Proceeds reinvested across SMI titles by current target weights.<br><br>
@@ -4705,10 +4712,6 @@ All risk metrics computed on the net-of-fees series.
 </div>
         """, unsafe_allow_html=True)
     with col_b:
-        _en_rebal = {"Jährlich": "Annual (September)", "Halbjährlich": "Semi-Annual",
-                     "Quartalsweise": "Quarterly", "Keine": "None"}.get(rebalance_freq, rebalance_freq)
-        _en_tcf = {"Monatlich (Standard)": "Monthly", "Quartalsweise": "Quarterly",
-                   "Halbjährlich": "Semi-Annual"}.get(threshold_check_freq, "Monthly")
         st.markdown("### Active Parameters")
         st.caption("Live values from the current sidebar configuration — the defaults "
                    "are the calibrated values per Handelsreglement.")
