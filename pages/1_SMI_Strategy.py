@@ -2675,7 +2675,8 @@ if _show_results:
     @st.cache_data(ttl=3600, show_spinner=False)
     def compute_start_date_sensitivity(_prices, _divs, _btc, _fx, _weights, cap,
                                        candidates, allocs, band_width, win_years,
-                                       step_months, dd_crash_threshold):
+                                       step_months, dd_crash_threshold,
+                                       cache_token=None):
         """Für jeden Kandidaten-Startpunkt: (A) Anker-Perzentil, (B) Regime-
         Befund (Median Δ-CAGR und %-positiv in Fenstern mit schwerem
         BTC-Drawdown), auf den Daten AB diesem Startpunkt."""
@@ -2754,7 +2755,8 @@ if _show_results:
                          "Regime-Stabilität)…"):
             dwres = compute_start_date_sensitivity(
                 prices, divs, btc_series, fx, weights, initial_capital,
-                _dw_candidates, [0.10, 0.20], 0.10, 3, 12, _dw_dd)
+                _dw_candidates, [0.10, 0.20], 0.10, 3, 12, _dw_dd,
+                cache_token=(weighting_method, start_str, end_str, btc_source))
 
         if dwres.empty:
             st.warning("Zu wenig Daten für den Sensitivitätstest.")
@@ -2891,7 +2893,7 @@ if _show_results:
     def compute_smi_robustness(_prices, _divs, _btc, _fx, _weights, cap,
                                allocs, fees, upper, target, dca_m, txbps,
                                win_years, step_months, cryst, hurdle_t, hurdle_r,
-                               perf_rate):
+                               perf_rate, cache_token=None):
         """Engine EINMAL je (alloc, window); Fees danach analytisch drauf."""
         full = _prices.index
         if len(full) < 400:
@@ -2956,7 +2958,7 @@ if _show_results:
                 prices, divs, btc_series, fx, weights, initial_capital,
                 _sallocs, _sfees, upper_threshold, target_btc_pct, dca_months,
                 tx_cost_bps, _sw, _sm, crystallization_freq, hurdle_type,
-                hwm_hurdle_pct, perf_fee_pct)
+                hwm_hurdle_pct, perf_fee_pct, cache_token=(weighting_method, start_str, end_str, btc_source))
 
         if sgrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
@@ -3083,7 +3085,8 @@ if _show_results:
     @st.cache_data(ttl=3600, show_spinner=False)
     def compute_smi_threshold_freq_grid(_prices, _divs, _btc, _fx, _weights, cap,
                                         allocs, freqs, upper, target, dca_m, txbps,
-                                        win_years, step_months, fee):
+                                        win_years, step_months, fee,
+                                        cache_token=None):
         """Engine je (Frequenz, Startallokation, Fenster). Erfasst zusätzlich
         die Überschreitung über der oberen Schwelle bei Auslösung — das ist
         die Kennzahl, die die Prüf-Frequenz direkt sichtbar macht."""
@@ -3158,7 +3161,8 @@ if _show_results:
             tfgrid = compute_smi_threshold_freq_grid(
                 prices, divs, btc_series, fx, weights, initial_capital,
                 _tf_allocs, _tf_freqs, upper_threshold, target_btc_pct, dca_months,
-                tx_cost_bps, _tfw, _tf_sm, mgmt_fee_pct)
+                tx_cost_bps, _tfw, _tf_sm, mgmt_fee_pct,
+                cache_token=(weighting_method, start_str, end_str, btc_source))
 
         if tfgrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
@@ -3261,7 +3265,7 @@ if _show_results:
     @st.cache_data(ttl=3600, show_spinner=False)
     def compute_smi_alpha_grid(_prices, _divs, _btc, _fx, _weights, cap,
                                allocs, band_width, dca_m, txbps,
-                               win_years, step_months, fee):
+                               win_years, step_months, fee, cache_token=None):
         """Strategie vs. Static-Blend, EIN Engine-Lauf je (alloc, window) für
         jede Seite. Band skaliert mit der Allokation (target = alloc, upper =
         alloc + band_width), damit auch hohe Allokationen ein sinnvolles Band
@@ -3335,7 +3339,8 @@ if _show_results:
                          "(2 Engine-Läufe je Kombination)"):
             agrid = compute_smi_alpha_grid(
                 prices, divs, btc_series, fx, weights, initial_capital,
-                _ac_allocs, 0.10, dca_months, tx_cost_bps, _acw, _ac_sm, mgmt_fee_pct)
+                _ac_allocs, 0.10, dca_months, tx_cost_bps, _acw, _ac_sm, mgmt_fee_pct,
+                cache_token=(weighting_method, start_str, end_str, btc_source))
 
         if agrid.empty:
             st.warning("Zu wenig überlappende Daten für die Fensteranalyse.")
@@ -3493,7 +3498,8 @@ if _show_results:
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def compute_smi_sharpe_one_combo(_prices, _divs, _btc, _fx, _weights, cap,
-                                     alloc, width, dca_m, txbps, win_years, step_months):
+                                     alloc, width, dca_m, txbps, win_years, step_months,
+                                     cache_token=None):
         """EINE (Allokation, Bandbreite, DCA-Fenster)-Kombination über alle
         rollierenden Fenster. Pro Kombination separat gecacht — bricht der
         Lauf ab (Tab geschlossen, Verbindung verloren), sind bereits
@@ -3601,7 +3607,8 @@ if _show_results:
         for _i, (_a, _w, _d) in enumerate(_combos):
             _rows = compute_smi_sharpe_one_combo(
                 prices, divs, btc_series, fx, weights, initial_capital,
-                _a, _w, _d, tx_cost_bps, _shw, _sh_sm)
+                _a, _w, _d, tx_cost_bps, _shw, _sh_sm,
+                cache_token=(weighting_method, start_str, end_str, btc_source))
             _all_rows.extend(_rows)
             _elapsed = _time.time() - _t0
             _eta = (_elapsed / (_i + 1)) * (len(_combos) - _i - 1)
