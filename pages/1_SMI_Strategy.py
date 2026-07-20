@@ -3355,6 +3355,166 @@ if _show_results:
     # halten — das ist NICHT dieselbe Frage wie "welche Startallokation".
     # ======================================================================
     st.markdown("---")
+    # ======================================================================
+    # KALIBRIERUNG — Ausführungskonvention (INDIFFERENZ-Test)
+    # Beantwortet NICHT "welcher Tag bringt die hoechste Rendite" (das waere
+    # Market-Timing und widerspraeche der prognosefreien Positionierung),
+    # sondern "macht die Tageswahl ueberhaupt einen materiellen Unterschied".
+    # Drei Belege: (1) Groesse des Effekts gegenueber der Fensterstreuung,
+    # (2) Rangstabilitaet ueber die Fenster, (3) Out-of-sample-Persistenz.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Kalibrierung — Ausführungskonvention (Indifferenz-Test)")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Prüft, ob der gewählte "
+        "Ausführungstag innerhalb des Monats überhaupt materiell ist \u2014 "
+        "ausdrücklich NICHT, welcher Tag historisch die höchste Rendite "
+        "gebracht hätte. Ein Tag, der nach Rückschau-Rendite gewählt wird, "
+        "wäre Market-Timing und out-of-sample wertlos. Ist der Effekt klein "
+        "gegenüber der Streuung zwischen den Einstiegszeitpunkten, darf die "
+        "Wahl betrieblich begründet werden \u2014 und genau das hält das "
+        "Handelsreglement dann fest.</p>", unsafe_allow_html=True)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_execution_convention_grid(_prices, _divs, _btc, _fx, _weights, cap,
+                                          conventions, alloc, upper, target, dca_m,
+                                          txbps, win_years, step_months, fee,
+                                          _rebal, _capd, wcap, cache_token=None):
+        full = _prices.index
+        if len(full) < 400:
+            return pd.DataFrame()
+        starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                               freq=f"{step_months}MS")
+        rows = []
+        for s in starts:
+            w = full[(full >= s) & (full <= s + pd.DateOffset(years=win_years))]
+            if len(w) < 300:
+                continue
+            rec = {"start": s}
+            ok = True
+            for conv in conventions:
+                try:
+                    _ts, _, _ = run_strategy(
+                        _prices.loc[w], _divs, _btc, _fx, initial_capital=cap,
+                        weights=_weights, initial_btc_pct=alloc,
+                        upper_threshold=upper, target_btc_pct=target,
+                        rebalance_dates_set=_rebal, dca_months=dca_m,
+                        tx_cost_bps=txbps, cap_dates_set=_capd, weight_cap=wcap,
+                        dca_execution_dates_set=get_execution_dates(w, conv))
+                except Exception:
+                    ok = False
+                    break
+                if _ts.empty:
+                    ok = False
+                    break
+                _net, _, _, _ = apply_fees(_ts["total_value"], cap, mgmt_fee_annual=fee,
+                                           perf_fee_rate=0.0)
+                _yrs = max((_net.index[-1] - _net.index[0]).days / 365.25, 1e-9)
+                rec[conv] = (_net.iloc[-1] / cap) ** (1 / _yrs) - 1
+            if ok:
+                rows.append(rec)
+        return pd.DataFrame(rows)
+
+    ec1, ec2, ec3 = st.columns(3)
+    with ec1:
+        _ecw = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0, key="smi_ec_win")
+    with ec2:
+        _ecstep = st.selectbox("Fenster-Schritt", ["quartalsweise", "halbjährlich"],
+                               index=0, key="smi_ec_step")
+    with ec3:
+        st.caption("")
+        _ecgo = st.button("Indifferenz-Test starten", key="smi_ec_go")
+    if _ecgo:
+        st.session_state["smi_ec_run"] = True
+
+    if st.session_state.get("smi_ec_run"):
+        _convs = ["Monatsultimo", "Monatsanfang", "Monatsmitte",
+                  "Letzter Montag", "Erster Montag"]
+        _ecsm = 3 if _ecstep == "quartalsweise" else 6
+        with st.spinner("Rechne fünf Ausführungskonventionen über alle Fenster…"):
+            _ecdf = compute_execution_convention_grid(
+                prices, divs, btc_series, fx, weights, initial_capital, _convs,
+                initial_btc_pct, upper_threshold, target_btc_pct, dca_months,
+                tx_cost_bps, _ecw, _ecsm, mgmt_fee_display, rebal_dates,
+                cap_dates, weight_cap_val,
+                cache_token=(weighting_method, start_str, end_str, btc_source, etp_ter_pct))
+
+        if _ecdf.empty or len(_ecdf) < 4:
+            st.warning("Zu wenig Fenster für eine belastbare Aussage.")
+        else:
+            _n = len(_ecdf)
+            st.caption(f"{_n} rollierende {_ecw}-Jahres-Fenster × {len(_convs)} Konventionen")
+
+            _summ = pd.DataFrame({
+                "Konvention": _convs,
+                "Median-CAGR": [_ecdf[c].median() for c in _convs],
+                "P25": [_ecdf[c].quantile(.25) for c in _convs],
+                "P75": [_ecdf[c].quantile(.75) for c in _convs],
+            })
+            _ranks = _ecdf[_convs].rank(axis=1, ascending=False)
+            _summ["Anteil Rang 1"] = [float((_ranks[c] == 1).mean()) for c in _convs]
+
+            _spread_conv = float((_ecdf[_convs].max(axis=1)
+                                  - _ecdf[_convs].min(axis=1)).median())
+            _spread_wind = float(_ecdf["Monatsultimo"].max() - _ecdf["Monatsultimo"].min())
+            _ratio = _spread_conv / _spread_wind if _spread_wind > 0 else float("nan")
+            _cagr_range = float(_summ["Median-CAGR"].max() - _summ["Median-CAGR"].min())
+
+            k1, k2, k3 = st.columns(3)
+            with k1:
+                st.metric("Spanne der Median-CAGR", f"{_cagr_range*100:.3f}pp")
+                st.caption("beste minus schlechteste Konvention")
+            with k2:
+                st.metric("Streuung zwischen Fenstern", f"{_spread_wind*100:.1f}pp")
+                st.caption("Einstiegszeitpunkt, Monatsultimo")
+            with k3:
+                st.metric("Verhältnis", f"{_ratio*100:.1f}%")
+                st.caption("Konvention vs. Einstiegszeitpunkt")
+
+            _d = _summ.copy()
+            _d["Median-CAGR"] = (_d["Median-CAGR"]*100).round(3).astype(str) + "%"
+            _d["P25"] = (_d["P25"]*100).round(2).astype(str) + "%"
+            _d["P75"] = (_d["P75"]*100).round(2).astype(str) + "%"
+            _d["Anteil Rang 1"] = (_d["Anteil Rang 1"]*100).round(1).astype(str) + "%"
+            st.dataframe(_d, use_container_width=True, hide_index=True)
+
+            # Out-of-sample: Sieger der ersten Haelfte -> Rang in der zweiten
+            _h = _n // 2
+            _w1 = _ecdf.iloc[:_h][_convs].median().idxmax()
+            _r2 = float(_ecdf.iloc[_h:][_convs].median().rank(ascending=False)[_w1])
+            _rand = (len(_convs) + 1) / 2
+            st.markdown("##### Out-of-sample — hält der historische Sieger?")
+            o1, o2 = st.columns(2)
+            with o1:
+                st.metric("Sieger der ersten Fensterhälfte", _w1)
+            with o2:
+                st.metric("Dessen Rang in der zweiten Hälfte", f"{_r2:.0f} von {len(_convs)}")
+                st.caption(f"Zufallserwartung: {_rand:.1f}")
+
+            if _ratio < 0.10:
+                st.success(
+                    f"✓ **Indifferent.** Die Tageswahl erklärt {_ratio*100:.1f}% dessen, "
+                    f"was der Einstiegszeitpunkt erklärt; die Spanne der Median-CAGR "
+                    f"beträgt {_cagr_range*100:.3f} Prozentpunkte. Die Konvention darf "
+                    "betrieblich begründet werden (Bewertungsstichtag, Berichtsperiode, "
+                    "Liquidität) statt renditeorientiert.")
+            else:
+                st.warning(
+                    f"⚑ **Nicht indifferent** ({_ratio*100:.1f}%). Die Tageswahl ist "
+                    "materiell \u2014 vor einer Festlegung die Ursache klären.")
+            st.caption(
+                "**Zur Rangfolge:** Eine von 20% abweichende Trefferquote ist kein "
+                "Beweis für einen ausnutzbaren Renditevorteil. Der strukturelle "
+                "Treiber ist die Liegezeit zwischen Dividendenvereinnahmung und "
+                "Investition (Cash-Drag): Dividenden fliessen über den Monat "
+                "verteilt, weshalb der Monatsultimo im Schnitt am längsten wartet. "
+                "Das ist ein operatives Argument, kein Timing-Argument \u2014 und "
+                "nur als solches darf es in die Begründung einfliessen. "
+                "Entscheidend bleibt die Grössenordnung: ist die CAGR-Spanne im "
+                "Bereich weniger Basispunkte, überwiegen die betrieblichen Vorteile "
+                "des Monatsultimo (Gleichlauf mit Bewertung, Reporting und "
+                "Gebührenabgrenzung).")
+
     st.markdown("## Kalibrierung — Schwellenprüfung-Frequenz")
     st.markdown(
         "<p style='color:#A9B5A4;margin-top:-6px'>Beantwortet konkret: unter "
