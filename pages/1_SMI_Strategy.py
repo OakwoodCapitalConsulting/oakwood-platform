@@ -630,8 +630,10 @@ with st.sidebar:
                                help="Annual hurdle return the strategy must beat before performance "
                                     "fees apply in Year 1. After Year 1 the HWM governs.") / 100.0
     crystallization_freq = st.selectbox("Performance Fee Crystallization",
-                                         ["Monthly", "Quarterly", "Semi-Annual", "Annual"], index=1,
-                                         help="How often the performance fee is crystallized against the HWM.")
+                                         ["Monthly", "Quarterly", "Semi-Annual", "Annual"], index=0,
+                                         help="How often the performance fee is crystallized against the HWM. "
+                                              "Default Monthly — matches the provider that settles both "
+                                              "management and performance fees on a monthly basis.")
     mgmt_fee_freq = st.selectbox("Management Fee Billing Frequency",
                                  ["Monthly", "Quarterly", "Semi-Annual", "Annual"], index=0,
                                  help="How often the management fee is billed/settled — independent "
