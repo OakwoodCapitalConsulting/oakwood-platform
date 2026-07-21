@@ -26,6 +26,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
     Image, PageBreak, CondPageBreak, HRFlowable, KeepTogether,
 )
+from reportlab.pdfgen import canvas as _pdfgen_canvas
 
 # Matplotlib palette matching Oakwood CI
 MPL_GREEN = "#293624"
@@ -1674,18 +1675,66 @@ def _header_footer(canvas, doc, strategy_name, logo_path=None, lang="en"):
     canvas.setFont(F_SANS, 7)
     canvas.drawString(20 * mm, 12 * mm, S("illustrative"))
     canvas.drawCentredString(W / 2, 12 * mm, strategy_name)
-    total = getattr(doc, "_total_pages", None)
-    lang_tag = lang.upper()  # 'DE' / 'EN' — disambiguates the two merged editions
-    if total:
-        canvas.drawRightString(W - 20 * mm, 12 * mm,
-                               f"{lang_tag} · {doc.page:02d} / {total:02d}")
-    else:
-        canvas.drawRightString(W - 20 * mm, 12 * mm,
-                               f"{lang_tag} · {doc.page:02d}")
+    # NOTE: the "DE · 04 / 13" page marker is NOT drawn here. The total page
+    # count is unknown while the page is being laid out, so it is stamped
+    # afterwards by NumberedCanvas.save() (see _numbered_canvas_factory).
+    # Drawing it here previously required a full probe build of the whole
+    # document, which reused the same flowable objects twice — the cause of
+    # the "Flowable ... too large on page N" LayoutError.
     canvas.setStrokeColor(C_BORDER)
     canvas.setLineWidth(0.5)
     canvas.line(20 * mm, 15 * mm, W - 20 * mm, 15 * mm)
     canvas.restoreState()
+
+
+def _numbered_canvas_factory(lang="en"):
+    """Canvas that stamps 'DE · 04 / 13' onto every page AFTER the layout.
+
+    WARUM DAS SO SEIN MUSS: Die Gesamtseitenzahl steht erst fest, wenn das
+    ganze Dokument gesetzt ist — die Fusszeile wird aber WÄHREND des Satzes
+    gezeichnet. Die frühere Lösung baute das Dokument deshalb zweimal: einen
+    Probelauf zum Zählen, dann den echten Lauf. Der Probelauf bekam die Story
+    per copy.copy(), also eine neue Liste mit DENSELBEN Flowable-Objekten.
+    ReportLab-Flowables sind zustandsbehaftet (Paragraph merkt sich Breite,
+    Höhe und Zeilenumbruch; Table cached Spalten- und Zeilenhöhen; Image hält
+    einen BytesIO-Stream, der nach dem ersten Lesen am Ende steht). Ein
+    zweiter Build über dieselben Objekte ist nicht unterstützt und äussert
+    sich als LayoutError "Flowable ... too large on page N" — mit einer aus
+    dem ersten Lauf stammenden, zwischengespeicherten Breite.
+
+    Diese Klasse hält die Seiten stattdessen zurück, bis save() aufgerufen
+    wird, und beschriftet sie dann. EIN Build, keine geteilten Flowables —
+    und nebenbei etwa doppelte Geschwindigkeit.
+    """
+    class NumberedCanvas(_pdfgen_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_states = []
+
+        def showPage(self):
+            # Seite noch nicht schreiben — Zustand merken und weitermachen.
+            self._saved_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_states)
+            for i, state in enumerate(self._saved_states, start=1):
+                self.__dict__.update(state)
+                if i > 1:          # Seite 1 ist das Cover — keine Fusszeile
+                    self._stamp_page_marker(i, total)
+                super().showPage()
+            super().save()
+
+        def _stamp_page_marker(self, page, total):
+            W, _H = A4
+            self.saveState()
+            self.setFillColor(C_MUTED)
+            self.setFont(F_SANS, 7)
+            self.drawRightString(W - 20 * mm, 12 * mm,
+                                 f"{lang.upper()} · {page:02d} / {total:02d}")
+            self.restoreState()
+
+    return NumberedCanvas
 
 
 def build_tearsheet(
@@ -1966,7 +2015,11 @@ def build_tearsheet(
             sidebar = _kpi_stack(fee_summary, styles) if fee_summary else Spacer(1, 1)
             side_col = [Paragraph(S("fee_summary_side"), styles["h3"]),
                         Spacer(1, 3), sidebar]
-            layout = Table([[ledger, side_col]], colWidths=[96 * mm, 74 * mm])
+            # 90 + 68 mm = 158 mm = 447.9 pt. Der Frame gibt nur 469.9 pt her
+            # (doc.width 481.9 minus 6 pt Padding je Seite) — die frühere
+            # Aufteilung 96 + 74 mm = 170 mm = 481.9 pt ragte um 12 pt über
+            # den Satzspiegel hinaus.
+            layout = Table([[ledger, side_col]], colWidths=[90 * mm, 68 * mm])
             layout.setStyle(TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -2057,23 +2110,12 @@ def build_tearsheet(
     def on_later(canvas, doc_):
         _header_footer(canvas, doc_, strategy_name, logo_path=logo_path, lang=lang)
 
-    # Pass 1: build once to count total pages (no footer total yet)
-    try:
-        import copy
-        probe_buf = io.BytesIO()
-        probe_doc = SimpleDocTemplate(
-            probe_buf, pagesize=A4,
-            topMargin=28 * mm, bottomMargin=18 * mm,
-            leftMargin=20 * mm, rightMargin=20 * mm)
-        probe_story = copy.copy(story)
-        probe_doc.build(probe_story, onFirstPage=on_first, onLaterPages=on_later)
-        total_pages = probe_doc.page
-        doc._total_pages = total_pages
-    except Exception:
-        doc._total_pages = None
-
-    # Pass 2: real build with the total page count available to the footer
-    doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
+    # EIN Durchgang. Die Gesamtseitenzahl trägt NumberedCanvas.save() nach.
+    # Der frühere Probelauf (copy.copy(story) + zweiter build über dieselben
+    # Flowable-Objekte) ist entfernt — er war die Ursache des LayoutError
+    # "Flowable ... too large on page N". Siehe _numbered_canvas_factory.
+    doc.build(story, onFirstPage=on_first, onLaterPages=on_later,
+              canvasmaker=_numbered_canvas_factory(lang))
     buf.seek(0)
     return buf.getvalue()
 
