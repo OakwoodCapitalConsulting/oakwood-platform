@@ -1,6 +1,18 @@
 """
 OAK Swiss Private Debt / Bitcoin — AMC Backtesting
 
+ENGINE-VERSION 2026-08-08 (kanonisch). Enthält:
+  * Gebührenentscheide vom 21.07.2026 (keine Performance Fee, Management
+    Fee 1.5% auf Gesamtvermögen, keine Zeichnungsgebühr, Rücknahmegebühr
+    1% als Stufe 5 des Wasserfalls)
+  * Befund B: Renditekomponenten getrennt (Bruttocoupon / Investor Fee /
+    Ausfälle) statt einer konflatierten "Nettorendite"
+  * Befund A: Transaktionskosten getrennt (Kreditbuch Ein-/Austritt gegen
+    Bitcoin) — vorher trug das Kreditbuch ÜBERHAUPT keine Kosten
+  * Befund E: Stückelung CHF 10'000 des Underlyings
+OFFEN: Befund D (Liquiditätsprofil im Rücknahme-Wasserfall), Befund C
+(KID-Position, Dokumentation).
+
 Konzept (OAK Yield Bridge, dritte Anwendung):
   * Kern: diversifiziertes, immobilienbesichertes Schweizer Kreditbuch
     (Referenz: LEND Hypovest, ISIN CH1357099691 — nachrangige Hypotheken,
@@ -823,8 +835,10 @@ def run_pd_btc(btc_chf, idx, params):
 
     Params:
       initial_capital, initial_btc_pct, initial_cash_pct
-      net_yield          Nettorendite p.a. des Kreditbuchs (nach Investor Fee)
+      gross_coupon       Bruttocoupon p.a. des Kreditbuchs (Ist 30.06.2026: 6.67%)
+      issuer_fee         Investor Fee des Underlyings p.a. (Helveteq: 0.95%)
       credit_loss_rate   Kreditausfälle p.a. (Stressparameter; subordinated!)
+      net_yield          DEPRECATED — nur noch Rückfall, wenn gross_coupon fehlt
       redemption_rate    Anteil der Ernte, der tatsächlich redimiert wird (0..1)
       subscription_amount / subscription_freq   neue Zeichnungen ("M","Q","A","N")
       lower_threshold, upper_threshold, base_invest_rate, boost_invest_rate
@@ -838,7 +852,17 @@ def run_pd_btc(btc_chf, idx, params):
     btc = btc_chf.reindex(idx).ffill().bfill()
 
     cap = float(params["initial_capital"])
-    tx = float(params.get("tx_cost_bps", 0.0)) / 10000.0
+    # TRANSAKTIONSKOSTEN GETRENNT (Befund A). Vorher galt EIN Satz, der an neun
+    # Stellen angewandt wurde — alle neun waren Bitcoin-Trades. Das Kreditbuch
+    # kaufte und verkaufte GRATIS, obwohl die Final Terms von Helveteq bis
+    # 1.25% Zeichnungs- und 0.25% Rücknahmegebühr nennen. Der Fehler war nicht
+    # "falscher Satz", sondern "Satz fehlt".
+    tx = float(params.get("tx_cost_bps", 0.0)) / 10000.0          # nur Bitcoin
+    debt_in = float(params.get("debt_entry_bps", 0.0)) / 10000.0  # Kreditbuch Eintritt
+    debt_out = float(params.get("debt_exit_bps", 0.0)) / 10000.0  # Kreditbuch Austritt
+    debt_lot = float(params.get("debt_lot", 0.0))   # Stückelung (Befund E), 0 = aus
+    debt_cost_total = 0.0        # kumulierte Kreditbuch-Transaktionskosten
+    debt_uninvested = 0.0        # wegen Stückelung nicht platzierbar (Memo)
     btc_chf0 = cap * float(params["initial_btc_pct"])
     cash0 = cap * float(params.get("initial_cash_pct", 0.0))
 
@@ -872,9 +896,25 @@ def run_pd_btc(btc_chf, idx, params):
     outflow_paid = 0.0
     outflow_gated = 0.0
     n_gates = 0
+    redemption_fee = float(params.get("redemption_fee", 0.0))
+    redemption_fees_total = 0.0
 
     # ---- Debt-Sleeve (rein parametrisch, kein Marktdaten-Index) ------------
-    debt_cost_basis = cap - btc_chf0 - cash0   # tatsächlich eingesetztes Kapital
+    # EINTRITT INS KREDITBUCH: Kosten + Stückelung. Der Bruttobetrag wird um
+    # die Zeichnungsgebühr gekürzt; vom Rest sind nur ganze Lots platzierbar.
+    # Der Reststück-Betrag ist NICHT verloren — er bleibt als Cash im Produkt.
+    _debt_gross = cap - btc_chf0 - cash0
+    _debt_net = _debt_gross * (1 - debt_in)
+    debt_cost_total += _debt_gross - _debt_net
+    if debt_lot > 0:
+        _lots = int(_debt_net // debt_lot)
+        _placed = _lots * debt_lot
+        debt_uninvested += _debt_net - _placed
+        _lot_rest = _debt_net - _placed     # wird unten auf `cash` gebucht
+        _debt_net = _placed
+    else:
+        _lot_rest = 0.0
+    debt_cost_basis = _debt_net                # tatsächlich eingesetztes Kapital
     debt_accrued = 0.0                         # aufgelaufener, noch nicht geernteter Ertrag
     harvest_total = 0.0                        # tatsächlich geerntet (= der "Coupon")
     accrued_total = 0.0                        # gesamter Ertragsanfall (auch ungeerntet)
@@ -883,12 +923,24 @@ def run_pd_btc(btc_chf, idx, params):
 
     cash = cash0
     pending_dca = 0.0      # geerntet, noch nicht investiert — TEIL DES NAV
-    fee_floor = cash0
+    fee_floor = cash0          # Zielpuffer: NUR die gewollte Cash-Reserve
+    cash += _lot_rest          # Stückelungsrest ist liquide, aber kein Puffer
     fee_debt = 0.0
     cash_interest_total = 0.0
     cash_drag = 0.0
 
-    ny = float(params["net_yield"])
+    # RENDITEKOMPONENTEN GETRENNT (Befund B). Vorher war "net_yield" ein
+    # einziger Regler, dokumentiert als "nach Investor Fee" — der Default 5.0%
+    # widersprach der eigenen Dokumentation (6.67% - 0.95% = 5.72%). Schlimmer:
+    # der Kreditschock-Parameter griff an einer Grösse an, in der die
+    # Emittentengebühr mitschwamm. Jetzt drei explizite Grössen.
+    if "gross_coupon" in params:
+        gross_coupon = float(params["gross_coupon"])
+        issuer_fee = float(params.get("issuer_fee", 0.0))
+    else:   # Rückfall für Altaufrufe
+        gross_coupon = float(params["net_yield"])
+        issuer_fee = 0.0
+    ny = gross_coupon - issuer_fee          # Nettorendite VOR Ausfällen
     loss_r = float(params.get("credit_loss_rate", 0.0))
     redeem_r = float(params.get("redemption_rate", 1.0))
     # ERNTE-RHYTHMUS: Das Underlying schüttet nicht aus. Monatliche Rücknahmen
@@ -1010,7 +1062,18 @@ def run_pd_btc(btc_chf, idx, params):
                 _to_btc = subs * w_btc
                 _to_cash = subs * w_cash
                 _to_debt = subs - _to_btc - _to_cash
-                debt_cost_basis += _to_debt
+                # Auch der Kreditbuch-Anteil einer Zeichnung zahlt die
+                # Zeichnungsgebühr des Underlyings und unterliegt der
+                # Stückelung. Ein Reststück bleibt als Cash im Produkt und
+                # wird beim nächsten Termin mit-alloziert.
+                _net_debt = _to_debt * (1 - debt_in)
+                debt_cost_total += _to_debt - _net_debt
+                if debt_lot > 0:
+                    _pl = int(_net_debt // debt_lot) * debt_lot
+                    debt_uninvested += _net_debt - _pl
+                    _to_cash += _net_debt - _pl
+                    _net_debt = _pl
+                debt_cost_basis += _net_debt
                 cash += _to_cash
                 if _to_btc > 0 and px > 0:
                     btc_u_subs += (_to_btc * (1 - tx)) / px
@@ -1032,6 +1095,12 @@ def run_pd_btc(btc_chf, idx, params):
             target = debt_accrued
             harvest = target * redeem_r      # best-effort: Rest bleibt drin
             debt_accrued -= harvest          # und verzinst sich weiter
+            # AUSTRITTSKOSTEN: Die Ernte ist mechanisch eine Rücknahme des
+            # Zertifikats und kostet die Sekundärmarktgebühr des Paying Agent
+            # (Helveteq: 0.25%). Vorher war die Erntemechanik gratis.
+            _h_cost = harvest * debt_out
+            debt_cost_total += _h_cost
+            harvest -= _h_cost
             harvest_total += harvest
             n_redemptions += 1
             pending_dca += harvest           # ab jetzt Cash im Produkt
@@ -1140,20 +1209,39 @@ def run_pd_btc(btc_chf, idx, params):
             #     platzieren als die kleine jährliche Ertrags-Ernte.
             _rest = _want - _paid
             if _rest > 1e-9 and debt_val > 0:
-                _fill = min(_rest * principal_redeem_r, _rest)
+                # Brutto liquidieren, damit NETTO der gewünschte Betrag ankommt.
+                _gross_need = _rest / (1 - debt_out) if debt_out < 1 else _rest
+                _fill = min(_gross_need * principal_redeem_r, _gross_need, debt_val)
                 if _fill > 0:
                     _fb = _fill * (debt_cost_basis / debt_val) if debt_val > 0 else 0.0
                     _fa = _fill - _fb
                     debt_cost_basis -= _fb
                     debt_accrued -= _fa
                     debt_val = debt_cost_basis + debt_accrued
-                    _paid += _fill
+                    _net_fill = _fill * (1 - debt_out)
+                    debt_cost_total += _fill - _net_fill
+                    _paid += _net_fill
 
             # (4) GATE: was nicht liquidiert werden konnte, wird ausgesetzt
             _gap = _want - _paid
             if _gap > 1e-6:
                 outflow_gated += _gap
                 n_gates += 1
+
+            # (5) RÜCKNAHMEGEBÜHR — Anti-Dilution, KEIN Manager-Ertrag.
+            #     Bemessungsgrundlage ist der TATSÄCHLICH liquidierte Betrag,
+            #     nicht der gewünschte: bei einem Gate zahlt nur, wer aussteigen
+            #     konnte. Der Abzug VERLÄSST DAS PRODUKT NICHT — er geht in den
+            #     Cash-Bestand. Damit trägt der Aussteiger die Kosten seines
+            #     eigenen Ausstiegs, statt sie den Verbleibenden zu überlassen.
+            #     Bei P3 besonders relevant, weil eine Rücknahme im Wasserfall
+            #     Bitcoin-Verkäufe erzwingen kann.
+            if redemption_fee > 0 and _paid > 0:
+                _rfee = _paid * redemption_fee
+                _paid -= _rfee
+                cash += _rfee
+                redemption_fees_total += _rfee
+
             outflow_paid += _paid
             outflow = _paid
 
@@ -1289,9 +1377,14 @@ def run_pd_btc(btc_chf, idx, params):
     # getragene Gebühr: sie mindert die NAV (siehe total_value), auch wenn sie
     # noch nicht in Cash beglichen ist. Sie gehört daher in den Fee-Term der
     # Abstimmung, sonst bricht die Identität um genau fee_debt.
+    # Kreditbuch-Transaktionskosten (Befund A) verlassen das Produkt und
+    # gehören daher in die Abstimmung. Die RÜCKNAHMEGEBÜHR steht bewusst NICHT
+    # hier: sie bleibt im Cash-Bestand — eine Umverteilung vom Aussteiger zu den
+    # Verbleibenden, kein Verlust für das Produkt. Sie erscheint stattdessen
+    # als Erhöhung von nav_end bei gleichzeitig geringerem outflow_paid.
     recon = (accrued_total - loss_total + btc_init_gain + btc_dca_gain
              + btc_subs_gain + cash_interest_total
-             - (total_mgmt + total_perf + fee_debt))
+             - (total_mgmt + total_perf + fee_debt) - debt_cost_total)
 
     out.attrs["total_mgmt"] = total_mgmt
     out.attrs["total_perf"] = total_perf
@@ -1325,6 +1418,9 @@ def run_pd_btc(btc_chf, idx, params):
         "outflow_gated": outflow_gated,
         "n_gates": n_gates,
         "cash_topup": cash_topup_total,
+        "debt_tx_costs": -debt_cost_total,     # Kreditbuch Ein-/Austritt (Befund A)
+        "debt_uninvested": debt_uninvested,    # Stückelungsrest (Befund E)
+        "redemption_fees": redemption_fees_total,  # einbehalten, KEIN Manager-Ertrag
         "cash_drag": -cash_drag,
         "years": max((idx[-1] - idx[0]).days / 365.25, 1e-9),
     }
@@ -1348,8 +1444,16 @@ def run_debt_only(idx, params):
     """
     idx = pd.DatetimeIndex(idx).normalize().unique().sort_values()
     cap = float(params["initial_capital"])
-    ny = float(params["net_yield"])
+    # Gleiche Renditezerlegung wie die Strategie (Befund B)
+    if "gross_coupon" in params:
+        ny = float(params["gross_coupon"]) - float(params.get("issuer_fee", 0.0))
+    else:
+        ny = float(params["net_yield"])
     loss_r = float(params.get("credit_loss_rate", 0.0))
+    # Der Benchmark zeichnet dasselbe Underlying und zahlt dieselbe
+    # Zeichnungsgebühr (Befund A) — sonst startet er mit einem Vorsprung,
+    # den es in der Realität nicht gibt.
+    _d_in = float(params.get("debt_entry_bps", 0.0)) / 10000.0
     mgmt = float(params.get("mgmt_fee", 0.0))
     mgmt_freq = params.get("mgmt_fee_freq", "M")
     sub_amt = float(params.get("subscription_amount", 0.0))
@@ -1358,7 +1462,7 @@ def run_debt_only(idx, params):
     shock_date = params.get("credit_shock_date", None)
     shock_date = pd.Timestamp(shock_date).normalize() if shock_date else None
 
-    v = cap
+    v = cap * (1 - _d_in)
     vals = []
     for i, d in enumerate(idx):
         v += v * ((ny - loss_r) / 365.0)
@@ -1374,7 +1478,7 @@ def run_debt_only(idx, params):
 
         if sub_amt > 0 and ((sub_freq == "M" and is_me) or (sub_freq == "Q" and is_qe)
                             or (sub_freq == "A" and is_ye)):
-            v += sub_amt
+            v += sub_amt * (1 - _d_in)
         vals.append(v)
     return pd.Series(vals, index=idx)
 
@@ -1447,14 +1551,25 @@ with st.sidebar:
         st.stop()
 
     st.markdown("### Kreditbuch (Debt-Sleeve)")
-    net_yield = st.slider("Nettorendite (% p.a.)", 0.0, 10.0, 5.0, 0.1,
-                          help="Nach Investor Fee des Underlyings (LEND "
-                               "Hypovest: 0.95% p.a. auf 5.5–6.5% brutto). "
-                               "Parametrisch — es gibt keine verwertbare "
-                               "Kurshistorie.") / 100.0
-    credit_loss_rate = st.slider("Kreditausfälle (% p.a.)", 0.0, 5.0, 0.5, 0.1,
+    gross_coupon = st.slider("Bruttocoupon (% p.a.)", 0.0, 12.0, 6.67, 0.01,
+                             help="Gewichteter Bruttocoupon des Kreditbuchs. "
+                                  "Ist per Factsheet 30.06.2026: 6.67% p.a.") / 100.0
+    issuer_fee = st.slider("Investor Fee Underlying (% p.a.)", 0.0, 3.0, 0.95, 0.05,
+                           help="Gebühr des Emittenten (Helveteq) auf Ebene des "
+                                "Zertifikats, täglich abgegrenzt, quartalsweise "
+                                "belastet. Kommt ZUSÄTZLICH zur Management Fee "
+                                "von Oakwood — Gesamtkostenstapel auf dem "
+                                "Kernanteil beachten.") / 100.0
+    credit_loss_rate = st.slider("Kreditausfälle (% p.a.)", 0.0, 5.0, 0.79, 0.01,
                                  help="Nachrangige Hypotheken tragen das "
-                                      "First-Loss-Risiko. Stressparameter.") / 100.0
+                                      "First-Loss-Risiko. Ist-Wert impliziert "
+                                      "aus 2025: 6.67% - 0.95% - 4.93% = 0.79%. "
+                                      "Stressparameter.") / 100.0
+    st.caption(f"→ NAV-Wachstum netto: **{(gross_coupon-issuer_fee-credit_loss_rate)*100:.2f}% p.a.** "
+               f"(Ist 2025: 4.93%)")
+    # Abgeleitet: Nettorendite VOR Ausfällen. Ersetzt den früheren Einzelregler
+    # und hält die nachgelagerten Anzeigen/Break-even-Rechnungen konsistent.
+    net_yield = gross_coupon - issuer_fee
     redemption_rate = st.slider("Redemption-Erfolgsquote (%)", 0, 100, 100, 5,
                                 help="Rücknahmen erfolgen best-effort (kein "
                                      "Sekundärmarkt). Was nicht geerntet werden "
@@ -1559,17 +1674,53 @@ with st.sidebar:
     risk_free_rate = st.slider("Risk-Free Rate (%)", 0.0, 5.0, 1.0, 0.25) / 100.0
 
     st.markdown("### Kosten & Gebühren")
-    tx_cost_bps = st.slider("Transaction Cost (bps per trade)", 0, 50, 10, 1)
-    mgmt_fee = st.slider("Management Fee (% p.a.)", 0.0, 3.0, 1.5, 0.05) / 100.0
+    tx_cost_bps = st.slider("Bitcoin-Transaktionskosten (bps je Trade)", 0, 50, 10, 1,
+                            help="Gilt NUR für Bitcoin-Trades.")
+    debt_entry_bps = st.slider("Kreditbuch Eintritt (bps)", 0, 200, 100, 5,
+                               help="Zeichnungsgebühr des Underlyings. Final Terms "
+                                    "Helveteq: bis 125 bps inkl. Sekundärmarkt"
+                                    "gebühr. Der Vertriebsanteil ist für einen "
+                                    "institutionellen Direktzeichner mögli"
+                                    "cherweise verhandelbar — BEI HELVETEQ ZU "
+                                    "KLÄREN. Default 100 bps als Arbeitsannahme.")
+    debt_exit_bps = st.slider("Kreditbuch Austritt (bps)", 0, 100, 25, 5,
+                              help="Sekundärmarktgebühr des Paying Agent (0.25%). "
+                                   "Fällt bei JEDER Ernte an — die Ernte ist "
+                                   "mechanisch eine Rücknahme des Zertifikats.")
+    debt_lot = st.number_input("Stückelung Underlying (CHF)", min_value=0,
+                               max_value=100_000, value=10_000, step=1_000,
+                               help="Mindestanlage und Stückelung von LEND "
+                                    "Hypovest. Nur ganze Lots sind platzierbar; "
+                                    "der Rest bleibt als Cash im Produkt. 0 = aus.")
+    mgmt_fee = st.slider("Management Fee (% p.a.)", 0.0, 3.0, 1.5, 0.05,
+                         help="Oakwood, auf das GESAMTVERMÖGEN (nicht nur das "
+                              "Kreditbuch). Pauschal, keine Staffel wie bei P1.") / 100.0
     mgmt_fee_freq = "M" if st.selectbox("Management Fee Verbuchung",
                                         ["monatlich", "quartalsweise"],
                                         index=0) == "monatlich" else "Q"
-    perf_fee = st.slider("Performance Fee (%)", 0, 30, 15, 1) / 100.0
-    hurdle_type = st.selectbox("Hurdle Type",
-                               ["Hard Hurdle", "Soft Hurdle", "No Hurdle (HWM only)"])
-    hurdle = st.slider("Hurdle Rate Year 1 (%)", 0.0, 15.0, 5.0, 0.5) / 100.0
-    crystallization_freq = st.selectbox("Performance Fee Crystallization",
-                                        ["Quarterly", "Semi-Annual", "Annual"])
+    redemption_fee = st.slider("Rücknahmegebühr (%)", 0.0, 3.0, 1.0, 0.1,
+                               help="ANTI-DILUTION-ABGABE, kein Manager-Ertrag. "
+                                    "Wird auf den tatsächlich liquidierten "
+                                    "Betrag erhoben (bei einem Gate zahlt nur, "
+                                    "wer aussteigen konnte) und VERBLEIBT im "
+                                    "Produkt. Der Aussteiger trägt damit die "
+                                    "Kosten seines eigenen Ausstiegs.") / 100.0
+    # ENTSCHEID 21.07.2026: keine Performance Fee. Der Ertragsmechanismus ist
+    # regelbasiert ohne Managerbeitrag; das vermeidet zugleich das
+    # Equalization-Problem in einer offenen Struktur und ist ein Verkaufs-
+    # argument. Der Regler bleibt für Sensitivitätsrechnungen bestehen.
+    perf_fee = st.slider("Performance Fee (%)", 0, 30, 0, 1,
+                         help="Produktentscheid: KEINE Performance Fee. Der "
+                              "Mechanismus ist regelbasiert, es gibt keinen "
+                              "Managerbeitrag zu vergüten.") / 100.0
+    if perf_fee > 0:
+        hurdle_type = st.selectbox("Hurdle Type",
+                                   ["Hard Hurdle", "Soft Hurdle", "No Hurdle (HWM only)"])
+        hurdle = st.slider("Hurdle Rate Year 1 (%)", 0.0, 15.0, 5.0, 0.5) / 100.0
+        crystallization_freq = st.selectbox("Performance Fee Crystallization",
+                                            ["Quarterly", "Semi-Annual", "Annual"])
+    else:
+        hurdle_type, hurdle, crystallization_freq = "Hard Hurdle", 0.05, "Quarterly"
 
     run_bt = st.button("Backtest starten", type="primary", use_container_width=True)
 
@@ -1597,7 +1748,10 @@ btc_chf = btc_chf.reindex(idx).ffill().bfill()
 
 params = dict(
     initial_capital=float(initial_capital), initial_btc_pct=initial_btc_pct,
-    initial_cash_pct=initial_cash_pct, net_yield=net_yield,
+    initial_cash_pct=initial_cash_pct,
+    gross_coupon=gross_coupon, issuer_fee=issuer_fee,
+    debt_entry_bps=float(debt_entry_bps), debt_exit_bps=float(debt_exit_bps),
+    debt_lot=float(debt_lot), redemption_fee=redemption_fee,
     credit_loss_rate=credit_loss_rate, redemption_rate=redemption_rate,
     harvest_freq=harvest_freq, harvest_month=int(harvest_month),
     dca_months=int(dca_months),
@@ -1678,14 +1832,23 @@ st.caption("*Der Debt-Sleeve hat konstruktionsbedingt KEINE Kapitalwert­"
            "Gesamtstrategie sind dadurch nach unten verzerrt und nicht mit "
            "marktbewerteten Strategien vergleichbar.")
 
+_red_fees = float(_att.get("redemption_fees", 0.0))
+_debt_tx = -float(_att.get("debt_tx_costs", 0.0))
 c9, c10, c11, c12 = st.columns(4)
 c9.metric("Management-Gebühren", fmt_chf(total_mgmt),
-          f"{mgmt_fee*100:.2f}% p.a. auf NAV", delta_color="off")
-c10.metric("Performance-Gebühren", fmt_chf(total_perf),
-           f"{perf_fee*100:.0f}% × Excess", delta_color="off")
-c11.metric("Gebühren total", fmt_chf(total_mgmt + total_perf),
+          f"{mgmt_fee*100:.2f}% p.a. auf Gesamtvermögen", delta_color="off")
+if perf_fee > 0:
+    c10.metric("Performance-Gebühren", fmt_chf(total_perf),
+               f"{perf_fee*100:.0f}% × Excess", delta_color="off")
+else:
+    # Getrennt ausweisen: die Rücknahmegebühr ist KEIN Manager-Ertrag, sie
+    # verbleibt im Produkt. Wer sie in die Gebührensumme zieht, liest sie als
+    # Einnahme von Oakwood — genau das soll die Trennung verhindern.
+    c10.metric("Rücknahmegebühr (einbehalten)", fmt_chf(_red_fees),
+               f"{redemption_fee*100:.1f}% je Rücknahme", delta_color="off")
+c11.metric("Gebühren an den Manager", fmt_chf(total_mgmt + total_perf),
            f"Gebührenlast: {fee_drag*100:.2f}% p.a.", delta_color="off")
-c12.metric("Nettorendite (Input)", f"{net_yield*100:.1f}% p.a.",
+c12.metric("Nettorendite (abgeleitet)", f"{net_yield*100:.2f}% p.a.",
            "parametrisch, auf Kostenbasis", delta_color="off")
 
 # Fee-Funding-Transparenz: die Management Fee wird aus dem Cash-Puffer (Ernte)
@@ -2598,7 +2761,12 @@ if st.button("PDF-Tearsheet generieren (DE+EN)"):
                 ("Underlying (reference)",
                  "LEND Hypovest, ISIN CH1357099691 — diversified Swiss subordinated "
                  "mortgages (accumulating, no coupon)"),
-                ("Net Yield", f"{net_yield*100:.1f}% p.a. (parametric, on cost basis)"),
+                ("Gross Coupon", f"{gross_coupon*100:.2f}% p.a. (loan book)"),
+                ("Issuer Investor Fee", f"{issuer_fee*100:.2f}% p.a. (Helveteq)"),
+                ("Net Yield (derived)", f"{net_yield*100:.2f}% p.a. (before credit losses)"),
+                ("Debt Entry / Exit Cost", f"{debt_entry_bps:.0f} / {debt_exit_bps:.0f} bps"),
+                ("Underlying Denomination", f"CHF {debt_lot:,.0f}"),
+                ("Redemption Fee", f"{redemption_fee*100:.1f}% (retained in product)"),
                 ("Credit Losses", f"{credit_loss_rate*100:.1f}% p.a."),
                 ("Yield Realisation",
                  "Monthly harvest — only the NAV accretion above cost basis is "

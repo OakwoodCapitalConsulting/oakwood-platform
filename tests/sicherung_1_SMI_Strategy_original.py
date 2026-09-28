@@ -86,68 +86,6 @@ SMI_CONSTITUENTS = {
 }
 
 # ---------------------------------------------------------------------------
-# Aktien-Sleeve: zwanzig Einzeltitel oder ein SMI-ETF
-# ---------------------------------------------------------------------------
-# Alle drei ETFs sind physisch replizierend. Entscheidend ist der Unterschied
-# zwischen ausschuettend und thesaurierend, und zwar NICHT steuerlich, sondern
-# mechanisch:
-#
-#   ausschuettend   Dividende wird Kasse, Kasse wird ueber DCA-Fenster in
-#                   Bitcoin investiert. Das braucht ein Tranchenregister und
-#                   traegt Zustand ueber die Termine hinaus.
-#   thesaurierend   keine Ausschuettung. Der Bitcointeil wird ueber einen
-#                   festen monatlichen Abverkauf finanziert. Kein Register,
-#                   kein Zustand, zwei Orderzeilen je Monat.
-#
-# ZUR VERRECHNUNGSSTEUER: keiner dieser ETFs loest sie. Ein Schweizer Fonds
-# loest mit der Thesaurierung die Steuer nach Art. 4 Abs. 1 lit. c VStG
-# genauso aus wie mit einer Ausschuettung. Und ein luxemburgischer Fonds
-# traegt auf Schweizer Dividenden nach Verwahrstellenpraxis die vollen
-# 35 Prozent ohne Abkommensermaessigung. Was der Fonds an Quellensteuer
-# traegt, steckt bereits in seinem Kurs, der Backtest bildet es also
-# automatisch ab.
-#
-# Die TER steckt ebenfalls im Marktkurs und wird deshalb NICHT zusaetzlich
-# abgezogen. Sie ist hier nur zur Anzeige hinterlegt.
-#
-# Die thesaurierende UBS-SMI-Tranche (CH1447931341, SMIA) ist bewusst nicht
-# aufgefuehrt: sie existiert erst seit Juni 2025 und reicht fuer keinen
-# aussagekraeftigen Backtest.
-EQUITY_SLEEVES = {
-    "20 SMI-Einzeltitel (heutige Struktur)": None,
-    "iShares SMI ETF (CSSMI), ausschüttend": {
-        "ticker": "CSSMI.SW", "name": "iShares SMI® ETF (CH)",
-        "isin": "CH0008899764", "ter": 0.0035, "domizil": "Schweiz",
-        "ausschuettung": "ausschüttend, ad hoc", "seit": "1999",
-        "thesaurierend": False, "index": "SMI",
-    },
-    "UBS SMI ETF (SMICHA), ausschüttend": {
-        "ticker": "SMICHA.SW", "name": "UBS ETF (CH) SMI® (CHF) A-dis",
-        "isin": "CH0017142719", "ter": 0.0020, "domizil": "Schweiz",
-        "ausschuettung": "ausschüttend, jährlich", "seit": "2003",
-        "thesaurierend": False, "index": "SMI",
-    },
-    "UBS SMI ETF (SMIA), thesaurierend, Historie rekonstruiert": {
-        "ticker": "SMIA.SW",
-        "name": "UBS SMI\u00ae ETF CHF acc",
-        "isin": "CH1447931341", "ter": 0.0020, "domizil": "Schweiz",
-        "ausschuettung": "thesaurierend", "seit": "Juni 2025",
-        "thesaurierend": True, "index": "SMI",
-        # Eigene Historie erst ab Juni 2025. Die Reihe wird deshalb aus der
-        # ausschuettenden Tranche desselben Fonds rekonstruiert.
-        "synth_from": "SMICHA.SW",
-        "synth_seit": "2003",
-    },
-    "UBS MSCI Switzerland 20/35 (SW2CHB), thesaurierend": {
-        "ticker": "SW2CHB.SW",
-        "name": "UBS MSCI Switzerland 20/35 UCITS ETF CHF acc",
-        "isin": "LU0977261329", "ter": 0.0020, "domizil": "Luxemburg",
-        "ausschuettung": "thesaurierend", "seit": "Okt. 2013",
-        "thesaurierend": True, "index": "MSCI Switzerland 20/35",
-    },
-}
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 def _clean_index(obj):
@@ -644,61 +582,7 @@ with st.sidebar:
              "dafür weniger Transaktionen. Standard = jeden Monatsultimo, "
              "das historisch verifizierte Design.")
 
-    st.markdown("### Kapitalfluss")
-    st.markdown(
-        f"<p style='color:{OAK_SAGE_DIM}; font-size:11px; margin-top:-6px;'>"
-        "Laufende Zeichnungen und Rücknahmen am Monatsultimo. Der grösste "
-        "Kostenunterschied zwischen Einzeltiteln und ETF liegt genau hier.</p>",
-        unsafe_allow_html=True)
-    flow_pct = st.slider(
-        "Netto-Kapitalfluss je Monat (% des NAV)", min_value=-3.0,
-        max_value=5.0, value=0.0, step=0.1,
-        help="Positiv sind Zeichnungen, negativ Rücknahmen. Zuflüsse gehen "
-             "nach bestehenden Anteilen in Aktien und Bitcoin, der Aktienteil "
-             "nach Zielgewichten auf die Titel. Abflüsse kommen zuerst aus der "
-             "Kasse, dann anteilig aus den Positionen.\n\n"
-             "Jede Zeichnung kostet bei zwanzig Einzeltiteln 21 Orderzeilen "
-             "und bei einem ETF zwei, unabhängig vom Betrag.") / 100.0
-    flow_chf = st.number_input(
-        "zusätzlich fester Betrag je Monat (CHF)", min_value=-5_000_000.0,
-        max_value=5_000_000.0, value=0.0, step=10_000.0,
-        help="Wird zum prozentualen Fluss addiert. Für ein Produkt, das mit "
-             "festen Beträgen wächst statt proportional.")
-    if flow_pct or flow_chf:
-        st.caption(
-            "Mit Kapitalflüssen ist der Endwert keine Rendite mehr, er enthält "
-            "das eingezahlte Geld. Vergleichbar ist nur der **Anteilswert**, "
-            "der unten ausgewiesen wird.")
-
     st.markdown("### Aktien-Sleeve")
-    equity_sleeve = st.radio(
-        "Aufbau des Aktienteils", list(EQUITY_SLEEVES.keys()), index=0,
-        help="Zwanzig Einzeltitel bilden den SMI nach und erzeugen bei jedem "
-             "Vorgang zwanzig Orderzeilen, jede mit eigener Mindestgebuehr. "
-             "Ein SMI-ETF erzeugt eine einzige Orderzeile. Die Dividenden "
-             "fliessen in beiden Faellen gleich, die Verrechnungssteuer von "
-             "35 Prozent faellt in beiden Faellen an. Der Unterschied liegt "
-             "allein in den Transaktionskosten und im Aufwand.")
-    _sleeve_cfg = EQUITY_SLEEVES[equity_sleeve]
-    if _sleeve_cfg:
-        st.caption(
-            f"{_sleeve_cfg['name']} · {_sleeve_cfg['isin']} · Index "
-            f"{_sleeve_cfg['index']} · TER {_sleeve_cfg['ter']*100:.2f}% · "
-            f"{_sleeve_cfg['ausschuettung']} · Domizil "
-            f"{_sleeve_cfg['domizil']} · eigene Kurshistorie ab "
-            f"{_sleeve_cfg['seit']}. TER und Quellensteuer des Fonds stecken "
-            "bereits im Marktkurs und werden nicht zusätzlich abgezogen.")
-        if _sleeve_cfg.get("synth_from"):
-            st.info(
-                f"Dieser Anteilsklasse fehlt die Historie (erst ab "
-                f"{_sleeve_cfg['seit']}). Der Backtest rekonstruiert sie aus "
-                f"der ausschüttenden Tranche desselben Fonds "
-                f"({_sleeve_cfg['synth_from']}, ab "
-                f"{_sleeve_cfg['synth_seit']}), indem die Ausschüttungen netto "
-                f"nach {int(WITHHOLDING_TAX*100)}% Verrechnungssteuer "
-                "wiederangelegt werden. Die Steuerbelastung bleibt damit "
-                "erhalten. Die Rekonstruktion wird unten gegen die echten "
-                "Kurse geprüft, soweit sie vorliegen.")
     weighting_method = st.radio("SMI Gewichtung",
         ["Marktkapitalisierung (Approx. + 18% Cap)", "Equal Weight (5 % je Titel)"])
     rebalance_freq = st.selectbox("SMI Rebalancing-Frequenz",
@@ -706,80 +590,12 @@ with st.sidebar:
         help="Final kalibriert auf Jährlich (September) — an den echten SIX-"
              "Indexreview-Termin angelehnt. Siehe Handelsreglement §7.")
 
-    st.markdown("### Finanzierung des Bitcointeils")
-    _thes = bool(_sleeve_cfg and _sleeve_cfg.get("thesaurierend"))
-    _finanz_opt = ["Dividendenernte über DCA-Fenster (heute)",
-                   "Monatliche Entnahme aus dem Aktienteil"]
-    harvest_choice = st.radio(
-        "Woher kommt das Geld für Bitcoin?", _finanz_opt,
-        index=(1 if _thes else 0),
-        help="Dividendenernte: die Ausschüttung wird vereinnahmt und über das "
-             "DCA-Fenster in Tranchen in Bitcoin investiert. Das ist die "
-             "heutige Mechanik und braucht ein Tranchenregister.\n\n"
-             "Monatliche Entnahme: am Monatsultimo wird ein fester Prozentsatz "
-             "der Aktienposition abverkauft und der Erlös unmittelbar in "
-             "Bitcoin investiert. Wasserfall: erst Verkauf, dann Reinvestition. "
-             "Kein Tranchenregister, kein Zustand über den Termin hinaus, zwei "
-             "Orderzeilen je Monat.")
-    harvest_mode = ("withdrawal" if harvest_choice.startswith("Monatliche")
-                    else "dividend")
-
-    if harvest_mode == "withdrawal":
-        withdrawal_pct = st.number_input(
-            "Entnahmesatz je Monat (%)", min_value=0.0, max_value=2.0,
-            value=0.25, step=0.01, format="%.3f",
-            help="0.25 Prozent im Monat entspricht 3.04 Prozent im Jahr. Zum "
-                 "Vergleich: die heutige Nettodividendenernte beträgt rund "
-                 "1.95 Prozent im Jahr (3 Prozent brutto mal 0.65). Der "
-                 "gleichwertige Satz wäre 0.161 Prozent. Ein höherer Satz "
-                 "verschiebt mehr in Bitcoin, lässt den Aktienteil aber "
-                 "langsamer wachsen.") / 100.0
-        _freq_opt = {"Monatlich": 1, "Quartalsweise": 3,
-                     "Halbjährlich": 6, "Jährlich": 12}
-        _freq_wahl = st.selectbox(
-            "Entnahmetermine", list(_freq_opt.keys()), index=1,
-            help="Der Entnahmesatz bleibt derselbe, nur die Termine werden "
-                 "seltener und die einzelne Entnahme entsprechend grösser. "
-                 "Der Jahresbetrag ändert sich nicht.\n\n"
-                 "Warum das zählt: jeder Termin erzeugt zwei Orderzeilen, "
-                 "Verkauf und Bitcoinkauf, und bei diesen Volumen greift bei "
-                 "beiden die Mindestgebühr. Monatlich sind das 24 "
-                 "Mindestgebühren im Jahr, quartalsweise 8. Der Preis dafür "
-                 "ist eine gröbere Streuung der Einstiegspunkte in Bitcoin.")
-        withdrawal_n = _freq_opt[_freq_wahl]
-        _jahr = (1 + withdrawal_pct)**12 - 1
-        _zeilen_jahr = int(round(24 / withdrawal_n))
-        st.caption(
-            f"Entspricht {_jahr*100:.2f}% im Jahr, unabhängig von den "
-            f"Terminen. Heutige Nettodividendenernte rund 1.95%, "
-            f"gleichwertiger Satz 0.161% je Monat. Diese Frequenz erzeugt "
-            f"rund {_zeilen_jahr} Orderzeilen im Jahr. Was das an Gebühren "
-            "kostet, steht unten unter Kosten & Gebühren.")
-    else:
-        withdrawal_pct = 0.0
-        # Vorgabe fuer den Strukturvergleich: wird der Aktienteil ueber
-        # Dividenden finanziert, gibt es hier keine Entnahme. Der
-        # Strukturvergleich rechnet die thesaurierende Variante aber trotzdem
-        # mit und braucht dafuer sinnvolle Werte. Quartalsweise statt
-        # monatlich, weil monatlich doppelt so viele Mindestgebuehren kostet.
-        withdrawal_n = 3
-
+    st.markdown("### Dividenden-Wiederanlage")
     dca_months = st.slider("DCA-Zeitraum (Monate)", 1, 24, 6,
-                           disabled=(harvest_mode == "withdrawal"),
-                           help="Nur für die Dividendenernte. Final kalibriert "
-                                "auf 6 Monate (Sharpe-/Calmar-Grid über "
-                                "3/6/9/12 Monate).")
-
-    if _thes and harvest_mode == "dividend":
-        st.error(
-            "Ein thesaurierender ETF schüttet nichts aus. Mit der "
-            "Dividendenernte bekommt der Bitcointeil dann gar kein Geld. "
-            "Bitte die monatliche Entnahme wählen.")
-    if (not _thes) and harvest_mode == "withdrawal" and _sleeve_cfg is None:
-        st.info(
-            "Einzeltitel mit monatlicher Entnahme: die Dividenden fliessen "
-            "weiter und werden beim Entnahmetermin vorrangig verwendet, bevor "
-            "Anteile verkauft werden.")
+                           help="Final kalibriert auf 6 Monate (Sharpe-/Calmar-"
+                                "Grid über 3/6/9/12 Monate — 6 Monate lag "
+                                "gleichauf mit dem Sharpe-Optimum und zugleich "
+                                "in der besseren Calmar-Gruppe).")
     st.markdown("### Bitcoin-Instrument")
     btc_source = st.radio("Bitcoin-Exposure",
         ["IB1T ETP (Spot − TER, volle Historie)",
@@ -814,53 +630,6 @@ with st.sidebar:
                             help="Cost in basis points applied to traded notional at each "
                                  "trade (initial allocation, DCA buys, threshold sells, "
                                  "rebalancing turnover). 10 bps = 0.10%.")
-    min_fee_chf = st.number_input(
-        "Mindestgebühr je Orderzeile (CHF)", min_value=0.0, max_value=500.0,
-        value=75.0, step=5.0,
-        help="Bank Frick rechnet je gehandeltem TITEL ab, nicht je Vorgang. "
-             "Bei zwanzig Einzeltiteln fallen pro Umschichtung zwanzig "
-             "Mindestgebühren an, bei einem ETF eine einzige. Das ist der "
-             "eigentliche Kostentreiber des Produkts. Auf 0 setzen, um das "
-             "frühere, rein proportionale Kostenmodell zu reproduzieren.")
-    fx_fee_bps = st.slider(
-        "Devisengebühr Bitcoin-Leg (bps)", min_value=0.0, max_value=100.0,
-        value=30.0, step=5.0,
-        help="Das Bitcoin-ETP handelt in EUR, die Zelle rechnet in CHF. "
-             "Jede Bitcoin-Bewegung trägt deshalb zusätzlich eine "
-             "Devisengebühr. Handelsreglement 12.3.")
-    min_order_chf = st.number_input(
-        "Bagatellgrenze je Orderzeile (CHF)", min_value=0.0, max_value=100_000.0,
-        value=500.0, step=100.0,
-        help="Orderzeilen unterhalb dieses Betrags werden in der Praxis nicht "
-             "plaziert und hier deshalb auch nicht mit einer Mindestgebühr "
-             "belastet. Ohne diese Grenze würde eine Anpassung über CHF 20 "
-             "mit CHF 75 belastet, was die Einzeltitelvariante unfair "
-             "schlechter rechnet als sie ist.")
-    _min_notional = (min_fee_chf / (tx_cost_bps/10000.0)) if tx_cost_bps > 0 else 0.0
-    if min_fee_chf > 0 and _min_notional > 0:
-        st.caption(
-            f"Die Mindestgebühr greift bis zu einem Ordervolumen von CHF "
-            f"{_min_notional:,.0f} je Titel. Darunter kostet jede Zeile "
-            f"pauschal CHF {min_fee_chf:,.0f}.".replace(",", "'"))
-    if harvest_mode == "withdrawal" and min_fee_chf > 0:
-        _zj = int(round(24 / max(1, withdrawal_n)))
-        st.caption(
-            f"Die gewählten Entnahmetermine erzeugen rund {_zj} Orderzeilen "
-            f"im Jahr, also etwa CHF {_zj*min_fee_chf:,.0f} Mindestgebühren "
-            f"pro Jahr, bevor irgendetwas anderes gehandelt wird."
-            .replace(",", "'"))
-
-    netting_on = st.checkbox(
-        "Orderzeilen je Ausführungstag netten", value=True,
-        help="Alle Bewegungen eines Ausführungstages werden je Instrument zu "
-             "einer Order zusammengefasst und die Gebühr auf dem Saldo "
-             "berechnet. Das entspricht Handelsreglement 9.4 und der Praxis: "
-             "an einem Monatsultimo mit Zeichnung und Entnahme wird der ETF "
-             "einmal gehandelt, nicht zweimal.\n\n"
-             "Ausschalten zeigt, was jede Teilbewegung einzeln kosten würde. "
-             "Das überzeichnet die Kosten, macht aber sichtbar, wie viel das "
-             "Netting wert ist.")
-
     use_tiered_fee = st.checkbox("Gestaffelte Management Fee (volumenabhängig)",
                                  value=True,
                                  help="Festgelegte Gebührenstruktur: 2.00% p.a. als "
@@ -1218,55 +987,6 @@ def fetch_series(ticker, start, end):
     return s.dropna()
 
 
-def synthesize_accumulating(price_series, dividends_df, ticker_src,
-                            net_factor=DIVIDEND_NET_FACTOR):
-    """Baut aus einer ausschuettenden Anteilsklasse die thesaurierende.
-
-    WARUM DAS NOETIG IST: der thesaurierende UBS SMI ETF (CH1447931341, SMIA)
-    existiert erst seit Juni 2025. Fuer eine Kalibrierung ueber rollierende
-    Dreijahresfenster reicht das nicht annaehernd. Die ausschuettende Tranche
-    desselben Fonds (CH0017142719, SMICHA) gibt es seit 2003.
-
-    Beide Anteilsklassen bilden denselben Index mit derselben TER ab und
-    unterscheiden sich nur in der Ertragsverwendung. Die thesaurierende Reihe
-    ist deshalb die ausschuettende mit wiederangelegten Ausschuettungen:
-
-        Kurs_thes(t) = Kurs_aus(t) * PROD (1 + netto_i / Kurs_aus(ex_i))
-
-    Wiederangelegt wird der NETTObetrag nach 35 Prozent Verrechnungssteuer,
-    waehrend der Kurs am Ex-Tag um den BRUTTObetrag faellt. Die Differenz ist
-    genau die Steuerbelastung, die die Zelle nicht zurueckfordern kann, und
-    sie bleibt damit in der Reihe erhalten. Eine thesaurierende Schweizer
-    Anteilsklasse traegt dieselbe Last: die Thesaurierung loest die
-    Verrechnungssteuer nach Art. 4 Abs. 1 lit. c VStG genauso aus wie eine
-    Ausschuettung.
-
-    NICHT abgebildet: die Tracking Difference zwischen den beiden
-    Anteilsklassen und der exakte Wiederanlagekurs innerhalb des Ex-Tages.
-    Beides ist zweiter Ordnung. Die Oberflaeche validiert die Rekonstruktion
-    gegen die echten SMIA-Kurse, soweit sie vorliegen.
-    """
-    s = _clean_index(_to_series(price_series).dropna())
-    if s.empty:
-        return s
-    ausschuettungen = {}
-    if dividends_df is not None and not dividends_df.empty:
-        for _, r in dividends_df.iterrows():
-            if r["ticker"] != ticker_src:
-                continue
-            k = _norm_ts(r["date"])
-            ausschuettungen[k] = ausschuettungen.get(k, 0.0) + float(
-                r["dividend_per_share"])
-    faktor = 1.0
-    werte = []
-    for d, p in s.items():
-        betrag = ausschuettungen.get(d)
-        if betrag and p > 0:
-            faktor *= (1.0 + betrag * net_factor / float(p))
-        werte.append(float(p) * faktor)
-    return pd.Series(werte, index=s.index)
-
-
 def apply_etp_ter(spot_series, ter_annual):
     """Model a physically-backed Bitcoin ETP (IB1T / IBIT) from a spot series.
 
@@ -1382,11 +1102,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                  initial_btc_pct, upper_threshold, target_btc_pct,
                  rebalance_dates_set, dca_months, tx_cost_bps=0.0,
                  threshold_check_dates_set=None, cap_dates_set=None,
-                 weight_cap=None, dca_execution_dates_set=None,
-                 min_fee_chf=0.0, fx_fee_bps=0.0, min_order_chf=0.0,
-                 harvest_mode="dividend", withdrawal_pct_monthly=0.0,
-                 withdrawal_every_n_months=1,
-                 monthly_flow_pct=0.0, monthly_flow_chf=0.0, netting=True):
+                 weight_cap=None, dca_execution_dates_set=None):
     """Integrated daily simulation.
     Returns: timeseries_df, transactions_df, threshold_events_df
 
@@ -1400,153 +1116,12 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     whether DCA purchases happen (DCA always executes at every month-end,
     independent of this parameter).
 
-    tx_cost_bps: transaction cost in basis points applied to the traded
-    notional of EACH ORDER LINE (initial buy, DCA buys, threshold sells, and
-    equity rebalancing). 10 bps = 0.10%.
-
-    min_fee_chf: Mindestgebuehr je Orderzeile in CHF. Bank Frick rechnet je
-    gehandeltem Titel ab, nicht je Vorgang. Bei zwanzig Einzeltiteln entstehen
-    also zwanzig Mindestgebuehren je Umschichtung, bei einem ETF nur eine.
-    Das ist der eigentliche Kostentreiber des Produkts und der Grund, weshalb
-    dieser Parameter existiert. Vorgabe 0.0 = altes Verhalten.
-
-    fx_fee_bps: Devisengebuehr in Basispunkten auf jede Bitcoin-Bewegung
-    (das ETP handelt in EUR, die Zelle rechnet in CHF). Vorgabe 0.0.
-
-    min_order_chf: Bagatellgrenze. Orderzeilen unterhalb dieses Betrags
-    werden in der Praxis nicht plaziert und deshalb auch nicht mit einer
-    Mindestgebuehr belastet. Die Zielgewichte werden trotzdem angesteuert,
-    der Effekt auf den NAV ist vernachlaessigbar.
-
-    harvest_mode: wie der Bitcointeil finanziert wird.
-      "dividend"   heutige Mechanik: Dividende wird vereinnahmt und ueber
-                   dca_months Monate in Tranchen in Bitcoin investiert.
-      "withdrawal" thesaurierende Mechanik: am Monatsultimo wird
-                   withdrawal_pct_monthly der Aktienposition abverkauft und
-                   der Erloes unmittelbar in Bitcoin investiert. Kein
-                   Tranchenregister, kein Zustand ueber den Termin hinaus.
-
-    withdrawal_pct_monthly: Entnahmesatz je Monat, Anteil der Aktienposition.
-    0.0025 entspricht 0.25 Prozent im Monat, also 3.04 Prozent im Jahr.
-    Zum Vergleich: die heutige Nettodividendenernte betraegt rund 1.95
-    Prozent im Jahr (3 Prozent brutto mal 0.65).
-
-    withdrawal_every_n_months: Abstand der Entnahmetermine in Monaten.
-    1 = jeden Monatsultimo, 3 = quartalsweise, 6 = halbjaehrlich. Der Satz
-    bleibt derselbe und wird je Termin mit der Zahl der verstrichenen Monate
-    multipliziert, der Jahresbetrag aendert sich also nicht. Was sich aendert,
-    sind die Gebuehren (je Termin zwei Mindestgebuehren) und die Streuung der
-    Einstiegspunkte in Bitcoin.
-
-    Wasserfall im Entnahmemodus: erst Verkauf, dann Reinvestition. Beide
-    Stufen tragen ihre eigene Gebuehr, die Bitcoinstufe zusaetzlich die
-    Devisengebuehr. Vorhandene Kasse wird vor dem Abverkauf verwendet.
-
-    monthly_flow_pct / monthly_flow_chf: monatlicher Netto-Kapitalfluss am
-    Monatsultimo, als Anteil des NAV und als fester Betrag, beide werden
-    addiert. Positiv sind Zeichnungen, negativ Ruecknahmen. Zufluesse gehen
-    nach bestehenden Anteilen in Aktien und Bitcoin, der Aktienteil nach
-    Zielgewichten auf die Titel (Handelsreglement 9.4 Schritt 1). Abfluesse
-    kommen zuerst aus der Kasse, dann anteilig aus den Positionen
-    (Handelsreglement 7.3).
-
-    Mit Kapitalfluessen ist total_value kein Renditemass mehr, es enthaelt
-    das eingezahlte Geld. Dafuer gibt es die Spalte nav_per_unit: den
-    Anteilswert, der von Zeichnungen und Ruecknahmen unberuehrt bleibt.
-    ts.attrs["net_flow"] haelt den kumulierten Nettofluss.
-
-    netting: fasst alle Bewegungen eines Ausfuehrungstages je Instrument zu
-    einer Orderzeile zusammen und berechnet die Gebuehr auf dem Saldo. Das
-    entspricht Handelsreglement 9.4 und der Praxis: an einem Monatsultimo mit
-    Zeichnung und Entnahme wird der ETF einmal gehandelt, nicht zweimal.
-    Ausgeschaltet zaehlt jede Teilbewegung einzeln, was die Kosten
-    ueberzeichnet.
+    tx_cost_bps: round-trip transaction cost in basis points applied to the
+    traded notional at each trade (initial buy, DCA buys, threshold sells, and
+    quarterly equity rebalancing turnover). 10 bps = 0.10%.
     """
     tx_cost = tx_cost_bps / 10000.0  # bps -> fraction
-    fx_fee = fx_fee_bps / 10000.0
-    min_fee = float(min_fee_chf or 0.0)
-    min_order = float(min_order_chf or 0.0)
     total_tx_costs = 0.0  # accumulator in CHF
-
-    # Kostenstatistik: Orderzeilen zaehlen, nicht nur Franken summieren.
-    # Erst diese Zahlen machen den Unterschied zwischen zwanzig Einzeltiteln
-    # und einem ETF sichtbar.
-    cost_stats = {"lines": 0, "lines_at_min": 0, "fee_equity": 0.0,
-                  "fee_btc": 0.0, "fee_fx": 0.0, "lines_skipped": 0}
-
-    # Tagesbuch: Saldo je Instrument fuer den laufenden Ausfuehrungstag.
-    tagesbuch = {}
-    tagesbuch_fx = [0.0]
-
-    def _fee(notional, leg="equity", key=None):
-        """Gebuehr einer einzelnen Orderzeile, inklusive Mindestgebuehr.
-
-        key benennt das Instrument (Ticker oder __BTC__). Ohne Netting wird er
-        nicht gebraucht, mit Netting bestimmt er, welche Bewegungen eines
-        Ausfuehrungstages zu einer Orderzeile zusammengefasst werden."""
-        v = abs(float(notional))
-        if v < min_order or v <= 0.005:
-            if v > 0.005:
-                cost_stats["lines_skipped"] += 1
-            return 0.0
-        if netting:
-            # Nur buchen. Die Gebuehr faellt am Tagesende auf dem Saldo an.
-            k = key if key is not None else ("__BTC__" if leg == "btc" else "__EQ__")
-            eintrag = tagesbuch.setdefault(k, [0.0, leg])
-            eintrag[0] += float(notional)
-            return 0.0
-        prop = v * tx_cost
-        f = max(prop, min_fee)
-        cost_stats["lines"] += 1
-        if prop < min_fee:
-            cost_stats["lines_at_min"] += 1
-        cost_stats["fee_" + ("btc" if leg == "btc" else "equity")] += f
-        return f
-
-    def _fee_probe(notional):
-        """Gebuehr einer Orderzeile berechnen, ohne sie zu zaehlen oder zu
-        buchen. Fuer Vorabpruefungen, ob sich eine Ausfuehrung ueberhaupt
-        lohnt."""
-        v = abs(float(notional))
-        if v < min_order or v <= 0.005:
-            return 0.0
-        return max(v * tx_cost, min_fee)
-
-    def _fx(notional):
-        """Devisengebuehr auf eine Bitcoin-Bewegung."""
-        if netting:
-            tagesbuch_fx[0] += float(notional)
-            return 0.0
-        f = abs(float(notional)) * fx_fee
-        cost_stats["fee_fx"] += f
-        return f
-
-    def _tag_abrechnen(d, row, active_today, btc_px_chf):
-        """Rechnet das Tagesbuch ab: je Instrument eine Orderzeile auf dem
-        Saldo. Gibt die Gesamtgebuehr des Tages zurueck."""
-        if not netting:
-            return 0.0
-        gesamt = 0.0
-        for k, (saldo, leg) in tagesbuch.items():
-            v = abs(saldo)
-            if v < min_order or v <= 0.005:
-                if v > 0.005:
-                    cost_stats["lines_skipped"] += 1
-                continue
-            prop = v * tx_cost
-            f = max(prop, min_fee)
-            cost_stats["lines"] += 1
-            if prop < min_fee:
-                cost_stats["lines_at_min"] += 1
-            cost_stats["fee_" + ("btc" if leg == "btc" else "equity")] += f
-            gesamt += f
-        if tagesbuch_fx[0]:
-            f = abs(tagesbuch_fx[0]) * fx_fee
-            cost_stats["fee_fx"] += f
-            gesamt += f
-        tagesbuch.clear()
-        tagesbuch_fx[0] = 0.0
-        return gesamt
     total_wht = 0.0       # gross dividend withheld at source (35%, non-reclaimable)
     # Normalize the index to tz-naive, midnight Timestamps so that comparisons
     # against the (cleaned) BTC/FX series and the dividend/rebalance keys stay
@@ -1640,9 +1215,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     if btc_price_0 is None or fx_0 is None or fx_0 == 0 or btc_price_0 == 0 or initial_btc_pct == 0:
         # No initial BTC possible — full to SMI
-        # Je Titel eine eigene Orderzeile mit eigener Mindestgebuehr.
-        cost = sum(_fee(initial_capital * w_t0[t], key=t) for t in active_t0)
-        cost = min(cost, max(initial_capital - 1.0, 0.0))
+        cost = initial_capital * tx_cost
         total_tx_costs += cost
         investable = initial_capital - cost
         for t in active_t0:
@@ -1651,20 +1224,13 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
         btc_u_init = 0.0
         btc_u_dca = 0.0
     else:
-        # Cost charged on both equity and BTC legs of the initial allocation.
-        # Aktienseite: eine Orderzeile je Titel. Bitcoinseite: eine Zeile plus
-        # Devisengebuehr.
-        cost_eq = sum(_fee(initial_smi_chf * w_t0[t], key=t) for t in active_t0)
-        cost_btc = _fee(initial_btc_chf, leg="btc", key="__BTC__") + _fx(initial_btc_chf)
-        # Schutz: die Gebuehr darf den jeweiligen Anlagebetrag nie erreichen.
-        cost_eq = min(cost_eq, max(initial_smi_chf - 1.0, 0.0))
-        cost_btc = min(cost_btc, max(initial_btc_chf - 1.0, 0.0))
-        cost = cost_eq + cost_btc
+        # Cost charged on both equity and BTC legs of the initial allocation
+        cost = initial_capital * tx_cost
         total_tx_costs += cost
-        smi_invest = initial_smi_chf - cost_eq
+        smi_invest = initial_smi_chf - initial_smi_chf * tx_cost
         for t in active_t0:
             smi_shares[t] = (smi_invest * w_t0[t]) / prices_clean.loc[first_day, t]
-        btc_invest = initial_btc_chf - cost_btc
+        btc_invest = initial_btc_chf - initial_btc_chf * tx_cost
         usd_0 = btc_invest / fx_0
         btc_held = usd_0 / btc_price_0
         # ATTRIBUTION: zwei getrennte Lots — Startallokation (Tag 1) vs.
@@ -1685,14 +1251,6 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
 
     records = []
     threshold_events = []
-    # Anteilsrechnung: der Startbestand entspricht initial_capital Anteilen zu
-    # je CHF 1. Zeichnungen schaffen Anteile zum aktuellen Anteilswert,
-    # Ruecknahmen loeschen sie. Der Anteilswert bleibt damit von
-    # Kapitalfluessen unberuehrt.
-    _anteile = float(initial_capital)
-    _netto_fluss = 0.0       # kumulierter Nettokapitalfluss
-    _me_zaehler = 0          # gezaehlte Monatsultimi, steuert die Entnahmetermine
-    _entnahme_n = max(1, int(withdrawal_every_n_months or 1))
 
     def _active_on(d):
         """Tickers with a valid price on day d."""
@@ -1720,175 +1278,9 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     total_wht += cash * (WITHHOLDING_TAX / DIVIDEND_NET_FACTOR)
                     dividend_cash += cash
                     att_div_income += cash
-                    # Im Entnahmemodus entstehen keine DCA-Fenster. Eine
-                    # Ausschuettung landet dort in der Kasse und wird beim
-                    # naechsten Entnahmetermin vorrangig verwendet.
-                    if harvest_mode != "withdrawal":
-                        pending_dca.append({"remaining": dca_months,
-                                            "monthly_chf": cash / dca_months,
-                                            "ticker": t})
-
-        # 1b. KAPITALFLUSS: Zeichnungen und Ruecknahmen am Monatsultimo.
-        # Handelsreglement 9.4 Schritt 1 (Zufluss nach bestehenden Anteilen)
-        # und 7.3 (Abfluss zuerst aus der Kasse, dann anteilig).
-        if (d in month_ends and (monthly_flow_pct or monthly_flow_chf)
-                and active_today):
-            _sv = _smi_value_on(d, row)
-            _bv = (btc_held * btc_price_d * fx_d
-                   if (btc_price_d and fx_d) else 0.0)
-            _nav_vor = _sv + _bv + dividend_cash
-            _fluss = _nav_vor * monthly_flow_pct + monthly_flow_chf
-
-            if _fluss > 0 and _nav_vor > 0:
-                # Anteile zum Wert VOR dem Zufluss ausgeben
-                _awert = _nav_vor / _anteile if _anteile > 0 else 0.0
-                if _awert > 0:
-                    _anteile += _fluss / _awert
-                _netto_fluss += _fluss
-                # Nach bestehenden Anteilen, die Kasse bleibt aussen vor:
-                # sie ist ein Durchlaufposten und soll nicht anwachsen.
-                _basis = _sv + _bv
-                _aq = (_sv / _basis) if _basis > 0 else 1.0
-                _bq = 1.0 - _aq
-                _eq_teil = _fluss * _aq
-                _btc_teil = _fluss - _eq_teil
-                _geb_fluss = 0.0
-                if _eq_teil > 0:
-                    _wa = w[active_today] / w[active_today].sum()
-                    for t in active_today:
-                        _v = _eq_teil * float(_wa[t])
-                        if _v > 0:
-                            _geb_fluss += _fee(_v, key=t)
-                            smi_shares[t] += _v / row[t]
-                    att_equity_invested += _eq_teil
-                if _btc_teil > 0 and btc_price_d and fx_d and fx_d > 0:
-                    _geb_fluss += _fee(_btc_teil, leg="btc", key="__BTC__")
-                    _geb_fluss += _fx(_btc_teil)
-                    _zu = _btc_teil / (btc_price_d * fx_d)
-                    btc_held += _zu
-                    btc_u_init += _zu          # neues Kapital, nicht DCA
-                    att_btc_init_invested += _btc_teil
-                elif _btc_teil > 0:
-                    # Ohne Bitcoinkurs bleibt der Anteil in der Kasse
-                    dividend_cash += _btc_teil
-                # Ohne Netting faellt die Gebuehr sofort an und wird den
-                # Positionen belastet. Mit Netting gibt _fee null zurueck, die
-                # Abrechnung erfolgt dann am Tagesende auf dem Saldo.
-                if _geb_fluss > 0:
-                    total_tx_costs += _geb_fluss
-                    _sv2 = _smi_value_on(d, row)
-                    _bv2 = (btc_held * btc_price_d * fx_d
-                            if (btc_price_d and fx_d) else 0.0)
-                    _b2 = _sv2 + _bv2
-                    _g = min(_geb_fluss, max(_b2 - 1.0, 0.0))
-                    if _b2 > 0 and _g > 0:
-                        _ge = _g * (_sv2 / _b2)
-                        _gb = _g - _ge
-                        if _ge > 0 and _sv2 > 0:
-                            _sh = (_sv2 - _ge) / _sv2
-                            for t in available:
-                                smi_shares[t] *= _sh
-                        if _gb > 0 and btc_price_d and fx_d and btc_held > 0:
-                            _w2 = min(_gb / (btc_price_d * fx_d), btc_held)
-                            btc_held -= _w2
-                            _t2 = btc_u_init + btc_u_dca
-                            _f2 = (btc_u_init / _t2) if _t2 > 0 else 0.0
-                            btc_u_init -= _w2 * _f2
-                            btc_u_dca -= _w2 * (1 - _f2)
-                transactions.append({
-                    "date": d, "type": "BUY", "reason": "ZEICHNUNG",
-                    "btc_amount": 0.0, "chf_amount": _fluss,
-                    "usd_amount": 0.0,
-                    "btc_price_usd": btc_price_d or 0.0, "usdchf": fx_d or 0.0,
-                })
-
-            elif _fluss < 0 and _nav_vor > 0:
-                # Nie den ganzen NAV entnehmen: es muss Substanz bleiben,
-                # aus der die Gebuehren des Tages getragen werden koennen.
-                _ab = min(-_fluss, max(_nav_vor * 0.99, 0.0))
-                _awert = _nav_vor / _anteile if _anteile > 0 else 0.0
-                if _awert > 0:
-                    _anteile = max(_anteile - _ab / _awert, 0.0)
-                _netto_fluss -= _ab
-                # ANTEILIG ueber alle drei Toepfe, nicht Kasse zuerst.
-                #
-                # Handelsreglement 7.3 nennt die Cash-Position als erste
-                # Quelle fuer Abfluesse. Dieses Modell kennt aber keine
-                # eigene Cash-Position: dividend_cash IST der Ernte-Pool,
-                # also die vereinnahmten Dividenden, auf die die offenen
-                # DCA-Tranchen ausgestellt sind. Wuerde eine Ruecknahme
-                # zuerst dort zugreifen, loeschte ein laufender Abfluss das
-                # ganze DCA-Programm, und der Bitcointeil bekaeme nie wieder
-                # Geld. Das ist weder gewollt noch richtig.
-                #
-                # Wirtschaftlich nimmt ein Ruecknehmer seinen Anteil an
-                # ALLEM mit, auch an der noch nicht angelegten Ernte. Genau
-                # das bildet die anteilige Entnahme ab, und die offenen
-                # Tranchen schrumpfen dabei um exakt seinen Anteil.
-                _quote = _ab / _nav_vor if _nav_vor > 0 else 0.0
-                _kasse_vor = max(dividend_cash, 0.0)
-                _aus_kasse = _kasse_vor * _quote
-                if _aus_kasse > 0:
-                    for _e in pending_dca:
-                        _e["monthly_chf"] *= (1.0 - _quote)
-                dividend_cash -= _aus_kasse
-                _rest = _ab - _aus_kasse
-                # Schritt 2: anteilig aus den Positionen
-                _basis = _sv + _bv
-                _geb_ab = 0.0
-                if _rest > 0 and _basis > 0:
-                    _eq_ab = _rest * (_sv / _basis)
-                    _btc_ab = _rest - _eq_ab
-                    if _eq_ab > 0 and _sv > 0:
-                        for t in active_today:
-                            _anteil = (smi_shares[t] * row[t]) / _sv
-                            _v = _eq_ab * _anteil
-                            if _v > 0:
-                                _geb_ab += _fee(_v, key=t)
-                                smi_shares[t] -= _v / row[t]
-                        att_equity_invested -= _eq_ab
-                    if _btc_ab > 0 and btc_price_d and fx_d and fx_d > 0:
-                        _geb_ab += _fee(_btc_ab, leg="btc", key="__BTC__")
-                        _geb_ab += _fx(_btc_ab)
-                        _weg = _btc_ab / (btc_price_d * fx_d)
-                        _weg = min(_weg, btc_held)
-                        btc_held -= _weg
-                        # Lots pro rata reduzieren, nie FIFO
-                        _tu = btc_u_init + btc_u_dca
-                        _fi = (btc_u_init / _tu) if _tu > 0 else 0.0
-                        btc_u_init -= _weg * _fi
-                        btc_u_dca -= _weg * (1 - _fi)
-                        att_btc_init_invested -= _btc_ab * _fi
-                        att_btc_dca_invested -= _btc_ab * (1 - _fi)
-                if _geb_ab > 0:
-                    total_tx_costs += _geb_ab
-                    _sv3 = _smi_value_on(d, row)
-                    _bv3 = (btc_held * btc_price_d * fx_d
-                            if (btc_price_d and fx_d) else 0.0)
-                    _b3 = _sv3 + _bv3
-                    _g3 = min(_geb_ab, max(_b3 - 1.0, 0.0))
-                    if _b3 > 0 and _g3 > 0:
-                        _ge3 = _g3 * (_sv3 / _b3)
-                        _gb3 = _g3 - _ge3
-                        if _ge3 > 0 and _sv3 > 0:
-                            _sh3 = (_sv3 - _ge3) / _sv3
-                            for t in available:
-                                smi_shares[t] *= _sh3
-                        if _gb3 > 0 and btc_price_d and fx_d and btc_held > 0:
-                            _w3 = min(_gb3 / (btc_price_d * fx_d), btc_held)
-                            btc_held -= _w3
-                            _t3 = btc_u_init + btc_u_dca
-                            _f3 = (btc_u_init / _t3) if _t3 > 0 else 0.0
-                            btc_u_init -= _w3 * _f3
-                            btc_u_dca -= _w3 * (1 - _f3)
-                if True:
-                    transactions.append({
-                        "date": d, "type": "SELL", "reason": "RUECKNAHME",
-                        "btc_amount": 0.0, "chf_amount": -_ab,
-                        "usd_amount": 0.0,
-                        "btc_price_usd": btc_price_d or 0.0,
-                        "usdchf": fx_d or 0.0,
-                    })
+                    pending_dca.append({"remaining": dca_months,
+                                        "monthly_chf": cash / dca_months,
+                                        "ticker": t})
 
         # 2. Month-end: execute DCA buys
         is_month_end = d in month_ends
@@ -1903,25 +1295,6 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
             total_dca_chf = sum(e["monthly_chf"] for e in pending_dca
                                 if e["remaining"] > 0)
 
-            # Schutz: kostet die Ausfuehrung mehr als sie bewegt, wird in
-            # diesem Monat nicht gekauft. Die Tranchen bleiben offen und
-            # kommen im Folgemonat zusammen mit den dann faelligen erneut zur
-            # Ausfuehrung, bis der Betrag die Gebuehr traegt. Das Geld bleibt
-            # als Dividendenkasse Teil des NAV, es geht nichts verloren.
-            # Sicherheitsnetz: nie mehr anlegen, als in der Kasse liegt.
-            # Greift, wenn eine Ruecknahme die Kasse unter die offenen
-            # Tranchen gedrueckt hat.
-            _verfuegbar = max(dividend_cash, 0.0)
-            if total_dca_chf > _verfuegbar:
-                _skal = (_verfuegbar / total_dca_chf) if total_dca_chf > 0 else 0.0
-                for entry in pending_dca:
-                    entry["monthly_chf"] *= _skal
-                total_dca_chf = _verfuegbar
-
-            _probe = (_fee_probe(total_dca_chf) + abs(total_dca_chf) * fx_fee)
-            if total_dca_chf > 0 and _probe >= total_dca_chf:
-                total_dca_chf = 0.0
-
             if total_dca_chf > 0 and btc_price_d and fx_d and fx_d > 0:
                 # Consume one tranche per entry ONLY now that the buy executes
                 # (previously tranches were consumed even when BTC/FX quotes
@@ -1930,7 +1303,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     if entry["remaining"] > 0:
                         entry["remaining"] -= 1
                 pending_dca = [e for e in pending_dca if e["remaining"] > 0]
-                cost = _fee(total_dca_chf, leg="btc", key="__BTC__") + _fx(total_dca_chf)
+                cost = total_dca_chf * tx_cost
                 total_tx_costs += cost
                 net_dca_chf = total_dca_chf - cost
                 dividend_cash -= total_dca_chf   # deployed (incl. tx cost)
@@ -1943,66 +1316,6 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     "date": d, "type": "BUY", "reason": "DCA",
                     "btc_amount": btc_bought, "chf_amount": total_dca_chf,
                     "usd_amount": usd, "btc_price_usd": btc_price_d, "usdchf": fx_d,
-                })
-
-        # 2b. ENTNAHME (Wasserfall). Ersetzt im Entnahmemodus die
-        # Dividendenernte samt DCA-Fenstern: am Monatsultimo wird ein fester
-        # Prozentsatz der Aktienposition abverkauft und der Erloes unmittelbar
-        # in Bitcoin investiert. Erst Verkauf, dann Reinvestition, jede Stufe
-        # mit eigener Gebuehr.
-        if is_month_end:
-            _me_zaehler += 1
-        _ist_entnahmetermin = (is_month_end and _me_zaehler % _entnahme_n == 0)
-
-        if (harvest_mode == "withdrawal" and _ist_entnahmetermin
-                and withdrawal_pct_monthly > 0 and active_today
-                and btc_price_d and fx_d and fx_d > 0):
-            _eq_val = _smi_value_on(d, row)
-            # Der Satz gilt je Monat, der Termin deckt _entnahme_n Monate ab.
-            _ziel = _eq_val * withdrawal_pct_monthly * _entnahme_n
-            # Vorhandene Kasse zuerst, Rest aus dem Abverkauf.
-            _aus_kasse = min(max(dividend_cash, 0.0), _ziel)
-            _aus_verkauf = max(_ziel - _aus_kasse, 0.0)
-
-            # Verkaufszeilen je Titel, anteilig am aktuellen Bestand. Bei
-            # einem ETF ist das genau eine Zeile.
-            _zeilen = {}
-            if _aus_verkauf > 0 and _eq_val > 0:
-                for t in active_today:
-                    _anteil = (smi_shares[t] * row[t]) / _eq_val
-                    if _anteil > 0:
-                        _zeilen[t] = _aus_verkauf * _anteil
-
-            # Vorabpruefung: lohnt der ganze Vorgang? Gezaehlt wird hier
-            # nichts, _fee_probe bucht nicht.
-            _gv_probe = sum(_fee_probe(v) for v in _zeilen.values())
-            _erloes_probe = _ziel - _gv_probe
-            _gk_probe = (_fee_probe(_erloes_probe)
-                         + abs(_erloes_probe) * fx_fee) if _erloes_probe > 0 else 0.0
-
-            if _erloes_probe > 0 and (_gv_probe + _gk_probe) < _ziel:
-                # Stufe 1: verkaufen
-                _gv = 0.0
-                for t, v in _zeilen.items():
-                    _gv += _fee(v, key=t)
-                    smi_shares[t] -= v / row[t]
-                _erloes = _ziel - _gv
-                # Stufe 2: Bitcoin kaufen
-                _gk = _fee(_erloes, leg="btc", key="__BTC__") + _fx(_erloes)
-                total_tx_costs += _gv + _gk
-                _netto = _erloes - _gk
-                dividend_cash -= _aus_kasse
-                usd = _netto / fx_d
-                _gekauft = usd / btc_price_d
-                btc_held += _gekauft
-                btc_u_dca += _gekauft
-                att_btc_dca_invested += _ziel
-                att_equity_invested -= _aus_verkauf
-                transactions.append({
-                    "date": d, "type": "BUY", "reason": "ENTNAHME",
-                    "btc_amount": _gekauft, "chf_amount": _ziel,
-                    "usd_amount": usd, "btc_price_usd": btc_price_d,
-                    "usdchf": fx_d,
                 })
 
         # 3. Threshold check (independent cadence, default = month-end)
@@ -2028,55 +1341,24 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     att_sold_gross_dca += sell_chf * (1 - _f_init)
                     att_equity_invested += sell_chf   # Erlös geht in Aktien
 
-                    # Transaction cost on the BTC sale and the equity re-purchase.
-                    # Die Bitcoinseite ist eine Orderzeile plus Devisengebuehr,
-                    # die Aktienseite eine Orderzeile JE TITEL.
-                    # Vorabpruefung mit der ECHTEN Gebuehr, damit der Schutz
-                    # auch bei eingeschaltetem Netting greift.
-                    _p_btc = _fee_probe(sell_chf) + abs(sell_chf) * fx_fee
-                    _p_erl = sell_chf - _p_btc
-                    w_active = None
-                    _p_eq = 0.0
-                    if active_today:
-                        w_active = w[active_today] / w[active_today].sum()
-                        _p_eq = sum(_fee_probe(_p_erl * w_active[t])
-                                    for t in active_today)
-                    _skip_threshold = (_p_btc + _p_eq) >= sell_chf
-                    cost = 0.0
-                    if not _skip_threshold:
-                        cost_btc = _fee(sell_chf, leg="btc", key="__BTC__") + _fx(sell_chf)
-                        proceeds = sell_chf - cost_btc
-                        cost_eq = 0.0
-                        if active_today:
-                            cost_eq = sum(_fee(proceeds * w_active[t], key=t)
-                                          for t in active_today)
-                        cost = cost_btc + cost_eq
+                    # Transaction cost on the BTC sale and the equity re-purchase
+                    # (two legs: selling BTC, buying equity with the proceeds)
+                    cost = sell_chf * tx_cost * 2
                     total_tx_costs += cost
                     net_to_smi = sell_chf - cost
 
-                    if _skip_threshold:
-                        # Verkauf zurueckdrehen: Position und Attribution
-                        # bleiben, als haette der Termin nicht stattgefunden.
-                        btc_held += sell_btc
-                        btc_u_init += sell_btc * _f_init
-                        btc_u_dca += sell_btc * (1 - _f_init)
-                        att_sold_gross_init -= sell_chf * _f_init
-                        att_sold_gross_dca -= sell_chf * (1 - _f_init)
-                        att_equity_invested -= sell_chf
-
                     # Reallocate net proceeds to active tickers by renormalized weights
-                    if active_today and w_active is not None and not _skip_threshold:
+                    if active_today:
+                        w_active = w[active_today] / w[active_today].sum()
                         for t in active_today:
                             extra_chf = net_to_smi * w_active[t]
                             smi_shares[t] += extra_chf / row[t]
 
-                    if not _skip_threshold:
-                        transactions.append({
-                            "date": d, "type": "SELL", "reason": "THRESHOLD",
-                            "btc_amount": -sell_btc, "chf_amount": -sell_chf,
-                            "usd_amount": -sell_usd, "btc_price_usd": btc_price_d,
-                            "usdchf": fx_d,
-                        })
+                    transactions.append({
+                        "date": d, "type": "SELL", "reason": "THRESHOLD",
+                        "btc_amount": -sell_btc, "chf_amount": -sell_chf,
+                        "usd_amount": -sell_usd, "btc_price_usd": btc_price_d, "usdchf": fx_d,
+                    })
 
                     smi_value_after = _smi_value_on(d, row)
                     btc_value_after = btc_held * btc_price_d * fx_d
@@ -2094,17 +1376,14 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
             smi_value = _smi_value_on(d, row)
             if smi_value > 0:
                 w_active = w[active_today] / w[active_today].sum()
-                # Jede Gewichtsanpassung ist eine eigene Orderzeile mit eigener
-                # Mindestgebuehr. Die frueher verwendete halbierte Summe
-                # (one-way turnover) unterschaetzt das: es werden tatsaechlich
-                # sowohl Kauf- als auch Verkaufsseite als Order aufgegeben.
-                cost = 0.0
+                # Turnover = sum of absolute value changes / 2 (one-way turnover)
+                turnover_chf = 0.0
                 for t in active_today:
                     current_val = smi_shares[t] * row[t]
                     target_value = smi_value * w_active[t]
-                    cost += _fee(target_value - current_val, key=t)
-                # Schutz: die Gebuehr darf den Aktienbestand nie aufzehren.
-                cost = min(cost, max(smi_value - 1.0, 0.0))
+                    turnover_chf += abs(target_value - current_val)
+                turnover_chf /= 2.0
+                cost = turnover_chf * tx_cost
                 total_tx_costs += cost
                 # Apply rebalance to active tickers, then scale to absorb cost
                 for t in active_today:
@@ -2166,64 +1445,15 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                     if _wsum > 0:
                         for t in active_today:
                             target_w[t] /= _wsum
-                        cost = sum(_fee(smi_value * target_w[t] - cur_val[t], key=t)
-                                   for t in active_today)
-                        cost = min(cost, max(smi_value - 1.0, 0.0))
+                        turnover_chf = sum(
+                            abs(smi_value * target_w[t] - cur_val[t]) for t in active_today) / 2.0
+                        cost = turnover_chf * tx_cost
                         total_tx_costs += cost
                         for t in active_today:
                             smi_shares[t] = (smi_value * target_w[t]) / row[t]
                         shrink = (smi_value - cost) / smi_value
                         for t in active_today:
                             smi_shares[t] *= shrink
-
-        # 4c. TAGESABRECHNUNG. Alle Bewegungen des Tages wurden je Instrument
-        # saldiert, jetzt faellt je Instrument eine Gebuehr an. Sie wird
-        # zuerst der Kasse belastet, danach anteilig den Positionen.
-        if netting:
-            _px_chf = (btc_price_d * fx_d) if (btc_price_d and fx_d) else 0.0
-            _tg = _tag_abrechnen(d, row, active_today, _px_chf)
-            total_tx_costs += _tg
-            if _tg > 0:
-                # Die Gebuehr wird ausschliesslich den Positionen belastet,
-                # nie der Dividendenkasse. Die Kasse ist ein Durchlaufposten
-                # fuer vereinnahmte Ausschuettungen: wuerde die Gebuehr dort
-                # abgehen, fehlte sie in der Renditezerlegung, weil ihr kein
-                # Attributionsposten gegenuebersteht.
-                _rest = _tg
-                if _rest > 0:
-                    _sv = _smi_value_on(d, row)
-                    _bv = btc_held * _px_chf if _px_chf else 0.0
-                    _basis = _sv + _bv
-                    # Schutz: die Gebuehr darf die Positionen nie aufzehren.
-                    _rest = min(_rest, max(_basis - 1.0, 0.0))
-                    if _basis > 0 and _rest > 0:
-                        _eq_ab = _rest * (_sv / _basis)
-                        _btc_ab = _rest - _eq_ab
-                        if _eq_ab > 0 and _sv > 0:
-                            _shrink = (_sv - _eq_ab) / _sv
-                            for t in available:
-                                smi_shares[t] *= _shrink
-                        if _btc_ab > 0 and _px_chf > 0 and btc_held > 0:
-                            _weg = min(_btc_ab / _px_chf, btc_held)
-                            btc_held -= _weg
-                            _tu = btc_u_init + btc_u_dca
-                            _fi = (btc_u_init / _tu) if _tu > 0 else 0.0
-                            btc_u_init -= _weg * _fi
-                            btc_u_dca -= _weg * (1 - _fi)
-
-        # 4d. SCHUTZKLEMME. In degenerierten Faellen (winziger Basket,
-        # absurde Mindestgebuehr, extremer Abfluss) kann eine Position
-        # rechnerisch knapp unter null laufen. Das Produkt soll dann auf null
-        # stehen bleiben, nicht ins Minus kippen.
-        for t in available:
-            if smi_shares[t] < 0:
-                smi_shares[t] = 0.0
-        if btc_held < 0:
-            btc_held = 0.0
-            btc_u_init = max(btc_u_init, 0.0)
-            btc_u_dca = max(btc_u_dca, 0.0)
-        if dividend_cash < 0:
-            dividend_cash = 0.0
 
         # 5. Record state of day
         smi_value = _smi_value_on(d, row)
@@ -2233,11 +1463,6 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
             "date": d, "smi_value": smi_value, "btc_value_chf": btc_value_chf,
             "btc_held": btc_held, "dividend_cash": dividend_cash,
             "total_value": total,
-            # Anteilswert, indexiert auf das Startkapital: von Zeichnungen und
-            # Ruecknahmen unberuehrt und deshalb die einzige Groesse, die sich
-            # ueber verschiedene Zuflussszenarien vergleichen laesst.
-            "nav_per_unit": ((total / _anteile * initial_capital)
-                             if _anteile > 0 else 0.0),
             "btc_pct": btc_value_chf / total if total > 0 else 0,
         })
 
@@ -2246,10 +1471,6 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     evts = pd.DataFrame(threshold_events) if threshold_events else pd.DataFrame()
     ts.attrs["total_tx_costs"] = total_tx_costs
     ts.attrs["total_wht"] = total_wht
-    ts.attrs["net_flow"] = _netto_fluss
-    ts.attrs["netting"] = bool(netting)
-    ts.attrs["units_end"] = _anteile
-    ts.attrs["cost_stats"] = dict(cost_stats)
 
     # ================= RENDITEZERLEGUNG (ATTRIBUTION) =====================
     # Zerlegt die BRUTTO-P&L (vor Management-/Performance-Gebühren, die
@@ -2279,9 +1500,7 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     _dca_share = (btc_dca_gain / _btc_tot) if abs(_btc_tot) > 1e-9 else float("nan")
 
     _nav_end = float(ts["total_value"].iloc[-1])
-    # Eingezahltes Geld ist keine Rendite: der kumulierte Nettofluss wird
-    # herausgerechnet, sonst weist die Zerlegung Zeichnungen als Gewinn aus.
-    _pnl_gross = _nav_end - initial_capital - _netto_fluss
+    _pnl_gross = _nav_end - initial_capital
     _recon = equity_gain + att_div_income + btc_init_gain + btc_dca_gain
 
     ts.attrs["attribution"] = {
@@ -2884,50 +2103,20 @@ def footer():
 # Main
 # ---------------------------------------------------------------------------
 if _show_results:
+    tickers = list(SMI_CONSTITUENTS.keys())
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
 
-    if _sleeve_cfg:
-        # ETF-Sleeve: ein einziger Titel mit Gewicht 100 Prozent. Weder
-        # Kappung noch Rebalancing haben dann eine Wirkung, die Engine
-        # rechnet sie zu einer Nulloperation ohne Gebuehr.
-        tickers = [_sleeve_cfg["ticker"]]
-        weights = {_sleeve_cfg["ticker"]: 100.0}
+    if weighting_method.startswith("Equal"):
+        weights = {t: 5.0 for t in tickers}
     else:
-        tickers = list(SMI_CONSTITUENTS.keys())
-        if weighting_method.startswith("Equal"):
-            weights = {t: 5.0 for t in tickers}
-        else:
-            weights = {t: v[1] for t, v in SMI_CONSTITUENTS.items()}
-            weights = {t: min(w, 18.0) for t, w in weights.items()}
+        weights = {t: v[1] for t, v in SMI_CONSTITUENTS.items()}
+        weights = {t: min(w, 18.0) for t, w in weights.items()}
 
-    _synth_quelle = _sleeve_cfg.get("synth_from") if _sleeve_cfg else None
-    if _synth_quelle:
-        # Rekonstruierte thesaurierende Reihe: Kurse und Ausschuettungen der
-        # ausschuettenden Tranche holen, daraus die thesaurierende bauen. Die
-        # Strategie sieht danach einen Titel ohne Ausschuettungen.
-        with st.spinner("Loading distributing share class ..."):
-            _p_src = fetch_prices([_synth_quelle], start_str, end_str)
-            _d_src = fetch_dividends([_synth_quelle], start_str, end_str)
-        if _p_src is None or _p_src.empty or _synth_quelle not in _p_src.columns:
-            st.error(
-                f"Keine Kurse für {_synth_quelle} erhalten. Ohne die "
-                "ausschüttende Tranche lässt sich die thesaurierende nicht "
-                "rekonstruieren.")
-            st.stop()
-        prices = pd.DataFrame({
-            _sleeve_cfg["ticker"]: synthesize_accumulating(
-                _p_src[_synth_quelle], _d_src, _synth_quelle)})
-        divs = pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
-        st.session_state["synth_debug"] = {
-            "quelle": _synth_quelle, "ziel": _sleeve_cfg["ticker"],
-            "n_divs": 0 if _d_src is None or _d_src.empty else len(_d_src),
-        }
-    else:
-        with st.spinner("Loading SMI constituent prices ..."):
-            prices = fetch_prices(tickers, start_str, end_str)
-        with st.spinner("Loading dividend history ..."):
-            divs = fetch_dividends(tickers, start_str, end_str)
+    with st.spinner("Loading SMI constituent prices ..."):
+        prices = fetch_prices(tickers, start_str, end_str)
+    with st.spinner("Loading dividend history ..."):
+        divs = fetch_dividends(tickers, start_str, end_str)
     with st.spinner("Loading FX (USDCHF) ..."):
         fx = fetch_series("USDCHF=X", start_str, end_str)
     with st.spinner("Loading Bitcoin series ..."):
@@ -3024,78 +2213,6 @@ if _show_results:
     # auffällige Bewegung wird mit Titel, Datum und Vorher/Nachher-Kurs
     # ausgewiesen.
     # =====================================================================
-    if _synth_quelle:
-        with st.expander("🧪 Aktien-Sleeve: Rekonstruktion gegen die echten Kurse"):
-            st.caption(
-                f"Die thesaurierende Reihe wird aus {_synth_quelle} "
-                f"rekonstruiert, weil {_sleeve_cfg['ticker']} erst seit "
-                f"{_sleeve_cfg['seit']} handelt. Seitdem gibt es echte Kurse, "
-                "an denen sich die Rekonstruktion messen lässt. Der Zeitraum "
-                "ist kurz, deshalb ist das eine Plausibilitätsprüfung und kein "
-                "Beweis.")
-            try:
-                _echt = fetch_prices([_sleeve_cfg["ticker"]], start_str, end_str)
-            except Exception:
-                _echt = None
-            if (_echt is None or _echt.empty
-                    or _sleeve_cfg["ticker"] not in _echt.columns):
-                st.warning(
-                    f"Für {_sleeve_cfg['ticker']} kamen keine Kurse zurück. "
-                    "Entweder führt Yahoo Finance diese Anteilsklasse nicht "
-                    "unter diesem Kürzel, oder der Backtest-Zeitraum endet vor "
-                    "ihrer Auflegung. Die Rekonstruktion wird trotzdem "
-                    "verwendet, bleibt aber ungeprüft.")
-            else:
-                _e = _clean_index(_echt[_sleeve_cfg["ticker"]].dropna())
-                _s = _clean_index(prices[_sleeve_cfg["ticker"]].dropna())
-                _ue = pd.concat([_e, _s], axis=1, join="inner").dropna()
-                _ue.columns = ["echt", "rekonstruiert"]
-                if len(_ue) < 20:
-                    st.warning(
-                        f"Nur {len(_ue)} gemeinsame Handelstage. Das reicht "
-                        "für keine belastbare Aussage.")
-                else:
-                    _j = max((_ue.index[-1] - _ue.index[0]).days / 365.25, 1e-9)
-                    _re = (_ue["echt"].iloc[-1]/_ue["echt"].iloc[0])**(1/_j) - 1
-                    _rr = (_ue["rekonstruiert"].iloc[-1]
-                           / _ue["rekonstruiert"].iloc[0])**(1/_j) - 1
-                    _diff = _rr - _re
-                    _v1, _v2, _v3 = st.columns(3)
-                    _v1.metric("echte Anteilsklasse", f"{_re*100:.2f}% p.a.")
-                    _v2.metric("Rekonstruktion", f"{_rr*100:.2f}% p.a.")
-                    _v3.metric("Abweichung", f"{_diff*100:+.2f} pp",
-                               f"über {len(_ue)} Handelstage")
-                    if abs(_diff) < 0.005:
-                        st.success(
-                            f"Die Rekonstruktion liegt {abs(_diff)*100:.2f} "
-                            "Prozentpunkte neben der echten Anteilsklasse. Das "
-                            "ist im Bereich der Tracking Difference zwischen "
-                            "zwei Anteilsklassen und bestätigt die Annahme.")
-                    else:
-                        st.warning(
-                            f"Die Rekonstruktion weicht um {_diff*100:+.2f} "
-                            "Prozentpunkte ab. Das ist mehr als eine Tracking "
-                            "Difference erklärt. Mögliche Ursachen: "
-                            "unvollständige Ausschüttungsdaten bei Yahoo, ein "
-                            "falsches Kürzel, oder eine andere steuerliche "
-                            "Behandlung als die angenommenen "
-                            f"{int(WITHHOLDING_TAX*100)}%. Vor einem "
-                            "Produktentscheid klären.")
-                    _figv = go.Figure()
-                    _basis_e = float(_ue["echt"].iloc[0])
-                    _basis_r = float(_ue["rekonstruiert"].iloc[0])
-                    _figv.add_trace(go.Scatter(
-                        x=_ue.index, y=_ue["echt"]/_basis_e*100,
-                        name="echte Anteilsklasse", mode="lines",
-                        line=dict(width=2, color=OAK_SAGE)))
-                    _figv.add_trace(go.Scatter(
-                        x=_ue.index, y=_ue["rekonstruiert"]/_basis_r*100,
-                        name="Rekonstruktion", mode="lines",
-                        line=dict(width=2, color=OAK_GOLD, dash="dash")))
-                    _figv.update_layout(yaxis_title="indexiert auf 100")
-                    st.plotly_chart(style_plotly(_figv, height=340),
-                                    use_container_width=True)
-
     with st.expander("🧪 Instrument — Validierung des ETP-Modells gegen echte Kurse"):
         st.caption(
             "Das Produkt hält Bitcoin über das iShares Bitcoin ETP (IB1T), nicht "
@@ -3305,14 +2422,7 @@ if _show_results:
             initial_btc_pct, upper_threshold, target_btc_pct,
             rebal_dates, dca_months, tx_cost_bps=tx_cost_bps,
             threshold_check_dates_set=threshold_dates,
-            cap_dates_set=cap_dates,
-            weight_cap=(None if _sleeve_cfg else weight_cap_val),
-            min_fee_chf=min_fee_chf, fx_fee_bps=fx_fee_bps,
-            min_order_chf=min_order_chf,
-            harvest_mode=harvest_mode, withdrawal_pct_monthly=withdrawal_pct,
-            withdrawal_every_n_months=withdrawal_n,
-            monthly_flow_pct=flow_pct, monthly_flow_chf=flow_chf,
-            netting=netting_on,
+            cap_dates_set=cap_dates, weight_cap=weight_cap_val,
         )
 
     if ts is None or ts.empty or "total_value" not in ts.columns:
@@ -3338,269 +2448,6 @@ if _show_results:
         )
         mgmt_fee_events_df = ts_net.attrs.get("mgmt_fee_events", pd.DataFrame())
         ts["total_value_net"] = ts_net
-
-    # =====================================================================
-    # TRANSAKTIONSKOSTEN: Orderzeilen statt nur Franken
-    # =====================================================================
-    def _chf_ch(x):
-        """CHF mit Schweizer Tausendertrenner. fmt_chf kuerzt ab einer Million
-        ab und verwendet darunter ein englisches Komma, was fuer die
-        Kostenzahlen hier unpassend ist."""
-        try:
-            return "CHF " + f"{float(x):,.0f}".replace(",", "'")
-        except (TypeError, ValueError):
-            return "n/a"
-
-    _cs = ts.attrs.get("cost_stats", {})
-    if _cs.get("lines", 0) > 0:
-        st.markdown("## Transaktionskosten")
-        _jahre_k = max((ts.index[-1] - ts.index[0]).days / 365.25, 1e-9)
-        _k1, _k2, _k3, _k4 = st.columns(4)
-        _k1.metric("Transaktionskosten gesamt",
-                   _chf_ch(ts.attrs.get("total_tx_costs", 0.0)),
-                   f"{ts.attrs.get('total_tx_costs', 0.0)/initial_capital/_jahre_k*100:.2f}% p.a. auf Startkapital")
-        _k2.metric("Orderzeilen", f"{_cs.get('lines', 0):,}".replace(",", "'"),
-                   f"{_cs.get('lines', 0)/_jahre_k:.0f} je Jahr")
-        _anteil = (_cs.get("lines_at_min", 0) / _cs.get("lines", 1) * 100)
-        _k3.metric("davon zur Mindestgebühr",
-                   f"{_cs.get('lines_at_min', 0):,}".replace(",", "'"),
-                   f"{_anteil:.0f}% aller Zeilen")
-        _k4.metric("Devisengebühr Bitcoin", _chf_ch(_cs.get("fee_fx", 0.0)),
-                   f"{fx_fee_bps:.0f} bps je Bewegung")
-
-        _mon_k = max(len({(x.year, x.month) for x in ts.index}), 1)
-        st.caption(
-            f"Das sind **{_cs.get('lines', 0)/_mon_k:.1f} Orderzeilen je "
-            f"Monat**. Netting ist "
-            + ("eingeschaltet, alle Bewegungen eines Ausführungstages werden "
-               "je Instrument zu einer Order zusammengefasst."
-               if netting_on else
-               "ausgeschaltet, jede Teilbewegung zählt einzeln."))
-
-        _nf = ts.attrs.get("net_flow", 0.0)
-        if abs(_nf) > 0.005:
-            _awert_end = float(ts["nav_per_unit"].iloc[-1])
-            _f1, _f2, _f3 = st.columns(3)
-            _f1.metric("Basketwert am Ende", _chf_ch(ts["total_value"].iloc[-1]),
-                       "enthält das eingezahlte Geld")
-            _f2.metric("kumulierter Nettofluss", _chf_ch(_nf),
-                       "Zeichnungen minus Rücknahmen")
-            _f3.metric("Anteilswert", _chf_ch(_awert_end),
-                       f"{(_awert_end/initial_capital-1)*100:+.1f}% gegenüber Start")
-            st.warning(
-                "Es sind Kapitalflüsse aktiv. Alle Rendite- und "
-                "Risikokennzahlen weiter unten beziehen sich auf den "
-                "Basketwert und enthalten damit das eingezahlte Geld. Sie sind "
-                "keine Renditen. Vergleichbar über verschiedene "
-                "Zuflussszenarien ist allein der **Anteilswert** oben: "
-                "Zeichnungen schaffen Anteile zum aktuellen Wert, Rücknahmen "
-                "löschen sie, genau wie beim Zertifikat.")
-        if _anteil > 50:
-            st.warning(
-                f"In {_anteil:.0f} Prozent aller Orderzeilen greift die "
-                f"Mindestgebühr, der Prozentsatz spielt also keine Rolle mehr. "
-                f"Das ist der Bereich, in dem die Zahl der gehandelten Titel "
-                f"den Preis bestimmt und nicht das Volumen."
-                + (" Ein ETF-Sleeve erzeugt hier eine Orderzeile statt zwanzig."
-                   if not _sleeve_cfg else ""))
-
-    # =====================================================================
-    # STRUKTURVERGLEICH: Einzeltitel gegen SMI-ETF
-    # =====================================================================
-    st.markdown("## Strukturvergleich des Aktien-Sleeves")
-    st.caption(
-        "Derselbe Zeitraum, dieselben Parameter, dieselbe Bitcoin- und "
-        "Devisenreihe. Unterschiedlich ist allein der Aufbau des Aktienteils. "
-        "Gerechnet wird mit dem eingestellten Kostenmodell, also inklusive "
-        "Mindestgebühr je Orderzeile. Alle Werte sind netto nach Management "
-        "Fee.")
-
-    def _sleeve_lauf(cfg):
-        """Fuehrt die Strategie fuer einen Aktien-Sleeve aus und gibt die
-        Kennzahlen zurueck. cfg=None bedeutet die zwanzig Einzeltitel."""
-        if cfg is None:
-            _tk = list(SMI_CONSTITUENTS.keys())
-            if weighting_method.startswith("Equal"):
-                _w = {t: 5.0 for t in _tk}; _cap = None
-            else:
-                _w = {t: min(v[1], 18.0) for t, v in SMI_CONSTITUENTS.items()}
-                _cap = 0.18
-        else:
-            _tk = [cfg["ticker"]]; _w = {cfg["ticker"]: 100.0}; _cap = None
-        # Jede Variante laeuft in der Betriebsart, die zu ihr passt: ein
-        # thesaurierender ETF ueber die monatliche Entnahme, alles andere
-        # ueber die Dividendenernte.
-        _thes_v = bool(cfg and cfg.get("thesaurierend"))
-        _hm = "withdrawal" if _thes_v else "dividend"
-        _wp = (withdrawal_pct if withdrawal_pct > 0 else 0.0025) if _thes_v else 0.0
-        _q = cfg.get("synth_from") if cfg else None
-        if _q:
-            _ps = fetch_prices([_q], start_str, end_str)
-            if _ps is None or _ps.empty or _q not in _ps.columns:
-                return None
-            _ds = fetch_dividends([_q], start_str, end_str)
-            _px = pd.DataFrame({_tk[0]: synthesize_accumulating(
-                _ps[_q], _ds, _q)})
-            _dv = pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
-        else:
-            _px = fetch_prices(_tk, start_str, end_str)
-            if _px is None or _px.empty:
-                return None
-            _dv = fetch_dividends(_tk, start_str, end_str)
-        _rb = get_rebalance_dates(_px.index, rebalance_freq)
-        _cd = get_rebalance_dates(_px.index, "Quartalsweise") if _cap else set()
-        _th = (None if _tcf is None else get_rebalance_dates(_px.index, _tcf))
-        _t, _, _ = run_strategy(
-            _px, _dv, btc_series, fx, initial_capital, _w,
-            initial_btc_pct, upper_threshold, target_btc_pct,
-            _rb, dca_months, tx_cost_bps=tx_cost_bps,
-            threshold_check_dates_set=_th, cap_dates_set=_cd,
-            weight_cap=_cap, min_fee_chf=min_fee_chf,
-            fx_fee_bps=fx_fee_bps, min_order_chf=min_order_chf,
-            harvest_mode=_hm, withdrawal_pct_monthly=_wp,
-            withdrawal_every_n_months=(withdrawal_n if _thes_v else 1),
-            monthly_flow_pct=flow_pct, monthly_flow_chf=flow_chf,
-            netting=netting_on)
-        if _t is None or _t.empty or "total_value" not in _t.columns:
-            return None
-        _net, _, _, _ = apply_fees(
-            _t["total_value"], initial_capital, mgmt_fee_annual=mgmt_fee_pct,
-            perf_fee_rate=perf_fee_pct, hwm_hurdle=hwm_hurdle_pct,
-            crystallization_freq=crystallization_freq,
-            hurdle_type=hurdle_type, mgmt_fee_freq=mgmt_fee_freq)
-        _s = _t.attrs.get("cost_stats", {})
-        _j = max((_t.index[-1] - _t.index[0]).days / 365.25, 1e-9)
-        _e = float(_net.iloc[-1])
-        _dd = compute_drawdown(_net)
-        _awert = (float(_t["nav_per_unit"].iloc[-1])
-                  if "nav_per_unit" in _t.columns else _e)
-        _mon = max(len({(x.year, x.month) for x in _t.index}), 1)
-        return {
-            "finanzierung": (
-                "Entnahme %.3f %%/Mt., %s" % (
-                    _wp*100,
-                    {1: "monatlich", 3: "quartalsweise", 6: "halbjährlich",
-                     12: "jährlich"}.get(withdrawal_n, "%d Monate" % withdrawal_n))
-                if _hm == "withdrawal" else "Dividendenernte"),
-            "start": _t.index[0], "ende": _t.index[-1], "jahre": _j,
-            "netto": _e, "cagr": (_e/initial_capital)**(1/_j) - 1,
-            "anteilswert": _awert, "zeilen_monat": _s.get("lines", 0)/_mon,
-            "kosten": _t.attrs.get("total_tx_costs", 0.0),
-            "vst": _t.attrs.get("total_wht", 0.0),
-            "zeilen": _s.get("lines", 0), "zeilen_min": _s.get("lines_at_min", 0),
-            "mdd": (float(_dd.min()) if not _dd.empty else 0.0),
-            "reihe": _net,
-        }
-
-    if st.button("Strukturvergleich rechnen", key="cmp_run",
-                 help="Rechnet die Strategie für jeden Aufbau des Aktienteils "
-                      "einmal durch. Das dauert je nach Zeitraum einen Moment."):
-        _erg = {}
-        _prog = st.progress(0.0, text="Rechne Varianten ...")
-        for _i, (_lbl, _cfg) in enumerate(EQUITY_SLEEVES.items()):
-            _prog.progress((_i)/len(EQUITY_SLEEVES), text=f"Rechne {_lbl} ...")
-            try:
-                _erg[_lbl] = _sleeve_lauf(_cfg)
-            except Exception as _e:
-                _erg[_lbl] = None
-                st.warning(f"{_lbl}: Berechnung fehlgeschlagen ({_e}).")
-        _prog.empty()
-        st.session_state["cmp_result"] = _erg
-
-    _cmp = st.session_state.get("cmp_result")
-    if _cmp:
-        _gut = {k: v for k, v in _cmp.items() if v}
-        if not _gut:
-            st.error("Keine Variante konnte gerechnet werden. Meist fehlen die "
-                     "ETF-Kursdaten bei Yahoo Finance. Cache leeren und erneut "
-                     "versuchen.")
-        else:
-            # Gemeinsames Fenster ausweisen: die ETFs starten frueher oder
-            # spaeter als die Einzeltitel, ein Vergleich ueber verschiedene
-            # Zeitraeume waere wertlos.
-            _starts = {k: v["start"] for k, v in _gut.items()}
-            _enden = {k: v["ende"] for k, v in _gut.items()}
-            if (max(_starts.values()) - min(_starts.values())).days > 5 or \
-               (max(_enden.values()) - min(_enden.values())).days > 5:
-                st.warning(
-                    "Die Varianten decken nicht denselben Zeitraum ab: "
-                    + " · ".join(f"{k}: {v['start']:%d.%m.%Y} bis {v['ende']:%d.%m.%Y}"
-                                 for k, v in _gut.items())
-                    + ". Der Vergleich der Endwerte ist dann nur eingeschränkt "
-                      "aussagekräftig. Backtest-Zeitraum entsprechend kürzen.")
-
-            _basis = _gut.get("20 SMI-Einzeltitel (heutige Struktur)")
-            _zeilen = []
-            for _lbl, _v in _gut.items():
-                _d = (_v["netto"] - _basis["netto"]) if _basis else None
-                _zeilen.append({
-                    "Aufbau des Aktienteils": _lbl,
-                    "Finanzierung Bitcoin": _v["finanzierung"],
-                    "Anteilswert": _chf_ch(_v["anteilswert"]),
-                    "Orderzeilen je Monat": f"{_v['zeilen_monat']:.1f}",
-                    "Endwert netto": _chf_ch(_v["netto"]),
-                    "Rendite p.a.": f"{_v['cagr']*100:.2f}%",
-                    "grösster Rückgang": f"{_v['mdd']*100:.1f}%",
-                    "Transaktionskosten": _chf_ch(_v["kosten"]),
-                    "Kosten p.a.": f"{_v['kosten']/initial_capital/_v['jahre']*100:.2f}%",
-                    "Orderzeilen": f"{_v['zeilen']:,}".replace(",", "'"),
-                    "davon Mindestgebühr": f"{_v['zeilen_min']:,}".replace(",", "'"),
-                    "gegenüber Einzeltiteln": ("Basis" if _basis and _lbl ==
-                        "20 SMI-Einzeltitel (heutige Struktur)"
-                        else (f"{_d:+,.0f}".replace(",", "'") if _d is not None else "n/a")),
-                })
-            st.dataframe(pd.DataFrame(_zeilen), use_container_width=True,
-                         hide_index=True)
-
-            if _basis:
-                _best = max(_gut.items(), key=lambda kv: kv[1]["netto"])
-                _vor = _best[1]["netto"] - _basis["netto"]
-                _ersp = _basis["kosten"] - _best[1]["kosten"]
-                if _best[0] != "20 SMI-Einzeltitel (heutige Struktur)":
-                    # Tausendertrenner nur auf den Zahlen ersetzen, nicht auf
-                    # dem ganzen Satz: sonst werden auch die Satzkommata zu
-                    # Apostrophen.
-                    _z_basis = f"{_basis['zeilen']:,}".replace(",", "'")
-                    _z_best = f"{_best[1]['zeilen']:,}".replace(",", "'")
-                    st.success(
-                        f"**{_best[0]}** liegt über den Zeitraum um "
-                        f"{_chf_ch(_vor)} vorn, das sind "
-                        f"{_vor/_basis['netto']*100:.1f} Prozent. Die Ersparnis "
-                        f"bei den Transaktionskosten beträgt {_chf_ch(_ersp)}, "
-                        f"die Zahl der Orderzeilen sinkt von "
-                        f"{_z_basis} auf {_z_best}.")
-                else:
-                    st.info(
-                        "Die Einzeltitel liegen in diesem Zeitraum vorn. Die "
-                        "TER des ETF wiegt die Ersparnis bei den "
-                        "Transaktionskosten hier auf. Das kippt mit dem "
-                        "Volumen: je kleiner das Vermögen, desto stärker "
-                        "wirkt die Mindestgebühr je Titel.")
-
-            _fig_c = go.Figure()
-            for _i, (_lbl, _v) in enumerate(_gut.items()):
-                _fig_c.add_trace(go.Scatter(
-                    x=_v["reihe"].index, y=_v["reihe"].values, name=_lbl,
-                    mode="lines",
-                    line=dict(width=2,
-                              color=CHART_BAR_COLORS[_i % len(CHART_BAR_COLORS)])))
-            _fig_c.update_layout(yaxis_title="NAV netto (CHF)")
-            st.plotly_chart(style_plotly(_fig_c, height=420),
-                            use_container_width=True)
-
-            st.caption(
-                "Zur Einordnung: keine dieser Varianten löst die "
-                "Verrechnungssteuer. Ein Schweizer Fonds löst sie mit der "
-                "Thesaurierung nach Art. 4 Abs. 1 lit. c VStG genauso aus wie "
-                "mit einer Ausschüttung, und ein luxemburgischer Fonds trägt "
-                "auf Schweizer Dividenden nach Verwahrstellenpraxis die vollen "
-                "35 Prozent ohne Abkommensermässigung. Was der Fonds an "
-                "Quellensteuer trägt, steckt bereits in seinem Kurs, dieser "
-                "Vergleich bildet es also automatisch ab. Der Unterschied "
-                "liegt in den Transaktionskosten und im Betriebsaufwand: der "
-                "thesaurierende ETF mit monatlicher Entnahme braucht kein "
-                "Tranchenregister und keine Dividendenkasse, sondern zwei "
-                "Orderzeilen je Monat.")
 
     # =====================================================================
     # KPIs
@@ -6169,15 +5016,9 @@ if _show_results:
                 _btc_instr_ticker = ("IB1T" if btc_source.startswith("IB1T") else "BTC")
                 _btc_sector = ("Digital Assets \u00b7 ETP" if btc_source.startswith("IB1T")
                                else "Digital Assets")
-                if _sleeve_cfg:
-                    _eq_rows = [[_sleeve_cfg["name"], _sleeve_cfg["ticker"],
-                                 "Swiss Equity \u00b7 ETF", 100.0]]
-                else:
-                    _eq_rows = [[v[0], t, v[2], v[1]]
-                                for t, v in SMI_CONSTITUENTS.items()]
                 universe_rows = (
                     [[_btc_instr_name, _btc_instr_ticker, _btc_sector, btc_weight_label]]
-                    + _eq_rows
+                    + [[v[0], t, v[2], v[1]] for t, v in SMI_CONSTITUENTS.items()]
                 )
 
                 # Build monthly returns dict {year: [12 values in %]} for the PDF heatmap
