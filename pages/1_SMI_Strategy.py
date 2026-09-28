@@ -699,12 +699,32 @@ with st.sidebar:
                 "wiederangelegt werden. Die Steuerbelastung bleibt damit "
                 "erhalten. Die Rekonstruktion wird unten gegen die echten "
                 "Kurse geprüft, soweit sie vorliegen.")
-    weighting_method = st.radio("SMI Gewichtung",
-        ["Marktkapitalisierung (Approx. + 18% Cap)", "Equal Weight (5 % je Titel)"])
-    rebalance_freq = st.selectbox("SMI Rebalancing-Frequenz",
-        ["Jährlich", "Halbjährlich", "Quartalsweise", "Keine"], index=0,
-        help="Final kalibriert auf Jährlich (September) — an den echten SIX-"
-             "Indexreview-Termin angelehnt. Siehe Handelsreglement §7.")
+    # Gewichtung und Rebalancing betreffen ausschliesslich die
+    # Einzeltitelvariante. Haelt der Aktienteil einen ETF, steckt beides im
+    # Instrument: der Fonds bildet den Index physisch nach, samt dessen
+    # eigener Kappung, und gewichtet laufend selbst. Die beiden Regler
+    # blieben dann wirkungslos, deshalb werden sie ausgeblendet statt
+    # scheinbar bedienbar stehenzulassen.
+    if _sleeve_cfg:
+        weighting_method = "Marktkapitalisierung (Approx. + 18% Cap)"
+        rebalance_freq = "Jährlich"
+        _kappung = ("35% für den grössten und 20% für die übrigen Titel"
+                    if _sleeve_cfg["index"].startswith("MSCI")
+                    else "18% je Titel")
+        st.caption(
+            f"Gewichtung und Rebalancing entfallen: der Fonds bildet den "
+            f"{_sleeve_cfg['index']} physisch nach und setzt dessen Kappung "
+            f"({_kappung}) selbst durch. Die Einzeltitelvariante im "
+            "Strukturvergleich rechnet weiterhin mit Marktkapitalisierung "
+            "und jährlichem Rebalancing.")
+    else:
+        weighting_method = st.radio("SMI Gewichtung",
+            ["Marktkapitalisierung (Approx. + 18% Cap)",
+             "Equal Weight (5 % je Titel)"])
+        rebalance_freq = st.selectbox("SMI Rebalancing-Frequenz",
+            ["Jährlich", "Halbjährlich", "Quartalsweise", "Keine"], index=0,
+            help="Final kalibriert auf Jährlich (September), an den echten "
+                 "SIX-Indexreviewtermin angelehnt. Siehe Handelsreglement §7.")
 
     st.markdown("### Finanzierung des Bitcointeils")
     _thes = bool(_sleeve_cfg and _sleeve_cfg.get("thesaurierend"))
@@ -6382,8 +6402,16 @@ if _show_results:
                     "Jährlich": "annually (September)", "Halbjährlich": "semi-annually",
                     "Quartalsweise": "quarterly", "Keine": "not rebalanced",
                 }
-                _rebal_label_de = _rebal_label_map_de.get(rebalance_freq, rebalance_freq.lower())
-                _rebal_label_en = _rebal_label_map_en.get(rebalance_freq, rebalance_freq.lower())
+                # Bei einem ETF-Sleeve gibt es kein Rebalancing des
+                # Substanzkerns: der Fonds gewichtet selbst.
+                if _sleeve_cfg:
+                    _rebal_label_de = "im Fonds"
+                    _rebal_label_en = "inside the fund"
+                else:
+                    _rebal_label_de = _rebal_label_map_de.get(
+                        rebalance_freq, rebalance_freq.lower())
+                    _rebal_label_en = _rebal_label_map_en.get(
+                        rebalance_freq, rebalance_freq.lower())
 
                 pdf_bytes = build_bilingual_tearsheet(
                     strategy_name="OAK Swiss Blue Chip / Bitcoin",
@@ -6438,8 +6466,11 @@ if _show_results:
                         ("Initial Allocation", f"{(1-initial_btc_pct)*100:.0f}% Equity / {initial_btc_pct*100:.0f}% BTC"),
                         ("BTC Upper Threshold", f"{upper_threshold*100:.0f}%"),
                         ("BTC Target after Rebalance", f"{target_btc_pct*100:.0f}%"),
-                        ("Equity Weighting", _weighting_method_en),
-                        ("Rebalancing Frequency", _rebalance_freq_en),
+                        ("Equity Weighting",
+                         (f"Inside the fund ({_sleeve_cfg['index']} replication)"
+                          if _sleeve_cfg else _weighting_method_en)),
+                        ("Rebalancing Frequency",
+                         ("Inside the fund" if _sleeve_cfg else _rebalance_freq_en)),
                         ("DCA Window", f"{dca_months} months per dividend"),
                         ("Transaction Cost", f"{tx_cost_bps:.0f} bps per trade"),
                         ("Dividend Withholding Tax", f"{int(WITHHOLDING_TAX*100)}% (non-reclaimable, AMC)"),
