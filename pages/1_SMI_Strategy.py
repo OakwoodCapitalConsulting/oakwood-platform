@@ -113,21 +113,62 @@ SMI_CONSTITUENTS = {
 # Die thesaurierende UBS-SMI-Tranche (CH1447931341, SMIA) ist bewusst nicht
 # aufgefuehrt: sie existiert erst seit Juni 2025 und reicht fuer keinen
 # aussagekraeftigen Backtest.
+def _kostenstruktur(cfg):
+    """Loest den Eintrag kosten_titel eines Sleeves in Gewichte auf.
+
+    "SMI" bedeutet: die Gebuehren werden so gerechnet, als wuerde der
+    Aktienteil ueber die zwanzig SMI-Titel mit ihren Zielgewichten gehalten.
+    Eine Zahl bedeutet gleichmaessige Aufteilung auf so viele Titel."""
+    if not cfg:
+        return None
+    k = cfg.get("kosten_titel")
+    if not k:
+        return None
+    if k == "SMI":
+        return [min(v[1], 18.0) for v in SMI_CONSTITUENTS.values()]
+    return k
+
+
+def entnahme_wortlaut(pct_je_monat, alle_n_monate, kurz=False):
+    """Entnahme in Worten, Satz und Termin sauber getrennt.
+
+    pct_je_monat ist der Satz JE MONAT, alle_n_monate die Frequenz der
+    Ausfuehrung. An jedem Termin wird pct mal n entnommen, der Jahresbetrag
+    bleibt gleich. Beide Zahlen unkommentiert nebeneinander zu stellen
+    ("monatliche Entnahme 0.250 %, quartalsweise Termine") liest sich wie
+    ein Widerspruch, deshalb steht der Betrag je Termin vorne und der
+    Monatssatz als Herleitung dahinter."""
+    p = float(pct_je_monat) * 100.0
+    m = max(int(alle_n_monate or 1), 1)
+    if m == 1:
+        return ("Entnahme %.3f %% je Monat" % p if kurz
+                else "monatliche Entnahme von %.3f %%" % p)
+    termin = {3: "je Quartal", 6: "je Halbjahr", 12: "je Jahr"}.get(
+        m, "alle %d Monate" % m)
+    if kurz:
+        return "Entnahme %.3f %% %s (%.3f %%/Mt.)" % (p * m, termin, p)
+    adj = {3: "quartalsweise", 6: "halbjährliche", 12: "jährliche"}.get(m)
+    if not adj:
+        return "Entnahme von %.3f %% alle %d Monate, das sind %.3f %% je Monat" % (
+            p * m, m, p)
+    return "%s Entnahme von %.3f %%, das sind %.3f %% je Monat" % (adj, p * m, p)
+
+
 EQUITY_SLEEVES = {
-    "20 SMI-Einzeltitel (heutige Struktur)": None,
-    "iShares SMI ETF (CSSMI), ausschüttend": {
+    "Einzeltitel · 20 SMI-Titel (heutige Struktur)": None,
+    "Ausschüttend · iShares SMI ETF (CSSMI)": {
         "ticker": "CSSMI.SW", "name": "iShares SMI® ETF (CH)",
         "isin": "CH0008899764", "ter": 0.0035, "domizil": "Schweiz",
         "ausschuettung": "ausschüttend, ad hoc", "seit": "1999",
         "thesaurierend": False, "index": "SMI",
     },
-    "UBS SMI ETF (SMICHA), ausschüttend": {
+    "Ausschüttend · UBS SMI ETF (SMICHA)": {
         "ticker": "SMICHA.SW", "name": "UBS ETF (CH) SMI® (CHF) A-dis",
         "isin": "CH0017142719", "ter": 0.0020, "domizil": "Schweiz",
         "ausschuettung": "ausschüttend, jährlich", "seit": "2003",
         "thesaurierend": False, "index": "SMI",
     },
-    "UBS SMI ETF (SMIA), thesaurierend, Historie rekonstruiert": {
+    "Thesaurierend · UBS SMI ETF (SMIA), Historie rekonstruiert": {
         "ticker": "SMIA.SW",
         "name": "UBS SMI\u00ae ETF CHF acc",
         "isin": "CH1447931341", "ter": 0.0020, "domizil": "Schweiz",
@@ -138,7 +179,18 @@ EQUITY_SLEEVES = {
         "synth_from": "SMICHA.SW",
         "synth_seit": "2003",
     },
-    "UBS MSCI Switzerland 20/35 (SW2CHB), thesaurierend": {
+    "Kontrolle · SMI-Kurse, Kosten wie 20 Einzeltitel": {
+        "ticker": "CSSMI.SW", "name": "iShares SMI\u00ae ETF (CH)",
+        "isin": "CH0008899764", "ter": 0.0035, "domizil": "Schweiz",
+        "ausschuettung": "ausschüttend, ad hoc", "seit": "1999",
+        "thesaurierend": False, "index": "SMI",
+        # Keine eigene Anlagevariante, sondern die Kontrollrechnung: echte
+        # Indexkurse ohne Verzerrung, aber mit der Kostenstruktur von
+        # zwanzig Einzeltiteln. Zeigt, was die Zahl der gehandelten Titel
+        # kostet, bei sonst gleicher Anlage.
+        "kosten_titel": "SMI",   # Aufteilung nach den SMI-Zielgewichten
+    },
+    "Thesaurierend · UBS MSCI Switzerland 20/35 (SW2CHB)": {
         "ticker": "SW2CHB.SW",
         "name": "UBS MSCI Switzerland 20/35 UCITS ETF CHF acc",
         "isin": "LU0977261329", "ter": 0.0020, "domizil": "Luxemburg",
@@ -688,6 +740,16 @@ with st.sidebar:
             f"{_sleeve_cfg['domizil']} · eigene Kurshistorie ab "
             f"{_sleeve_cfg['seit']}. TER und Quellensteuer des Fonds stecken "
             "bereits im Marktkurs und werden nicht zusätzlich abgezogen.")
+        if _sleeve_cfg.get("kosten_titel"):
+            st.warning(
+                f"Kontrollrechnung, keine Anlagevariante. Gerechnet wird auf "
+                f"den echten Kursen des {_sleeve_cfg['name']}, also ohne "
+                "Verzerrung durch die heutige Indexzusammensetzung, aber "
+                "belastet wie zwanzig Einzeltitel: jede Aktien-Orderzeile "
+                "wird nach den SMI-Zielgewichten aufgeteilt, jeder Teil mit "
+                "eigener Mindestgebühr, Teile unter der Bagatellgrenze "
+                "entfallen. Das zeigt, was die Zahl der gehandelten Titel "
+                "kostet, bei sonst gleicher Anlage.")
         if _sleeve_cfg.get("synth_from"):
             st.info(
                 f"Dieser Anteilsklasse fehlt die Historie (erst ab "
@@ -757,32 +819,41 @@ with st.sidebar:
         _freq_opt = {"Monatlich": 1, "Quartalsweise": 3,
                      "Halbjährlich": 6, "Jährlich": 12}
         _freq_wahl = st.selectbox(
-            "Entnahmetermine", list(_freq_opt.keys()), index=1,
-            help="Der Entnahmesatz bleibt derselbe, nur die Termine werden "
-                 "seltener und die einzelne Entnahme entsprechend grösser. "
-                 "Der Jahresbetrag ändert sich nicht.\n\n"
-                 "Warum das zählt: jeder Termin erzeugt zwei Orderzeilen, "
-                 "Verkauf und Bitcoinkauf, und bei diesen Volumen greift bei "
-                 "beiden die Mindestgebühr. Monatlich sind das 24 "
-                 "Mindestgebühren im Jahr, quartalsweise 8. Der Preis dafür "
-                 "ist eine gröbere Streuung der Einstiegspunkte in Bitcoin.")
+            "Entnahmetermine", list(_freq_opt.keys()), index=0,
+            help="Der Entnahmesatz oben gilt je Monat und bleibt derselbe. "
+                 "Diese Auswahl bestimmt nur die Ausführungstage: an jedem "
+                 "Termin wird der Satz mal die Zahl der Monate entnommen. Der "
+                 "Jahresbetrag ändert sich nicht.\n\n"
+                 "Vorgabe ist monatlich, weil das Produkt monatlich Bitcoin "
+                 "kauft.\n\n"
+                 "Seltenere Termine sparen nur dann Gebühren, wenn an den "
+                 "übrigen Monatsenden ohnehin nichts gehandelt wird: ohne "
+                 "Zeichnungen kostet monatlich 24 Mindestgebühren im Jahr, "
+                 "quartalsweise 8. Sobald monatlich gezeichnet wird, wird der "
+                 "Monatsletzte ohnehin gehandelt, und das Netting legt die "
+                 "Entnahme in dieselbe Orderzeile. Dann kostet monatlich "
+                 "gleich viel wie quartalsweise, bei feinerer Streuung der "
+                 "Einstiegspunkte in Bitcoin.")
         withdrawal_n = _freq_opt[_freq_wahl]
         _jahr = (1 + withdrawal_pct)**12 - 1
         _zeilen_jahr = int(round(24 / withdrawal_n))
         st.caption(
-            f"Entspricht {_jahr*100:.2f}% im Jahr, unabhängig von den "
-            f"Terminen. Heutige Nettodividendenernte rund 1.95%, "
-            f"gleichwertiger Satz 0.161% je Monat. Diese Frequenz erzeugt "
-            f"rund {_zeilen_jahr} Orderzeilen im Jahr. Was das an Gebühren "
-            "kostet, steht unten unter Kosten & Gebühren.")
+            f"{entnahme_wortlaut(withdrawal_pct, withdrawal_n)}. Entspricht "
+            f"{_jahr*100:.2f}% im Jahr, unabhängig von den Terminen. Heutige "
+            f"Nettodividendenernte rund 1.95%, gleichwertiger Satz 0.161% je "
+            f"Monat. Diese Frequenz erzeugt rund {_zeilen_jahr} eigene "
+            "Orderzeilen im Jahr; wird am selben Tag ohnehin gezeichnet, "
+            "fällt die Entnahme durch das Netting mit in dieselbe Zeile. Was "
+            "das an Gebühren kostet, steht unten unter Kosten & Gebühren.")
     else:
         withdrawal_pct = 0.0
         # Vorgabe fuer den Strukturvergleich: wird der Aktienteil ueber
         # Dividenden finanziert, gibt es hier keine Entnahme. Der
         # Strukturvergleich rechnet die thesaurierende Variante aber trotzdem
-        # mit und braucht dafuer sinnvolle Werte. Quartalsweise statt
-        # monatlich, weil monatlich doppelt so viele Mindestgebuehren kostet.
-        withdrawal_n = 3
+        # mit und braucht dafuer sinnvolle Werte. Monatlich, weil das Produkt
+        # monatlich Bitcoin kauft; seltenere Termine sparen nur dann etwas,
+        # wenn an den uebrigen Monatsenden ohnehin nichts gehandelt wird.
+        withdrawal_n = 1
 
     dca_months = st.slider("DCA-Zeitraum (Monate)", 1, 24, 6,
                            disabled=(harvest_mode == "withdrawal"),
@@ -1406,7 +1477,8 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                  min_fee_chf=0.0, fx_fee_bps=0.0, min_order_chf=0.0,
                  harvest_mode="dividend", withdrawal_pct_monthly=0.0,
                  withdrawal_every_n_months=1,
-                 monthly_flow_pct=0.0, monthly_flow_chf=0.0, netting=True):
+                 monthly_flow_pct=0.0, monthly_flow_chf=0.0, netting=True,
+                 cost_titles=None):
     """Integrated daily simulation.
     Returns: timeseries_df, transactions_df, threshold_events_df
 
@@ -1475,6 +1547,20 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     Anteilswert, der von Zeichnungen und Ruecknahmen unberuehrt bleibt.
     ts.attrs["net_flow"] haelt den kumulierten Nettofluss.
 
+    cost_titles: rechnet die Gebuehren so, als bestuende der Aktienteil aus
+    mehreren Titeln, unabhaengig davon, wie viele tatsaechlich gehalten
+    werden. Entweder eine Zahl (gleichmaessige Aufteilung) oder eine Liste
+    von Zielgewichten (Aufteilung nach diesen Gewichten, realistischer).
+    Jede Aktien-Orderzeile wird entsprechend zerlegt, jeder Teil mit eigener
+    Mindestgebuehr, Teile unterhalb der Bagatellgrenze entfallen.
+    Positionen, Gewichte und Renditen bleiben unberuehrt, nur die Kosten
+    aendern sich.
+
+    Wozu: der direkte Vergleich zwanzig Einzeltitel gegen ETF vermischt die
+    Kostenfrage mit einer Verzerrung, weil die Einzeltitelvariante mit den
+    heutigen Indexmitgliedern zurueckrechnet. Mit cost_titles laesst sich die
+    Aktienrendite konstant halten und allein die Kostenstruktur variieren.
+
     netting: fasst alle Bewegungen eines Ausfuehrungstages je Instrument zu
     einer Orderzeile zusammen und berechnet die Gebuehr auf dem Saldo. Das
     entspricht Handelsreglement 9.4 und der Praxis: an einem Monatsultimo mit
@@ -1498,6 +1584,55 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
     tagesbuch = {}
     tagesbuch_fx = [0.0]
 
+    # Kostenstruktur-Ueberlagerung: Anteile, nach denen eine Aktienbewegung
+    # fuer die Gebuehrenrechnung aufgeteilt wird. Normalisiert auf 1.
+    _kostenanteile = None
+    if cost_titles:
+        if isinstance(cost_titles, (list, tuple)) and len(cost_titles) > 1:
+            _summe = float(sum(cost_titles))
+            if _summe > 0:
+                _kostenanteile = [float(x) / _summe for x in cost_titles]
+        elif not isinstance(cost_titles, (list, tuple)) and int(cost_titles) > 1:
+            _kostenanteile = [1.0 / int(cost_titles)] * int(cost_titles)
+
+    def _zeilengebuehr(v, leg):
+        """Gebuehr und Zahl der Orderzeilen fuer ein Handelsvolumen v.
+
+        Normalfall: eine Zeile. Ist die Kostenstruktur-Ueberlagerung gesetzt
+        und betrifft die Bewegung den Aktienteil, wird sie nach den
+        hinterlegten Anteilen aufgeteilt, jeder Teil mit eigener
+        Mindestgebuehr.
+
+        Aufgeteilt wird nach den ZIELGEWICHTEN, nicht gleichmaessig. Das ist
+        entscheidend: real bekommt ein Titel mit einem Prozent Zielgewicht
+        auch nur ein Prozent des Betrags, und faellt damit oft unter die
+        Bagatellgrenze. Eine gleichmaessige Aufteilung wuerde die Kosten der
+        Einzeltitelvariante deutlich ueberzeichnen."""
+        if leg == "btc" or not _kostenanteile:
+            prop = v * tx_cost
+            f = max(prop, min_fee)
+            return f, 1, (1 if prop < min_fee else 0)
+        gesamt = 0.0
+        zeilen = 0
+        zeilen_min = 0
+        for anteil in _kostenanteile:
+            je = v * anteil
+            if je < min_order or je <= 0.005:
+                continue
+            prop = je * tx_cost
+            f = max(prop, min_fee)
+            gesamt += f
+            zeilen += 1
+            if prop < min_fee:
+                zeilen_min += 1
+        if zeilen == 0:
+            # Alle Teile unter der Bagatellgrenze: in der Praxis wuerde der
+            # Betrag dann auf einen Titel gelegt statt gar nicht gehandelt.
+            prop = v * tx_cost
+            f = max(prop, min_fee)
+            return f, 1, (1 if prop < min_fee else 0)
+        return gesamt, zeilen, zeilen_min
+
     def _fee(notional, leg="equity", key=None):
         """Gebuehr einer einzelnen Orderzeile, inklusive Mindestgebuehr.
 
@@ -1515,22 +1650,21 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
             eintrag = tagesbuch.setdefault(k, [0.0, leg])
             eintrag[0] += float(notional)
             return 0.0
-        prop = v * tx_cost
-        f = max(prop, min_fee)
-        cost_stats["lines"] += 1
-        if prop < min_fee:
-            cost_stats["lines_at_min"] += 1
+        f, zeilen, zeilen_min = _zeilengebuehr(v, leg)
+        cost_stats["lines"] += zeilen
+        cost_stats["lines_at_min"] += zeilen_min
         cost_stats["fee_" + ("btc" if leg == "btc" else "equity")] += f
         return f
 
-    def _fee_probe(notional):
+    def _fee_probe(notional, leg="equity"):
         """Gebuehr einer Orderzeile berechnen, ohne sie zu zaehlen oder zu
         buchen. Fuer Vorabpruefungen, ob sich eine Ausfuehrung ueberhaupt
-        lohnt."""
+        lohnt. Beruecksichtigt cost_titles, sonst wuerden die Schutzregeln
+        bei aufgeteilten Zeilen zu niedrig ansetzen."""
         v = abs(float(notional))
         if v < min_order or v <= 0.005:
             return 0.0
-        return max(v * tx_cost, min_fee)
+        return _zeilengebuehr(v, leg)[0]
 
     def _fx(notional):
         """Devisengebuehr auf eine Bitcoin-Bewegung."""
@@ -1553,11 +1687,9 @@ def run_strategy(prices, dividends_df, btc_prices_usd, fx_chf_usd,
                 if v > 0.005:
                     cost_stats["lines_skipped"] += 1
                 continue
-            prop = v * tx_cost
-            f = max(prop, min_fee)
-            cost_stats["lines"] += 1
-            if prop < min_fee:
-                cost_stats["lines_at_min"] += 1
+            f, zeilen, zeilen_min = _zeilengebuehr(v, leg)
+            cost_stats["lines"] += zeilen
+            cost_stats["lines_at_min"] += zeilen_min
             cost_stats["fee_" + ("btc" if leg == "btc" else "equity")] += f
             gesamt += f
         if tagesbuch_fx[0]:
@@ -3333,6 +3465,7 @@ if _show_results:
             withdrawal_every_n_months=withdrawal_n,
             monthly_flow_pct=flow_pct, monthly_flow_chf=flow_chf,
             netting=netting_on,
+            cost_titles=_kostenstruktur(_sleeve_cfg),
         )
 
     if ts is None or ts.empty or "total_value" not in ts.columns:
@@ -3358,6 +3491,51 @@ if _show_results:
         )
         mgmt_fee_events_df = ts_net.attrs.get("mgmt_fee_events", pd.DataFrame())
         ts["total_value_net"] = ts_net
+
+    # =====================================================================
+    # STATUSBAND: was wird hier eigentlich gerechnet?
+    # Ohne das steht man nach dem Scrollen vor Zahlen ohne Zuordnung, und
+    # die Sleeves unterscheiden sich nur in Nuancen.
+    # =====================================================================
+    _sb_sleeve = (f"**{_sleeve_cfg['name']}** ({_sleeve_cfg['ticker']}, "
+                  f"{_sleeve_cfg['isin']}, Index {_sleeve_cfg['index']}, "
+                  f"TER {_sleeve_cfg['ter']*100:.2f}%, "
+                  f"{_sleeve_cfg['ausschuettung']})"
+                  if _sleeve_cfg else
+                  "**20 SMI-Einzeltitel**, Marktkapitalisierung mit 18%-Cap"
+                  if weighting_method.startswith("Markt") else
+                  "**20 SMI-Einzeltitel**, Gleichgewichtung")
+    if _sleeve_cfg and _sleeve_cfg.get("synth_from"):
+        _sb_sleeve += (f" · Kurshistorie rekonstruiert aus "
+                       f"{_sleeve_cfg['synth_from']}")
+    if _sleeve_cfg and _sleeve_cfg.get("kosten_titel"):
+        _sb_sleeve += " · **Kontrollrechnung**, Kosten wie 20 Einzeltitel"
+
+    _sb_fin = (entnahme_wortlaut(withdrawal_pct, withdrawal_n)
+               if harvest_mode == "withdrawal"
+               else f"Dividendenernte über {dca_months} Monate")
+
+    _sb_fluss = "keine Zeichnungen"
+    if flow_pct or flow_chf:
+        _teile = []
+        if flow_pct:
+            _teile.append(f"{flow_pct*100:+.1f} % des NAV")
+        if flow_chf:
+            _teile.append(("%+,.0f CHF" % flow_chf).replace(",", "'"))
+        _sb_fluss = "Kapitalfluss " + " und ".join(_teile) + " je Monat"
+
+    # Tausendertrenner NUR auf der Zahl ersetzen, nicht auf dem ganzen Satz:
+    # sonst werden auch die Satzkommata zu Apostrophen.
+    _sb_minfee = f"{min_fee_chf:,.0f}".replace(",", "'")
+    st.info(
+        f"**Gerechnet wird:** {_sb_sleeve}\n\n"
+        f"Bitcoin über {_sb_fin} · {_sb_fluss} · "
+        f"Band {upper_threshold*100:.0f} % auf {target_btc_pct*100:.0f} %\n\n"
+        f"Kosten {tx_cost_bps:.0f} bps, mindestens CHF {_sb_minfee} je "
+        f"Orderzeile, Devisengebühr {fx_fee_bps:.0f} bps, Netting "
+        f"{'ein' if netting_on else 'AUS'} · Zeitraum "
+        f"{ts.index[0]:%d.%m.%Y} bis {ts.index[-1]:%d.%m.%Y} "
+        f"({(ts.index[-1]-ts.index[0]).days/365.25:.1f} Jahre)")
 
     # =====================================================================
     # TRANSAKTIONSKOSTEN: Orderzeilen statt nur Franken
@@ -3480,7 +3658,8 @@ if _show_results:
             harvest_mode=_hm, withdrawal_pct_monthly=_wp,
             withdrawal_every_n_months=(withdrawal_n if _thes_v else 1),
             monthly_flow_pct=flow_pct, monthly_flow_chf=flow_chf,
-            netting=netting_on)
+            netting=netting_on,
+            cost_titles=_kostenstruktur(cfg))
         if _t is None or _t.empty or "total_value" not in _t.columns:
             return None
         _net, _, _, _ = apply_fees(
@@ -3491,25 +3670,35 @@ if _show_results:
         _s = _t.attrs.get("cost_stats", {})
         _j = max((_t.index[-1] - _t.index[0]).days / 365.25, 1e-9)
         _e = float(_net.iloc[-1])
-        _dd = compute_drawdown(_net)
-        _awert = (float(_t["nav_per_unit"].iloc[-1])
-                  if "nav_per_unit" in _t.columns else _e)
+
+        # ANTEILSWERTREIHE, netto nach Gebühren. Mit Kapitalflüssen enthält
+        # total_value das eingezahlte Geld, deshalb sind Rendite und
+        # Rückgang darauf gerechnet sinnlos: die Zuflüsse treiben den Wert
+        # und maskieren die Einbrüche. Die Gebührenbelastung ist eine
+        # tägliche proportionale Abgrenzung, sie lässt sich deshalb als
+        # Verhältnis auf die Anteilswertreihe übertragen.
+        if "nav_per_unit" in _t.columns:
+            _quote = (_net / _t["total_value"]).replace(
+                [float("inf"), float("-inf")], float("nan")).fillna(1.0)
+            _reihe = _t["nav_per_unit"] * _quote
+        else:
+            _reihe = _net
+        _awert = float(_reihe.iloc[-1])
+        _dd = compute_drawdown(_reihe)
         _mon = max(len({(x.year, x.month) for x in _t.index}), 1)
         return {
-            "finanzierung": (
-                "Entnahme %.3f %%/Mt., %s" % (
-                    _wp*100,
-                    {1: "monatlich", 3: "quartalsweise", 6: "halbjährlich",
-                     12: "jährlich"}.get(withdrawal_n, "%d Monate" % withdrawal_n))
-                if _hm == "withdrawal" else "Dividendenernte"),
+            "finanzierung": (entnahme_wortlaut(_wp, withdrawal_n, kurz=True)
+                             if _hm == "withdrawal" else "Dividendenernte"),
             "start": _t.index[0], "ende": _t.index[-1], "jahre": _j,
-            "netto": _e, "cagr": (_e/initial_capital)**(1/_j) - 1,
+            # Rendite und Rückgang IMMER aus der Anteilswertreihe. netto
+            # bleibt der Basketwert, damit die Grössenordnung sichtbar ist.
+            "netto": _e, "cagr": (_awert/initial_capital)**(1/_j) - 1,
             "anteilswert": _awert, "zeilen_monat": _s.get("lines", 0)/_mon,
             "kosten": _t.attrs.get("total_tx_costs", 0.0),
             "vst": _t.attrs.get("total_wht", 0.0),
             "zeilen": _s.get("lines", 0), "zeilen_min": _s.get("lines_at_min", 0),
             "mdd": (float(_dd.min()) if not _dd.empty else 0.0),
-            "reihe": _net,
+            "reihe": _reihe,
         }
 
     if st.button("Strukturvergleich rechnen", key="cmp_run",
@@ -3549,7 +3738,7 @@ if _show_results:
                     + ". Der Vergleich der Endwerte ist dann nur eingeschränkt "
                       "aussagekräftig. Backtest-Zeitraum entsprechend kürzen.")
 
-            _basis = _gut.get("20 SMI-Einzeltitel (heutige Struktur)")
+            _basis = _gut.get("Einzeltitel · 20 SMI-Titel (heutige Struktur)")
             _zeilen = []
             for _lbl, _v in _gut.items():
                 _d = (_v["netto"] - _basis["netto"]) if _basis else None
@@ -3557,16 +3746,16 @@ if _show_results:
                     "Aufbau des Aktienteils": _lbl,
                     "Finanzierung Bitcoin": _v["finanzierung"],
                     "Anteilswert": _chf_ch(_v["anteilswert"]),
+                    "Rendite p.a. (Anteilswert)": f"{_v['cagr']*100:.2f}%",
+                    "grösster Rückgang (Anteilswert)": f"{_v['mdd']*100:.1f}%",
                     "Orderzeilen je Monat": f"{_v['zeilen_monat']:.1f}",
-                    "Endwert netto": _chf_ch(_v["netto"]),
-                    "Rendite p.a.": f"{_v['cagr']*100:.2f}%",
-                    "grösster Rückgang": f"{_v['mdd']*100:.1f}%",
+                    "Basketwert am Ende": _chf_ch(_v["netto"]),
                     "Transaktionskosten": _chf_ch(_v["kosten"]),
                     "Kosten p.a.": f"{_v['kosten']/initial_capital/_v['jahre']*100:.2f}%",
                     "Orderzeilen": f"{_v['zeilen']:,}".replace(",", "'"),
                     "davon Mindestgebühr": f"{_v['zeilen_min']:,}".replace(",", "'"),
                     "gegenüber Einzeltiteln": ("Basis" if _basis and _lbl ==
-                        "20 SMI-Einzeltitel (heutige Struktur)"
+                        "Einzeltitel · 20 SMI-Titel (heutige Struktur)"
                         else (f"{_d:+,.0f}".replace(",", "'") if _d is not None else "n/a")),
                 })
             st.dataframe(pd.DataFrame(_zeilen), use_container_width=True,
@@ -3576,7 +3765,7 @@ if _show_results:
                 _best = max(_gut.items(), key=lambda kv: kv[1]["netto"])
                 _vor = _best[1]["netto"] - _basis["netto"]
                 _ersp = _basis["kosten"] - _best[1]["kosten"]
-                if _best[0] != "20 SMI-Einzeltitel (heutige Struktur)":
+                if _best[0] != "Einzeltitel · 20 SMI-Titel (heutige Struktur)":
                     # Tausendertrenner nur auf den Zahlen ersetzen, nicht auf
                     # dem ganzen Satz: sonst werden auch die Satzkommata zu
                     # Apostrophen.
@@ -3590,12 +3779,22 @@ if _show_results:
                         f"die Zahl der Orderzeilen sinkt von "
                         f"{_z_basis} auf {_z_best}.")
                 else:
-                    st.info(
-                        "Die Einzeltitel liegen in diesem Zeitraum vorn. Die "
-                        "TER des ETF wiegt die Ersparnis bei den "
-                        "Transaktionskosten hier auf. Das kippt mit dem "
-                        "Volumen: je kleiner das Vermögen, desto stärker "
-                        "wirkt die Mindestgebühr je Titel.")
+                    st.warning(
+                        "Die Einzeltitel liegen in diesem Zeitraum vorn, aber "
+                        "dieser Vergleich trägt nicht. Die Einzeltitelvariante "
+                        "rechnet mit den HEUTIGEN Indexmitgliedern zurück bis "
+                        "zum Startdatum. Wer damals im Index war und später "
+                        "ausschied, fehlt; wer heute drin ist, ist es, weil er "
+                        "gut lief. Das ist Survivorship-Bias und kann über zehn "
+                        "Jahre leicht einen Prozentpunkt pro Jahr ausmachen. "
+                        "Die TER von 0.20 bis 0.35 Prozent erklärt einen "
+                        "solchen Abstand nicht.\n\n"
+                        "Belastbar ist die Zeile **Kontrolle · SMI-Kurse, "
+                        "Kosten wie 20 Einzeltitel**. Sie rechnet "
+                        "auf echten Indexkursen, also ohne Verzerrung, trägt "
+                        "aber die Kostenstruktur der Einzeltitel. Nur ihr "
+                        "Abstand zu den ETF-Varianten misst, was die Zahl der "
+                        "gehandelten Titel wirklich kostet.")
 
             _fig_c = go.Figure()
             for _i, (_lbl, _v) in enumerate(_gut.items()):
@@ -3604,7 +3803,7 @@ if _show_results:
                     mode="lines",
                     line=dict(width=2,
                               color=CHART_BAR_COLORS[_i % len(CHART_BAR_COLORS)])))
-            _fig_c.update_layout(yaxis_title="NAV netto (CHF)")
+            _fig_c.update_layout(yaxis_title="Anteilswert netto (CHF)")
             st.plotly_chart(style_plotly(_fig_c, height=420),
                             use_container_width=True)
 

@@ -465,6 +465,62 @@ if __name__ == "__main__":
            _je20 > 6 * _je_monat, "%.1f gegen %.1f" % (_je20, _je_monat))
 
     print()
+    print("=== 11. Kostenstruktur-Ueberlagerung ===")
+    # Die Kontrollrechnung soll die Kosten der Einzeltitelvariante
+    # reproduzieren, ohne deren Verzerrung durch die heutige
+    # Indexzusammensetzung zu uebernehmen. Gerechnet wird dafuer auf EINEM
+    # Titel, aber mit der Gebuehrenstruktur von zwanzig.
+    ein_titel = pd.DataFrame({"ETF.SW": (prices*pd.Series(gew)).sum(axis=1)/sum(gew.values())})
+    ein_divs = []
+    for _j in sorted({d.year for d in prices.index}):
+        _k = [d for d in prices.index if d.year == _j and d.month == 4]
+        if _k:
+            _d = _k[len(_k)//2]
+            ein_divs.append({"date": _d, "ticker": "ETF.SW",
+                             "dividend_per_share": float(ein_titel.loc[_d, "ETF.SW"])*0.03})
+    ein_divs = pd.DataFrame(ein_divs)
+    smi_gew = [min(v, 18.0) for v in gew.values()]
+
+    def _k_lauf(px, dv, w, cap, **kw):
+        return lauf(neu, px, dv, btc, fx, w, min_fee_chf=75.0, fx_fee_bps=30.0,
+                    min_order_chf=500.0, monthly_flow_pct=0.01, **kw)
+
+    k_einfach = _k_lauf(ein_titel, ein_divs, {"ETF.SW": 100.0}, None)[0]
+    k_gleich = _k_lauf(ein_titel, ein_divs, {"ETF.SW": 100.0}, None, cost_titles=20)[0]
+    k_gewicht = _k_lauf(ein_titel, ein_divs, {"ETF.SW": 100.0}, None,
+                        cost_titles=smi_gew)[0]
+    k_echt = _k_lauf(prices, divs, gew, 0.18)[0]
+    for nm, t_ in (("ein Titel", k_einfach), ("gleichmaessig 20", k_gleich),
+                   ("nach Zielgewichten", k_gewicht), ("20 echte Titel", k_echt)):
+        print("   %-22s Zeilen %5d   Kosten %9.0f   Anteilswert %11.0f" % (
+            nm, t_.attrs["cost_stats"]["lines"], t_.attrs["total_tx_costs"],
+            float(t_["nav_per_unit"].iloc[-1])))
+    pruefe("Ueberlagerung erhoeht die Zahl der Orderzeilen deutlich",
+           k_gewicht.attrs["cost_stats"]["lines"] > 5*k_einfach.attrs["cost_stats"]["lines"])
+    # DIE zentrale Eigenschaft: die Kontrolle muss die echte
+    # Einzeltitelvariante bei den Kosten treffen, sonst misst sie nichts.
+    _dz = k_gewicht.attrs["cost_stats"]["lines"]/k_echt.attrs["cost_stats"]["lines"] - 1
+    _dk = k_gewicht.attrs["total_tx_costs"]/k_echt.attrs["total_tx_costs"] - 1
+    print("   Kontrolle gegen echte Einzeltitel: Zeilen %+.0f %%, Kosten %+.0f %%"
+          % (_dz*100, _dk*100))
+    pruefe("Kontrolle trifft die Zeilenzahl der Einzeltitel auf 10 %",
+           abs(_dz) < 0.10, "%+.1f %%" % (_dz*100))
+    pruefe("Kontrolle trifft die Kosten der Einzeltitel auf 10 %",
+           abs(_dk) < 0.10, "%+.1f %%" % (_dk*100))
+    # Gleichmaessige Aufteilung ueberzeichnet, weil kleine Zielgewichte real
+    # unter die Bagatellgrenze fallen.
+    pruefe("gleichmaessige Aufteilung ueberzeichnet gegenueber Zielgewichten",
+           k_gleich.attrs["total_tx_costs"] > k_gewicht.attrs["total_tx_costs"])
+    pruefe("Ueberlagerung veraendert nur die Kosten, nicht die Zerlegung",
+           abs(k_gewicht.attrs["attribution"]["reconciliation_error"]) < 1.0)
+    pruefe("mehr Kosten heisst tieferer Anteilswert",
+           float(k_gewicht["nav_per_unit"].iloc[-1]) < float(k_einfach["nav_per_unit"].iloc[-1]))
+    pruefe("ohne Ueberlagerung bleibt alles wie bisher",
+           k_einfach.attrs["cost_stats"]["lines"] ==
+           _k_lauf(ein_titel, ein_divs, {"ETF.SW": 100.0}, None,
+                   cost_titles=None)[0].attrs["cost_stats"]["lines"])
+
+    print()
     print("-"*60)
     print("Bestanden: %d   Fehlgeschlagen: %d" % (bestanden, fehlgeschlagen))
     sys.exit(1 if fehlgeschlagen else 0)
