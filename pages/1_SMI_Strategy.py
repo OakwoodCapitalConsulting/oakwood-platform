@@ -5492,15 +5492,17 @@ if _show_results:
         "Zertifikatsgebühr, damit allein die Mechanik verglichen wird.</p>",
         unsafe_allow_html=True)
     st.warning(
-        "**Der Entnahmesatz wird hier nicht nach Rendite gewählt.** Über "
-        "2015 bis 2026 hat jeder zusätzliche Franken in Bitcoin die Rendite "
-        "erhöht. Ein Raster über diesen Zeitraum erklärt deshalb mechanisch "
-        "den höchsten Satz zum Sieger. Das wäre eine Auswahl nach "
-        "historischer Rendite, die das Reglement in Ziffer 9.1 ausdrücklich "
-        "ablehnt. Aussagekräftig sind die Kosten jeder Stufe: Drawdown, "
-        "schlechtestes Einstiegsfenster und wie oft das Band zurückführt. "
-        "Beim oberen Schwellenwert ist die Frage dagegen sauber: hält er das "
-        "Risiko unter dem höheren Zufluss noch im Griff?")
+        "**Der Entnahmesatz wird hier nicht nach Rendite gewählt.** In "
+        "jedem Zeitraum, in dem Bitcoin die Aktien geschlagen hat, erhöht "
+        "jeder zusätzliche Franken in Bitcoin die Rendite, und ein Raster "
+        "erklärt mechanisch den höchsten Satz zum Sieger. Das wäre eine "
+        "Auswahl nach historischer Rendite, die das Reglement in Ziffer 9.1 "
+        "ausdrücklich ablehnt. Ein späteres Startdatum löst das nicht: auch "
+        "Fenster, die an den Hochs von 2017 oder 2021 beginnen, endeten drei "
+        "Jahre später über dem Einstieg. Der saubere Test ist der "
+        "Bitcoin-Pfad ohne Trend unten: dieselben Einbrüche und Erholungen, "
+        "aber ohne den Aufwärtstrend. Dort zeigt sich, was jede Stufe "
+        "kostet, wenn Bitcoin die Aktien nicht schlägt.")
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def compute_entnahme_one_combo(_px, _btc, _fx, cap, upper, wpct, txbps,
@@ -5604,6 +5606,18 @@ if _show_results:
         help="Anteil des Aktienteils, der an jedem Monatsultimo verkauft "
              "wird. Reglement Fassung 4.0: 0.25%. Der reine Ertrag des ETF "
              "entspricht rund 0.147%.")
+    _ek_pfade = ["Historisch",
+                 "Ohne Überrendite: Bitcoin wächst wie der SMI-ETF",
+                 "Seitwärts: Bitcoin ohne Trend",
+                 "Baisse: Bitcoin verliert 10% im Jahr"]
+    _ek_pfad = st.selectbox(
+        "Bitcoin-Pfad", _ek_pfade, index=0, key="ek_pfad",
+        help="Die drei Alternativen behalten jede Tagesbewegung von "
+             "Bitcoin, also alle Einbrüche und Erholungen in derselben "
+             "Reihenfolge, und entfernen nur den Trend über den "
+             "Gesamtzeitraum. Innerhalb einzelner Fenster steigt und fällt "
+             "Bitcoin weiterhin; über den ganzen Zeitraum wächst es genau "
+             "so stark wie im gewählten Pfad.")
 
     if _ek_go:
         st.session_state["ek_has_run"] = True
@@ -5630,16 +5644,46 @@ if _show_results:
             st.error("Die Kursreihe des SMIA konnte nicht geladen werden. "
                      "Ohne sie lässt sich das Raster nicht rechnen.")
         else:
+            # Bitcoin-Pfad: Trend im Logarithmus ersetzen, Tagesbewegungen
+            # behalten. log(P'(t)) = log(P(t)) + (Ziel - Mu) * t
+            _btc_e = btc_series
+            _b = btc_series.dropna()
+            _b = _b[_b > 0]
+            _bt = (_b.index - _b.index[0]).days.values / 365.25
+            _blg = np.log(_b.values.astype(float))
+            _bmu = (_blg[-1] - _blg[0]) / max(float(_bt[-1]), 1e-9)
+            _bziel = _bmu
+            if _ek_pfad != _ek_pfade[0]:
+                if _ek_pfad == _ek_pfade[1]:
+                    _sr = _px_e.iloc[:, 0].dropna()
+                    _sj = max((_sr.index[-1] - _sr.index[0]).days / 365.25, 1e-9)
+                    _bziel = float(np.log(_sr.iloc[-1] / _sr.iloc[0]) / _sj)
+                elif _ek_pfad == _ek_pfade[2]:
+                    _bziel = 0.0
+                else:
+                    _bziel = float(np.log(0.90))
+                _btc_e = pd.Series(np.exp(_blg + (_bziel - _bmu) * _bt),
+                                   index=_b.index, name=btc_series.name)
+            st.caption(
+                f"Bitcoin im geladenen Zeitraum historisch "
+                f"{(np.exp(_bmu)-1)*100:+.1f}% p.a., im gewählten Pfad "
+                f"{(np.exp(_bziel)-1)*100:+.1f}% p.a. Tagesbewegungen und "
+                f"Einbrüche sind in beiden Fällen dieselben.")
+            _ek_slug = {_ek_pfade[0]: "historisch", _ek_pfade[1]: "wie_smi",
+                        _ek_pfade[2]: "seitwaerts",
+                        _ek_pfade[3]: "baisse"}.get(_ek_pfad, "pfad")
+
             _ek_combos = [(u, w) for u in _ek_schwellen for w in _ek_saetze]
             _prog = st.progress(0.0, text=f"0 / {len(_ek_combos)} Kombinationen")
             _t0 = _time.time()
             _ek_rows = []
             for _i, (_u, _w) in enumerate(_ek_combos):
                 _ek_rows.extend(compute_entnahme_one_combo(
-                    _px_e, btc_series, fx, initial_capital, _u, _w,
+                    _px_e, _btc_e, fx, initial_capital, _u, _w,
                     tx_cost_bps, min_fee_chf, fx_fee_bps, min_order_chf,
                     _ek_win, _ek_sm,
-                    cache_token=(start_str, end_str, btc_source, etp_ter_pct)))
+                    cache_token=(start_str, end_str, btc_source, etp_ter_pct,
+                                 _ek_pfad)))
                 _el = _time.time() - _t0
                 _eta = _el / (_i + 1) * (len(_ek_combos) - _i - 1)
                 _prog.progress((_i + 1) / len(_ek_combos),
@@ -5657,7 +5701,8 @@ if _show_results:
                 st.caption(
                     f"{len(_eg):,} Engine-Läufe · {len(_ek_combos)} "
                     f"Kombinationen × {_nf} rollierende {_ek_win}-Jahres-"
-                    f"Fenster, dazu je ein Lauf über den ganzen Zeitraum")
+                    f"Fenster, dazu je ein Lauf über den ganzen Zeitraum · "
+                    f"Zeitraum ab {start_str} · Bitcoin-Pfad: {_ek_pfad}")
 
                 _es = _fen.groupby(["upper", "wpct"]).agg(
                     Median_CAGR=("cagr", "median"),
@@ -5798,9 +5843,22 @@ if _show_results:
                     _ad["Ganzer Zeitraum, Rendite"] = _es["Voll_CAGR"].map(_pct)
                     _ad["Ganzer Zeitraum, Max. DD"] = _es["Voll_DD"].map(_pct)
                 st.dataframe(_ad, use_container_width=True, hide_index=True)
-                st.download_button(
-                    "Raster als CSV", _es.to_csv(index=False).encode("utf-8"),
-                    "kalibrierung_entnahme.csv", "text/csv", key="ek_csv")
+                _ek_tag = f"{start_str[:4]}_{_ek_slug}"
+                _d1, _d2 = st.columns(2)
+                with _d1:
+                    st.download_button(
+                        "Raster als CSV",
+                        _es.to_csv(index=False).encode("utf-8"),
+                        f"kalibrierung_entnahme_{_ek_tag}.csv", "text/csv",
+                        key="ek_csv")
+                with _d2:
+                    st.download_button(
+                        "Einzelfenster als CSV",
+                        _eg.to_csv(index=False).encode("utf-8"),
+                        f"kalibrierung_entnahme_fenster_{_ek_tag}.csv",
+                        "text/csv", key="ek_csv_fenster",
+                        help="Jedes Fenster einzeln, damit sich prüfen lässt, "
+                             "ob eine Rangfolge über die Zeit stabil ist.")
 
     # ======================================================================
     # KALIBRIERUNG — Optimales Risiko/Rendite-Profil (Sharpe/Calmar-Grid)

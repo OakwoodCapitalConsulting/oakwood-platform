@@ -119,8 +119,12 @@ class StStub(types.ModuleType):
             return self.radio_vorgabe[label]
         return opts[index or 0]
     radio_vorgabe = {}
+    selectbox_vorgabe = {}
     def selectbox(self, label, options, index=0, *a, **k):
-        opts = list(options); return opts[index or 0]
+        opts = list(options)
+        if label in self.selectbox_vorgabe:
+            return self.selectbox_vorgabe[label]
+        return opts[index or 0]
     multiselect_vorgabe = {}
     def multiselect(self, label, options, default=None, **k):
         if label in self.multiselect_vorgabe:
@@ -265,10 +269,15 @@ if MODUS == "vergleich":
     st_stub.knoepfe.add("Strukturvergleich rechnen")
 # raster rechnet die Kalibrierung der Entnahmemechanik auf einem kleinen
 # Feld, damit der Test schnell bleibt, aber jeder Pfad durchlaufen wird.
-if MODUS == "raster":
+if MODUS in ("raster", "rasterseit", "rastersmi"):
     st_stub.knoepfe.add("Raster starten")
     StStub.multiselect_vorgabe = {"Obere Schwelle (%)": [25.0, 35.0],
                                   "Entnahmesatz je Monat (%)": [0.15, 0.25, 0.50]}
+if MODUS == "rasterseit":
+    StStub.selectbox_vorgabe = {"Bitcoin-Pfad": "Seitwärts: Bitcoin ohne Trend"}
+if MODUS == "rastersmi":
+    StStub.selectbox_vorgabe = {
+        "Bitcoin-Pfad": "Ohne Überrendite: Bitcoin wächst wie der SMI-ETF"}
 st_stub.session_state["smi_has_run"] = True
 
 sys.path.insert(0, REPO)
@@ -292,7 +301,7 @@ for art in ("success", "info"):
     for m in st_stub.aufrufe.get(art, []):
         print("  [%s] %s" % (art, m.replace("\n", " ")[:260]))
 
-if MODUS == "raster":
+if MODUS in ("raster", "rasterseit", "rastersmi"):
     import pandas as _pd
     _pd.set_option("display.width", 250); _pd.set_option("display.max_columns", 30)
     _gesucht = [t for t in StStub.tabellen
