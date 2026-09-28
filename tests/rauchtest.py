@@ -72,7 +72,9 @@ class StStub(types.ModuleType):
     def title(self, *a, **k): pass
     def header(self, *a, **k): pass
     def subheader(self, *a, **k): pass
-    def dataframe(self, *a, **k): pass
+    tabellen = []
+    def dataframe(self, *a, **k):
+        if a: StStub.tabellen.append(a[0])
     def table(self, *a, **k): pass
     def plotly_chart(self, *a, **k): pass
     def pyplot(self, *a, **k): pass
@@ -119,7 +121,10 @@ class StStub(types.ModuleType):
     radio_vorgabe = {}
     def selectbox(self, label, options, index=0, *a, **k):
         opts = list(options); return opts[index or 0]
+    multiselect_vorgabe = {}
     def multiselect(self, label, options, default=None, **k):
+        if label in self.multiselect_vorgabe:
+            return list(self.multiselect_vorgabe[label])
         return list(default) if default else []
     def _wert(self, a, k, pos=2):
         # Streamlit erlaubt (label, min, max, value, step) positional
@@ -231,11 +236,11 @@ sys.modules["yfinance"] = yf_stub
 
 # ------------------------------------------------------------ Lauf
 _SLEEVES = {
-    "etf":       "iShares SMI ETF (CSSMI), ausschüttend",
-    "vergleich": "iShares SMI ETF (CSSMI), ausschüttend",
-    "thes":      "UBS MSCI Switzerland 20/35 (SW2CHB), thesaurierend",
-    "synth":     "UBS SMI ETF (SMIA), thesaurierend, Historie rekonstruiert",
-    "thesdiv":   "UBS MSCI Switzerland 20/35 (SW2CHB), thesaurierend",
+    "etf":       "Ausschüttend · iShares SMI ETF (CSSMI)",
+    "vergleich": "Ausschüttend · iShares SMI ETF (CSSMI)",
+    "thes":      "Thesaurierend · UBS MSCI Switzerland 20/35 (SW2CHB)",
+    "synth":     "Thesaurierend · UBS SMI ETF (SMIA), Historie rekonstruiert",
+    "thesdiv":   "Thesaurierend · UBS MSCI Switzerland 20/35 (SW2CHB)",
 }
 # Kapitalfluss: der Regler steht in der Vorgabe auf null, der Pfad wuerde
 # sonst nie durchlaufen.
@@ -244,7 +249,7 @@ if MODUS in ("fluss", "flussetf", "flussaus"):
 if MODUS == "flussetf":
     StStub.radio_vorgabe = {
         "Aufbau des Aktienteils":
-            "UBS SMI ETF (SMIA), thesaurierend, Historie rekonstruiert"}
+            "Thesaurierend · UBS SMI ETF (SMIA), Historie rekonstruiert"}
 if MODUS == "flussaus":
     # Netting ausgeschaltet: jede Teilbewegung zaehlt einzeln
     StStub.checkbox_vorgabe = {"Orderzeilen je Ausführungstag netten": False}
@@ -258,6 +263,12 @@ if MODUS == "thesdiv":
         "Dividendenernte über DCA-Fenster (heute)"
 if MODUS == "vergleich":
     st_stub.knoepfe.add("Strukturvergleich rechnen")
+# raster rechnet die Kalibrierung der Entnahmemechanik auf einem kleinen
+# Feld, damit der Test schnell bleibt, aber jeder Pfad durchlaufen wird.
+if MODUS == "raster":
+    st_stub.knoepfe.add("Raster starten")
+    StStub.multiselect_vorgabe = {"Obere Schwelle (%)": [25.0, 35.0],
+                                  "Entnahmesatz je Monat (%)": [0.15, 0.25, 0.50]}
 st_stub.session_state["smi_has_run"] = True
 
 sys.path.insert(0, REPO)
@@ -280,3 +291,13 @@ for art in ("error", "warning"):
 for art in ("success", "info"):
     for m in st_stub.aufrufe.get(art, []):
         print("  [%s] %s" % (art, m.replace("\n", " ")[:260]))
+
+if MODUS == "raster":
+    import pandas as _pd
+    _pd.set_option("display.width", 250); _pd.set_option("display.max_columns", 30)
+    _gesucht = [t for t in StStub.tabellen
+                if hasattr(t, "columns") and ("Obere Schwelle" in t.columns
+                                              or "Entnahme je Monat" in t.columns)]
+    print("Rastertabellen gefunden:", len(_gesucht))
+    for t in _gesucht:
+        print(t.to_string(index=False)); print()

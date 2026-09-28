@@ -810,12 +810,17 @@ with st.sidebar:
         withdrawal_pct = st.number_input(
             "Entnahmesatz je Monat (%)", min_value=0.0, max_value=2.0,
             value=0.25, step=0.01, format="%.3f",
-            help="0.25 Prozent im Monat entspricht 3.04 Prozent im Jahr. Zum "
-                 "Vergleich: die heutige Nettodividendenernte beträgt rund "
-                 "1.95 Prozent im Jahr (3 Prozent brutto mal 0.65). Der "
-                 "gleichwertige Satz wäre 0.161 Prozent. Ein höherer Satz "
-                 "verschiebt mehr in Bitcoin, lässt den Aktienteil aber "
-                 "langsamer wachsen.") / 100.0
+            help="Der Satz wird an jedem Termin neu auf den dann geltenden "
+                 "Wert des Aktienteils angewendet. Über zwölf Termine "
+                 "entzieht er dem Bestand rund 2.96 Prozent der Anteile "
+                 "(1 minus 0.9975 hoch 12), unabhängig vom Kursverlauf; der "
+                 "Frankenbetrag schwankt dagegen mit dem Kurs.\n\n"
+                 "Zum Vergleich: ein thesaurierender SMI-ETF behält netto "
+                 "rund 1.75 Prozent im Jahr ein (3 Prozent brutto, abzüglich "
+                 "35 Prozent Verrechnungssteuer und 0.20 Prozent "
+                 "Pauschalkommission). Der gleichwertige Satz wäre 0.147 "
+                 "Prozent je Termin. Alles darüber verschiebt Substanz statt "
+                 "nur Ertrag in Bitcoin.") / 100.0
         _freq_opt = {"Monatlich": 1, "Quartalsweise": 3,
                      "Halbjährlich": 6, "Jährlich": 12}
         _freq_wahl = st.selectbox(
@@ -835,13 +840,16 @@ with st.sidebar:
                  "gleich viel wie quartalsweise, bei feinerer Streuung der "
                  "Einstiegspunkte in Bitcoin.")
         withdrawal_n = _freq_opt[_freq_wahl]
-        _jahr = (1 + withdrawal_pct)**12 - 1
+        # Entnahme, nicht Wachstum: die Basis verkleinert sich mit jedem
+        # Termin. (1+p)^12-1 waere die Formel fuer Wachstum und zu hoch.
+        _jahr = 1 - (1 - withdrawal_pct)**12
         _zeilen_jahr = int(round(24 / withdrawal_n))
         st.caption(
-            f"{entnahme_wortlaut(withdrawal_pct, withdrawal_n)}. Entspricht "
-            f"{_jahr*100:.2f}% im Jahr, unabhängig von den Terminen. Heutige "
-            f"Nettodividendenernte rund 1.95%, gleichwertiger Satz 0.161% je "
-            f"Monat. Diese Frequenz erzeugt rund {_zeilen_jahr} eigene "
+            f"{entnahme_wortlaut(withdrawal_pct, withdrawal_n)}. Entzieht "
+            f"dem Aktienteil über zwölf Monate rund {_jahr*100:.2f}% der "
+            "Anteile, unabhängig vom Kursverlauf; der Frankenbetrag schwankt "
+            "mit dem Kurs. Gleichwertiger Satz einer reinen Ertragsernte "
+            f"rund 0.147% je Termin. Diese Frequenz erzeugt rund {_zeilen_jahr} eigene "
             "Orderzeilen im Jahr; wird am selben Tag ohnehin gezeichnet, "
             "fällt die Entnahme durch das Netting mit in dieselbe Zeile. Was "
             "das an Gebühren kostet, steht unten unter Kosten & Gebühren.")
@@ -5459,6 +5467,340 @@ if _show_results:
                 "(30–40%) sind hier bewusst zur Exploration eingeschlossen; das sind "
                 "keine Empfehlungen, sondern Datenpunkte für die Positionierungs-"
                 "Entscheidung.")
+
+    # ======================================================================
+    # KALIBRIERUNG DER ENTNAHMEMECHANIK (Reglement Fassung 4.0)
+    # Das Band 15/25 wurde unter der Dividendenernte kalibriert. Unter der
+    # monatlichen Entnahme fliesst dem Satelliten rund die Haelfte mehr zu,
+    # das Band wird haeufiger beruehrt. Ziffer 15 sperrt die Parameter ab
+    # Emission; ob sie unter der neuen Mechanik tragen, wird hier geprueft.
+    #
+    # Der Entnahmesatz wird bewusst NICHT nach Rendite gewaehlt: ueber
+    # 2015 bis 2026 hat jeder zusaetzliche Franken in Bitcoin die Rendite
+    # erhoeht, ein Raster erklaert daher mechanisch den hoechsten Satz zum
+    # Sieger. Gezeigt wird, was jede Stufe kostet.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Kalibrierung der Entnahmemechanik")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Prüft, ob das Band, das "
+        "unter der Dividendenernte kalibriert wurde, unter der monatlichen "
+        "Entnahme noch trägt, und zeigt, was jeder Entnahmesatz kostet. "
+        "Gerechnet wird auf dem thesaurierenden UBS SMI ETF (SMIA, Historie "
+        "rekonstruiert). Startallokation und Ziel stehen fest auf 15%. "
+        "Kostenmodell wie in der Seitenleiste, ohne Zeichnungen und ohne "
+        "Zertifikatsgebühr, damit allein die Mechanik verglichen wird.</p>",
+        unsafe_allow_html=True)
+    st.warning(
+        "**Der Entnahmesatz wird hier nicht nach Rendite gewählt.** Über "
+        "2015 bis 2026 hat jeder zusätzliche Franken in Bitcoin die Rendite "
+        "erhöht. Ein Raster über diesen Zeitraum erklärt deshalb mechanisch "
+        "den höchsten Satz zum Sieger. Das wäre eine Auswahl nach "
+        "historischer Rendite, die das Reglement in Ziffer 9.1 ausdrücklich "
+        "ablehnt. Aussagekräftig sind die Kosten jeder Stufe: Drawdown, "
+        "schlechtestes Einstiegsfenster und wie oft das Band zurückführt. "
+        "Beim oberen Schwellenwert ist die Frage dagegen sauber: hält er das "
+        "Risiko unter dem höheren Zufluss noch im Griff?")
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_entnahme_one_combo(_px, _btc, _fx, cap, upper, wpct, txbps,
+                                   minfee, fxbps, minorder, win_years,
+                                   step_months, cache_token=None):
+        """EINE Kombination aus oberer Schwelle und Entnahmesatz ueber alle
+        rollierenden Fenster und zusaetzlich ueber den ganzen Zeitraum. Je
+        Kombination gecacht, damit ein abgebrochener Lauf nicht von vorn
+        beginnt."""
+        full = _px.index
+        if len(full) < 400:
+            return []
+        tk = _px.columns[0]
+        leer = pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
+
+        def _ein_lauf(idx):
+            _ts, _, _rb = run_strategy(
+                _px.loc[idx], leer, _btc, _fx, cap, {tk: 100.0},
+                0.15, upper, 0.15, set(), 6, tx_cost_bps=txbps,
+                threshold_check_dates_set=None, cap_dates_set=set(),
+                weight_cap=None, min_fee_chf=minfee, fx_fee_bps=fxbps,
+                min_order_chf=minorder, harvest_mode="withdrawal",
+                withdrawal_pct_monthly=wpct, withdrawal_every_n_months=1,
+                monthly_flow_pct=0.0, monthly_flow_chf=0.0, netting=True)
+            if _ts is None or _ts.empty or "total_value" not in _ts.columns:
+                return None
+            _rm = risk_metrics(_ts["total_value"])
+            _j = max((_ts.index[-1] - _ts.index[0]).days / 365.25, 1e-9)
+            _n = 0 if _rb is None else len(_rb)
+            _vol = (float(_rb["chf_to_smi"].sum())
+                    if _n and "chf_to_smi" in _rb.columns else 0.0)
+            _mittel = float(_ts["total_value"].mean())
+            _st = _ts.attrs.get("cost_stats", {}) or {}
+            _kost = float(_ts.attrs.get("total_tx_costs", 0.0) or 0.0)
+            return {
+                "upper": upper, "wpct": wpct,
+                "cagr": _rm.get("cagr", np.nan),
+                "vol": _rm.get("vol", np.nan),
+                "sharpe": _rm.get("sharpe", np.nan),
+                "max_dd": _rm.get("max_dd", np.nan),
+                "calmar": _rm.get("calmar", np.nan),
+                "rueck_pa": _n / _j,
+                "rueckvol_pa": (_vol / _mittel / _j) if _mittel > 0 else np.nan,
+                "btc_quote": float(_ts["btc_pct"].mean()),
+                "zeilen_pa": _st.get("lines", 0) / _j,
+                "kosten_pa": (_kost / _mittel / _j) if _mittel > 0 else np.nan,
+            }
+
+        rows = []
+        starts = pd.date_range(
+            full[0], full[-1] - pd.DateOffset(years=win_years),
+            freq=f"{step_months}MS")
+        for s in starts:
+            e = s + pd.DateOffset(years=win_years)
+            w = full[(full >= s) & (full <= e)]
+            if len(w) < 300:
+                continue
+            try:
+                r = _ein_lauf(w)
+            except Exception:
+                r = None
+            if r:
+                r["start"] = s
+                r["voll"] = False
+                rows.append(r)
+        try:
+            r = _ein_lauf(full)
+        except Exception:
+            r = None
+        if r:
+            r["start"] = full[0]
+            r["voll"] = True
+            rows.append(r)
+        return rows
+
+    ek1, ek2, ek3 = st.columns(3)
+    with ek1:
+        _ek_win = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0,
+                               key="ek_win")
+    with ek2:
+        _ek_step = st.selectbox(
+            "Fenster-Schritt", ["halbjährlich", "quartalsweise"], index=0,
+            key="ek_step",
+            help="Halbjährlich entspricht der ursprünglichen Kalibrierung nach "
+                 "Anhang A. Quartalsweise verdoppelt die Zahl der Fenster und "
+                 "die Laufzeit.")
+    with ek3:
+        st.caption("")
+        _ek_go = st.button("Raster starten", key="ek_go")
+
+    _ek_schwellen_pct = st.multiselect(
+        "Obere Schwelle (%)",
+        options=[20.0, 22.5, 25.0, 27.5, 30.0, 35.0, 40.0],
+        default=[20.0, 25.0, 30.0, 35.0], key="ek_upper",
+        help="Bitcoin-Anteil, ab dem auf 15% zurückgeführt wird. Reglement "
+             "Fassung 4.0: 25%.")
+    _ek_saetze_pct = st.multiselect(
+        "Entnahmesatz je Monat (%)",
+        options=[0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50],
+        default=[0.15, 0.20, 0.25, 0.35, 0.50], key="ek_wpct",
+        help="Anteil des Aktienteils, der an jedem Monatsultimo verkauft "
+             "wird. Reglement Fassung 4.0: 0.25%. Der reine Ertrag des ETF "
+             "entspricht rund 0.147%.")
+
+    if _ek_go:
+        st.session_state["ek_has_run"] = True
+
+    if st.session_state.get("ek_has_run"):
+        _ek_schwellen = sorted(v / 100.0 for v in _ek_schwellen_pct) or [0.25]
+        _ek_saetze = sorted(v / 100.0 for v in _ek_saetze_pct) or [0.0025]
+        _ek_sm = 6 if _ek_step == "halbjährlich" else 3
+
+        # Kursreihe des thesaurierenden SMI-ETF, auf demselben Weg wie im
+        # Strukturvergleich aus der ausschuettenden Klasse rekonstruiert.
+        _cfg_smia = next((c for c in EQUITY_SLEEVES.values()
+                          if c and c.get("ticker") == "SMIA.SW"), None)
+        _px_e = None
+        if _cfg_smia and _cfg_smia.get("synth_from"):
+            _q = _cfg_smia["synth_from"]
+            _ps = fetch_prices([_q], start_str, end_str)
+            if _ps is not None and not _ps.empty and _q in _ps.columns:
+                _ds = fetch_dividends([_q], start_str, end_str)
+                _px_e = pd.DataFrame({_cfg_smia["ticker"]:
+                                      synthesize_accumulating(_ps[_q], _ds, _q)})
+
+        if _px_e is None or _px_e.empty:
+            st.error("Die Kursreihe des SMIA konnte nicht geladen werden. "
+                     "Ohne sie lässt sich das Raster nicht rechnen.")
+        else:
+            _ek_combos = [(u, w) for u in _ek_schwellen for w in _ek_saetze]
+            _prog = st.progress(0.0, text=f"0 / {len(_ek_combos)} Kombinationen")
+            _t0 = _time.time()
+            _ek_rows = []
+            for _i, (_u, _w) in enumerate(_ek_combos):
+                _ek_rows.extend(compute_entnahme_one_combo(
+                    _px_e, btc_series, fx, initial_capital, _u, _w,
+                    tx_cost_bps, min_fee_chf, fx_fee_bps, min_order_chf,
+                    _ek_win, _ek_sm,
+                    cache_token=(start_str, end_str, btc_source, etp_ter_pct)))
+                _el = _time.time() - _t0
+                _eta = _el / (_i + 1) * (len(_ek_combos) - _i - 1)
+                _prog.progress((_i + 1) / len(_ek_combos),
+                               text=f"{_i+1} / {len(_ek_combos)} Kombinationen, "
+                                    f"{_el:.0f}s gelaufen, noch ca. {_eta:.0f}s")
+            _prog.empty()
+            _eg = pd.DataFrame(_ek_rows)
+
+            if _eg.empty or "voll" not in _eg.columns:
+                st.warning("Zu wenig Daten für die Fensteranalyse.")
+            else:
+                _fen = _eg[~_eg["voll"]]
+                _voll = _eg[_eg["voll"]]
+                _nf = _fen["start"].nunique()
+                st.caption(
+                    f"{len(_eg):,} Engine-Läufe · {len(_ek_combos)} "
+                    f"Kombinationen × {_nf} rollierende {_ek_win}-Jahres-"
+                    f"Fenster, dazu je ein Lauf über den ganzen Zeitraum")
+
+                _es = _fen.groupby(["upper", "wpct"]).agg(
+                    Median_CAGR=("cagr", "median"),
+                    Worst_CAGR=("cagr", "min"),
+                    Median_DD=("max_dd", "median"),
+                    Worst_DD=("max_dd", "min"),
+                    Median_Sharpe=("sharpe", "median"),
+                    Median_Calmar=("calmar", "median"),
+                    Rueck_pa=("rueck_pa", "median"),
+                    Rueckvol_pa=("rueckvol_pa", "median"),
+                    BTC_Quote=("btc_quote", "median"),
+                    Zeilen_pa=("zeilen_pa", "median"),
+                    Kosten_pa=("kosten_pa", "median"),
+                ).reset_index()
+                if not _voll.empty:
+                    _es = _es.merge(
+                        _voll[["upper", "wpct", "cagr", "max_dd"]].rename(
+                            columns={"cagr": "Voll_CAGR", "max_dd": "Voll_DD"}),
+                        on=["upper", "wpct"], how="left")
+
+                # ---- Heatmaps: Schwelle waagrecht, Entnahmesatz senkrecht
+                def _ek_karte(spalte, titel, fmt, skala, hoeher_besser):
+                    _pv = _es.pivot(index="wpct", columns="upper", values=spalte)
+                    _x = [f"{u*100:g}%" for u in _pv.columns]
+                    _y = [f"{w*100:.2f}%" for w in _pv.index]
+                    _z = _pv.values
+                    _fig = go.Figure(data=go.Heatmap(
+                        z=_z, x=_x, y=_y,
+                        colorscale=(skala if hoeher_besser else
+                                    [[1 - p, c] for p, c in skala][::-1]),
+                        text=[[fmt(v) for v in r] for r in _z],
+                        texttemplate="%{text}",
+                        textfont=dict(size=11, color=OAK_CREAM),
+                        showscale=False,
+                        hovertemplate=("Schwelle %{x} · Entnahme %{y}<br>"
+                                       + titel + " %{text}<extra></extra>")))
+                    if "25%" in _x and "0.25%" in _y:
+                        _fig.add_annotation(
+                            x="25%", y="0.25%", text="Reglement",
+                            showarrow=False, yshift=-15,
+                            font=dict(size=9, color=OAK_CREAM))
+                    _fig.update_layout(title=titel)
+                    _fig = style_plotly(_fig, height=330)
+                    _fig.update_xaxes(title_text="Obere Schwelle",
+                                      type="category")
+                    _fig.update_yaxes(title_text="Entnahmesatz je Monat",
+                                      type="category")
+                    return _fig
+
+                _skala = [[0, OAK_RED], [0.5, OAK_GREEN_3], [1, OAK_GOLD]]
+                _pct = lambda v: "" if pd.isna(v) else f"{v*100:.1f}%"
+                _k1, _k2 = st.columns(2)
+                with _k1:
+                    st.plotly_chart(_ek_karte(
+                        "Median_DD", "Max. Drawdown, Median", _pct, _skala,
+                        True), use_container_width=True)
+                with _k2:
+                    st.plotly_chart(_ek_karte(
+                        "Worst_CAGR", "Schlechtestes Fenster, Rendite p.a.",
+                        _pct, _skala, True), use_container_width=True)
+                _k3, _k4 = st.columns(2)
+                with _k3:
+                    st.plotly_chart(_ek_karte(
+                        "Rueck_pa", "Rückführungen je Jahr, Median",
+                        lambda v: "" if pd.isna(v) else f"{v:.2f}",
+                        _skala, False), use_container_width=True)
+                with _k4:
+                    st.plotly_chart(_ek_karte(
+                        "Median_Sharpe", "Sharpe Ratio, Median",
+                        lambda v: "" if pd.isna(v) else f"{v:.2f}",
+                        _skala, True), use_container_width=True)
+                st.caption(
+                    "Median über alle rollierenden Fenster. Das Feld "
+                    "«Reglement» markiert die Werte der Fassung 4.0. Beim "
+                    "Drawdown ist ein kleinerer Verlust besser, bei den "
+                    "Rückführungen eine kleinere Zahl: jede Rückführung "
+                    "verkauft Bitcoin, die kurz zuvor mit Aktienerlösen "
+                    "gekauft wurden.")
+
+                # ---- Grenzkosten: was kostet jede Stufe des Entnahmesatzes?
+                _u_ref = 0.25 if 0.25 in _ek_schwellen else _ek_schwellen[0]
+                _gk = _es[_es["upper"] == _u_ref].sort_values("wpct").copy()
+                if len(_gk) > 1:
+                    st.markdown(
+                        f"##### Was kostet jede Stufe des Entnahmesatzes? "
+                        f"(obere Schwelle {_u_ref*100:g}%)")
+                    _gk["Δ Rendite"] = _gk["Median_CAGR"].diff()
+                    _gk["Δ Drawdown"] = _gk["Median_DD"].diff()
+                    _gk["Δ schlechtestes Fenster"] = _gk["Worst_CAGR"].diff()
+                    _gd = pd.DataFrame({
+                        "Entnahme je Monat": _gk["wpct"].map(lambda v: f"{v*100:.2f}%"),
+                        "Rendite p.a.": _gk["Median_CAGR"].map(_pct),
+                        "Δ Rendite": _gk["Δ Rendite"].map(
+                            lambda v: "" if pd.isna(v) else f"{v*100:+.2f}pp"),
+                        "Max. Drawdown": _gk["Median_DD"].map(_pct),
+                        "Δ Drawdown": _gk["Δ Drawdown"].map(
+                            lambda v: "" if pd.isna(v) else f"{v*100:+.2f}pp"),
+                        "Schlechtestes Fenster": _gk["Worst_CAGR"].map(_pct),
+                        "Δ schlechtestes Fenster": _gk["Δ schlechtestes Fenster"].map(
+                            lambda v: "" if pd.isna(v) else f"{v*100:+.2f}pp"),
+                        "Rückführungen p.a.": _gk["Rueck_pa"].map(lambda v: f"{v:.2f}"),
+                        "Bitcoin-Quote Ø": _gk["BTC_Quote"].map(_pct),
+                    })
+                    st.dataframe(_gd, use_container_width=True, hide_index=True)
+                    _r_lo = float(_gk["Rueck_pa"].iloc[0])
+                    _r_hi = float(_gk["Rueck_pa"].iloc[-1])
+                    if _r_hi > max(_r_lo, 0.05) * 1.5:
+                        st.info(
+                            f"Die Rückführungen steigen von {_r_lo:.2f} auf "
+                            f"{_r_hi:.2f} je Jahr. Ab einem gewissen Satz "
+                            "verkauft das Produkt Aktien, um Bitcoin zu kaufen, "
+                            "und verkauft dieselben Bitcoin bald darauf wieder, "
+                            "um Aktien zu kaufen. Dieser Kreislauf kostet "
+                            "Gebühren, ohne die Quote dauerhaft zu erhöhen: "
+                            "das Band deckelt sie bei der oberen Schwelle.")
+
+                # ---- Alle Felder
+                st.markdown("##### Alle Kombinationen")
+                _ad = pd.DataFrame({
+                    "Obere Schwelle": _es["upper"].map(lambda v: f"{v*100:g}%"),
+                    "Entnahme je Monat": _es["wpct"].map(lambda v: f"{v*100:.2f}%"),
+                    "Rendite p.a. (Median)": _es["Median_CAGR"].map(_pct),
+                    "Schlechtestes Fenster": _es["Worst_CAGR"].map(_pct),
+                    "Max. DD (Median)": _es["Median_DD"].map(_pct),
+                    "Max. DD (schlechtestes)": _es["Worst_DD"].map(_pct),
+                    "Sharpe": _es["Median_Sharpe"].map(
+                        lambda v: "" if pd.isna(v) else f"{v:.2f}"),
+                    "Calmar": _es["Median_Calmar"].map(
+                        lambda v: "" if pd.isna(v) else f"{v:.2f}"),
+                    "Rückführungen p.a.": _es["Rueck_pa"].map(lambda v: f"{v:.2f}"),
+                    "Rückführvolumen p.a.": _es["Rueckvol_pa"].map(_pct),
+                    "Bitcoin-Quote Ø": _es["BTC_Quote"].map(_pct),
+                    "Orderzeilen p.a.": _es["Zeilen_pa"].map(lambda v: f"{v:.1f}"),
+                    "Transaktionskosten p.a.": _es["Kosten_pa"].map(
+                        lambda v: "" if pd.isna(v) else f"{v*100:.3f}%"),
+                })
+                if "Voll_CAGR" in _es.columns:
+                    _ad["Ganzer Zeitraum, Rendite"] = _es["Voll_CAGR"].map(_pct)
+                    _ad["Ganzer Zeitraum, Max. DD"] = _es["Voll_DD"].map(_pct)
+                st.dataframe(_ad, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Raster als CSV", _es.to_csv(index=False).encode("utf-8"),
+                    "kalibrierung_entnahme.csv", "text/csv", key="ek_csv")
 
     # ======================================================================
     # KALIBRIERUNG — Optimales Risiko/Rendite-Profil (Sharpe/Calmar-Grid)
