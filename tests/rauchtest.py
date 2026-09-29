@@ -278,6 +278,13 @@ if MODUS == "rasterseit":
 if MODUS == "rastersmi":
     StStub.selectbox_vorgabe = {
         "Bitcoin-Pfad": "Ohne Überrendite: Bitcoin wächst wie der SMI-ETF"}
+# tagestest rechnet den Indifferenz-Test des Ausfuehrungstags unter der
+# Entnahme (Patch J), historisch und mit Bitcoin ohne Trend.
+if MODUS in ("tagestest", "tagestestseit"):
+    st_stub.knoepfe.add("Tagestest starten")
+if MODUS == "tagestestseit":
+    StStub.selectbox_vorgabe = {
+        "Bitcoin-Pfad (Tagestest)": "Seitwärts: Bitcoin ohne Trend"}
 st_stub.session_state["smi_has_run"] = True
 
 sys.path.insert(0, REPO)
@@ -300,6 +307,18 @@ for art in ("error", "warning"):
 for art in ("success", "info"):
     for m in st_stub.aufrufe.get(art, []):
         print("  [%s] %s" % (art, m.replace("\n", " ")[:260]))
+
+if MODUS in ("tagestest", "tagestestseit"):
+    import pandas as _pd
+    _pd.set_option("display.width", 250)
+    _tt = [t for t in StStub.tabellen
+           if hasattr(t, "columns") and "Konvention" in t.columns]
+    print("Tagestest-Tabellen gefunden:", len(_tt))
+    for t in _tt:
+        print(t.to_string(index=False)); print()
+    for m in st_stub.aufrufe.get("caption", []):
+        if "rollierende" in m and "Konventionen" in m:
+            print("  [caption]", m)
 
 if MODUS in ("raster", "rasterseit", "rastersmi"):
     import pandas as _pd

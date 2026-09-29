@@ -5861,6 +5861,193 @@ if _show_results:
                              "ob eine Rangfolge über die Zeit stabil ist.")
 
     # ======================================================================
+    # KALIBRIERUNG: Ausfuehrungstag unter der Entnahme (Indifferenz-Test)
+    # Wie der bisherige Indifferenz-Test, aber mit der Mechanik der Fassung
+    # 4.0: SMIA, Entnahme 0.25% je Termin, Band 25/15. Der Tag bestimmt hier
+    # Entnahme, Bitcoinkauf und Bandpruefung zugleich. Die Frage bleibt
+    # dieselbe: macht die Tageswahl einen materiellen Unterschied, nicht
+    # welcher Tag die hoechste Rendite gebracht haette.
+    # ======================================================================
+    st.markdown("---")
+    st.markdown("## Ausführungstag unter der Entnahme (Indifferenz-Test)")
+    st.markdown(
+        "<p style='color:#A9B5A4;margin-top:-6px'>Derselbe Test wie in der "
+        "Sektion zur Ausführungskonvention, aber mit der Mechanik der "
+        "Reglementsfassung 4.0: thesaurierender SMI-ETF (SMIA), Entnahme "
+        "0.25% je Termin, Rückführung über 25% auf 15%. Der gewählte Tag "
+        "bestimmt Entnahme, Bitcoinkauf und Bandprüfung zugleich. Gezählt "
+        "wird die Netto-Rendite nach Zertifikatsgebühr, ohne Zeichnungen. "
+        "Die Zahlen dieser Sektion gehören in den Kasten zu Ziffer 9.1 des "
+        "Reglements.</p>", unsafe_allow_html=True)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def compute_tageswahl_entnahme(_px, _btc, _fx, cap, upper, wpct, txbps,
+                                   minfee, fxbps, minorder, fee, win_years,
+                                   step_months, conventions, cache_token=None):
+        full = _px.index
+        if len(full) < 400:
+            return pd.DataFrame()
+        tk = _px.columns[0]
+        leer = pd.DataFrame(columns=["date", "ticker", "dividend_per_share"])
+        starts = pd.date_range(full[0], full[-1] - pd.DateOffset(years=win_years),
+                               freq=f"{step_months}MS")
+        rows = []
+        for s in starts:
+            w = full[(full >= s) & (full <= s + pd.DateOffset(years=win_years))]
+            if len(w) < 300:
+                continue
+            rec = {"start": s}
+            ok = True
+            for conv in conventions:
+                try:
+                    _ts, _, _ = run_strategy(
+                        _px.loc[w], leer, _btc, _fx, cap, {tk: 100.0},
+                        0.15, upper, 0.15, set(), 6, tx_cost_bps=txbps,
+                        threshold_check_dates_set=None, cap_dates_set=set(),
+                        weight_cap=None,
+                        dca_execution_dates_set=get_execution_dates(w, conv),
+                        min_fee_chf=minfee, fx_fee_bps=fxbps,
+                        min_order_chf=minorder, harvest_mode="withdrawal",
+                        withdrawal_pct_monthly=wpct, withdrawal_every_n_months=1,
+                        monthly_flow_pct=0.0, monthly_flow_chf=0.0,
+                        netting=True)
+                except Exception:
+                    ok = False
+                    break
+                if _ts is None or _ts.empty or "total_value" not in _ts.columns:
+                    ok = False
+                    break
+                _net, _, _, _ = apply_fees(_ts["total_value"], cap,
+                                           mgmt_fee_annual=fee,
+                                           perf_fee_rate=0.0)
+                _yrs = max((_net.index[-1] - _net.index[0]).days / 365.25, 1e-9)
+                rec[conv] = (_net.iloc[-1] / cap) ** (1 / _yrs) - 1
+            if ok:
+                rows.append(rec)
+        return pd.DataFrame(rows)
+
+    tw1, tw2, tw3 = st.columns(3)
+    with tw1:
+        _tw_win = st.selectbox("Fensterlänge (Jahre)", [3, 5], index=0,
+                               key="tw_win")
+    with tw2:
+        _tw_step = st.selectbox(
+            "Fenster-Schritt", ["quartalsweise", "halbjährlich"], index=0,
+            key="tw_step",
+            help="Quartalsweise entspricht dem bisherigen Test, auf den sich "
+                 "der Kasten zu Ziffer 9.1 bezieht.")
+    with tw3:
+        st.caption("")
+        _tw_go = st.button("Tagestest starten", key="tw_go")
+    _tw_pfade = ["Historisch", "Seitwärts: Bitcoin ohne Trend"]
+    _tw_pfad = st.selectbox(
+        "Bitcoin-Pfad (Tagestest)", _tw_pfade, index=0, key="tw_pfad",
+        help="Seitwärts behält jede Tagesbewegung von Bitcoin und entfernt "
+             "nur den Trend über den Gesamtzeitraum, wie in der Kalibrierung "
+             "der Entnahmemechanik.")
+    if _tw_go:
+        st.session_state["tw_has_run"] = True
+
+    if st.session_state.get("tw_has_run"):
+        _tw_convs = ["Monatsultimo", "Monatsanfang", "Monatsmitte",
+                     "Letzter Montag", "Erster Montag"]
+        _tw_sm = 3 if _tw_step == "quartalsweise" else 6
+        _cfg_tw = next((c for c in EQUITY_SLEEVES.values()
+                        if c and c.get("ticker") == "SMIA.SW"), None)
+        _px_t = None
+        if _cfg_tw and _cfg_tw.get("synth_from"):
+            _qt = _cfg_tw["synth_from"]
+            _pst = fetch_prices([_qt], start_str, end_str)
+            if _pst is not None and not _pst.empty and _qt in _pst.columns:
+                _dst = fetch_dividends([_qt], start_str, end_str)
+                _px_t = pd.DataFrame({_cfg_tw["ticker"]:
+                                      synthesize_accumulating(_pst[_qt], _dst, _qt)})
+        if _px_t is None or _px_t.empty:
+            st.error("Die Kursreihe des SMIA konnte nicht geladen werden.")
+        else:
+            _btc_t = btc_series
+            if _tw_pfad != _tw_pfade[0]:
+                _bb = btc_series.dropna()
+                _bb = _bb[_bb > 0]
+                _bbt = (_bb.index - _bb.index[0]).days.values / 365.25
+                _bbl = np.log(_bb.values.astype(float))
+                _bbm = (_bbl[-1] - _bbl[0]) / max(float(_bbt[-1]), 1e-9)
+                _btc_t = pd.Series(np.exp(_bbl - _bbm * _bbt), index=_bb.index,
+                                   name=btc_series.name)
+            with st.spinner("Rechne fünf Konventionen über alle Fenster…"):
+                _tw = compute_tageswahl_entnahme(
+                    _px_t, _btc_t, fx, initial_capital, 0.25, 0.0025,
+                    tx_cost_bps, min_fee_chf, fx_fee_bps, min_order_chf,
+                    mgmt_fee_display, _tw_win, _tw_sm, tuple(_tw_convs),
+                    cache_token=(start_str, end_str, btc_source, etp_ter_pct,
+                                 _tw_pfad))
+            if _tw.empty or len(_tw) < 4:
+                st.warning("Zu wenig Fenster für eine belastbare Aussage.")
+            else:
+                _twn = len(_tw)
+                st.caption(
+                    f"{_twn} rollierende {_tw_win}-Jahres-Fenster, Schritt "
+                    f"{_tw_step}, × {len(_tw_convs)} Konventionen · Zeitraum "
+                    f"{start_str} bis {end_str} · Bitcoin-Pfad: {_tw_pfad}")
+                _tws = pd.DataFrame({
+                    "Konvention": _tw_convs,
+                    "Median-Rendite": [_tw[c].median() for c in _tw_convs],
+                    "P25": [_tw[c].quantile(.25) for c in _tw_convs],
+                    "P75": [_tw[c].quantile(.75) for c in _tw_convs],
+                })
+                _twr = _tw[_tw_convs].rank(axis=1, ascending=False)
+                _tws["Anteil Rang 1"] = [float((_twr[c] == 1).mean())
+                                         for c in _tw_convs]
+                _tw_spanne = float(_tws["Median-Rendite"].max()
+                                   - _tws["Median-Rendite"].min())
+                _tw_fenster = float(_tw["Monatsultimo"].max()
+                                    - _tw["Monatsultimo"].min())
+                _tw_je = float((_tw[_tw_convs].max(axis=1)
+                                - _tw[_tw_convs].min(axis=1)).median())
+                _tw_ratio = _tw_je / _tw_fenster if _tw_fenster > 0 else float("nan")
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    st.metric("Spanne der Median-Rendite",
+                              f"{_tw_spanne*100:.2f}pp")
+                    st.caption("beste minus schlechteste Konvention")
+                with m2:
+                    st.metric("Streuung zwischen Fenstern",
+                              f"{_tw_fenster*100:.1f}pp")
+                    st.caption("Einstiegszeitpunkt, Monatsultimo")
+                with m3:
+                    st.metric("Verhältnis", f"{_tw_ratio*100:.1f}%")
+                    st.caption("Konvention je Fenster vs. Einstiegszeitpunkt")
+                _twd = _tws.copy()
+                for _c in ("Median-Rendite", "P25", "P75"):
+                    _twd[_c] = (_twd[_c] * 100).round(2).astype(str) + "%"
+                _twd["Anteil Rang 1"] = ((_twd["Anteil Rang 1"] * 100)
+                                         .round(1).astype(str) + "%")
+                st.dataframe(_twd, use_container_width=True, hide_index=True)
+                _twh = _twn // 2
+                _tw_s1 = _tw.iloc[:_twh][_tw_convs].median().idxmax()
+                _tw_r2 = float(_tw.iloc[_twh:][_tw_convs].median()
+                               .rank(ascending=False)[_tw_s1])
+                st.markdown("##### Out-of-sample: hält der historische Sieger?")
+                o1, o2 = st.columns(2)
+                with o1:
+                    st.metric("Sieger der ersten Fensterhälfte", _tw_s1)
+                with o2:
+                    st.metric("Dessen Rang in der zweiten Hälfte",
+                              f"{_tw_r2:.0f} von {len(_tw_convs)}")
+                    st.caption(f"Zufallserwartung: {(len(_tw_convs)+1)/2:.1f}")
+                st.caption(
+                    "Diese Werte ersetzen im Kasten zu Ziffer 9.1 die Zahlen "
+                    "des früheren Tests, der noch mit Einzeltiteln und "
+                    "Dividendenernte gerechnet war.")
+                _tw_slug = "historisch" if _tw_pfad == _tw_pfade[0] else "seitwaerts"
+                _tw_schritt = "quartal" if _tw_sm == 3 else "halbjahr"
+                st.download_button(
+                    "Tagestest als CSV",
+                    _tw.to_csv(index=False).encode("utf-8"),
+                    f"tageswahl_entnahme_{start_str[:4]}_{_tw_schritt}_"
+                    f"{_tw_slug}.csv", "text/csv", key="tw_csv")
+
+    # ======================================================================
     # KALIBRIERUNG — Optimales Risiko/Rendite-Profil (Sharpe/Calmar-Grid)
     # Andere Zielfunktion als der Alpha-Test oben: nicht "schlägt der
     # Mechanismus Buy-and-Hold" (beantwortet), sondern "welche Kombination
